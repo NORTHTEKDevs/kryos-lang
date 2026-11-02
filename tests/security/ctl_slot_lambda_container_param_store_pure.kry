@@ -1,0 +1,28 @@
+// LEDGER root R2, revise round of PR 38 (control).
+// A lambda that stores a PURE function into its annotated array parameter, and the caller reads the array inside deny!(fs:read).
+// Must stay ACCEPTED by `kryos check` (default and strict): the stored closure is pure.
+use std::iter::{for_each}
+
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let fns = [safe, safe]
+    let put = |reg: [fn() -> str], g: fn() -> str| {
+        reg[0] = g
+    }
+    put(fns, safe)
+    deny!(fs:read) {
+        for f in fns {
+            println(f())
+        }
+    }
+}

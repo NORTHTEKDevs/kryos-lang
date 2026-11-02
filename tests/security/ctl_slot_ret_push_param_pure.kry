@@ -1,0 +1,31 @@
+// LEDGER root R2, revise round of PR 38 (control).
+// The pure twin of attack_slot_ret_push_param: the same builder, called with a pure function, read inside deny!(fs:read).
+// Must stay ACCEPTED by `kryos check` (default and strict): the same builder called with a pure function holds only pure closures.
+use std::iter::{for_each}
+
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+fn build_with(g: fn() -> str) -> [fn() -> str] {
+    let mut a = [safe]
+    a = push(a, g)
+    return a
+}
+
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let r = safe
+    let fns = build_with(r)
+    deny!(fs:read) {
+        for f in fns {
+            println(f())
+        }
+    }
+}

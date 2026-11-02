@@ -1,0 +1,38 @@
+// LEDGER root R2, revise round of PR 38 (found by the independent verifier of PR 38).
+// The realistic middleware shape: a framework function prepends and appends its own pure steps around the handler it was handed and returns the chain, which the host then runs inside deny!(fs:read).
+// Master dcf72e93: accepted in every mode (check rc=0, default and strict) and `kryos run` prints the secret (executed).
+// First R2 build (PR head dbfb989d): accepted in every mode (check rc=0, default and strict) and `kryos run` prints the secret (executed).
+// Must be REJECTED with E0110 ("capability `fs:read` is denied in this block") under inferred and strict,
+// and `kryos run` must not print the secret.
+use std::iter::{for_each}
+
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+fn audit_start() -> str {
+    return "[audit] start"
+}
+fn audit_end() -> str {
+    return "[audit] end"
+}
+
+fn with_framework(handler: fn() -> str) -> [fn() -> str] {
+    return [audit_start, handler, audit_end]
+}
+
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let chain = with_framework(secret())
+    deny!(fs:read) {
+        for f in chain {
+            println(f())
+        }
+    }
+}

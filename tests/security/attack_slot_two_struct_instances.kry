@@ -1,0 +1,33 @@
+// LEDGER root R2 (stores: struct field init, second instance).
+// Two instances of one struct: the declaration owns ONE row var per fn-typed field, so the second instance's privileged closure must widen it.
+// Master dcf72e93 accepts this in every mode (both capability layers miss it) and
+// `kryos run` prints the secret. Must be REJECTED with E0110 ("capability `fs:read`
+// is denied in this block") under inferred and strict, and `kryos run` must not
+// print the secret.
+use std::iter::{for_each}
+
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+struct Plugin {
+    name: str,
+    run: fn() -> str,
+}
+@capabilities(fs:read)
+fn main() {
+    let r = secret()
+    let a = Plugin { name: "a", run: safe }
+    let b = Plugin { name: "b", run: r }
+    let ps = [a, b]
+    deny!(fs:read) {
+        for_each(ps, |q: Plugin| {
+            println(q.run())
+        })
+    }
+}

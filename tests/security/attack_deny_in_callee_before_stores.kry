@@ -1,0 +1,34 @@
+// LEDGER item 115 (root R3: the verdict is taken before the argument exists). NOT FIXED.
+// Found by the independent verifier of PR 38. The deny! block sits INSIDE a callee that is declared
+// before `main`: `fn run_all(fns) { deny!(fs:read) { for f in fns { f() } } }`. The block is judged
+// when `run_all` is checked, while the row of `fns`' elements is still the callee's own open
+// parameter var; `main` passes a privileged closure later, at the call, long after the verdict.
+// An outer harmless `f` blinds the shape layer, as in the rest of the corpus.
+// Master dcf72e93 AND every R2 build: check rc=0 in default and strict mode, and `kryos run`
+// prints the secret (executed). WANTED: rejected with E0110, at the call or at the block.
+use std::iter::{for_each, map}
+
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+fn run_all(fns: [fn() -> str]) {
+    let f = || "harmless"
+    deny!(fs:read) {
+        for f in fns {
+            println(f())
+        }
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let r = secret()
+    let fns = [safe, r]
+    run_all(fns)
+}

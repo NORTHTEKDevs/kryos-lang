@@ -1,0 +1,35 @@
+// LEDGER root R2, revise round of PR 38 (found by the independent verifier of PR 38).
+// A callee returns a struct whose array field is built from a pure function and its closure parameter.
+// Master dcf72e93: accepted in every mode (check rc=0, default and strict) and `kryos run` prints the secret (executed).
+// First R2 build (PR head dbfb989d): accepted in every mode (check rc=0, default and strict) and `kryos run` prints the secret (executed).
+// Must be REJECTED with E0110 ("capability `fs:read` is denied in this block") under inferred and strict,
+// and `kryos run` must not print the secret.
+use std::iter::{for_each}
+
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+struct Reg {
+    items: [fn() -> str],
+}
+fn build_with(g: fn() -> str) -> Reg {
+    return Reg { items: [safe, g] }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let r = secret()
+    let reg = build_with(r)
+    deny!(fs:read) {
+        for f in reg.items {
+            println(f())
+        }
+    }
+}

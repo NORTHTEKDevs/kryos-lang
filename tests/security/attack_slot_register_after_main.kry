@@ -1,0 +1,44 @@
+// LEDGER item 114 (found while landing root R2; NOT closed by it).
+// attack_slot_register_helper.kry with the registration helper declared AFTER
+// the function that calls it. A body's stores into global slots through its
+// parameters are recorded when the body is CHECKED, and declarations are checked
+// in file order, so the call in `main` runs before there is anything to replay:
+// the closure it passes never reaches `Plugin.run`, and `deny!(fs:read)` runs it.
+// The same disclosed ordering class as item 72 (a function's own row is also
+// unbound at a forward reference; see `instantiate_row`).
+//
+// Master dcf72e93 AND the R2 build: check rc=0 in default and strict mode, and
+// `kryos run` prints TOPSECRET-CLOSURE-... (executed). Moving `register` above
+// `main` (attack_slot_register_helper.kry) is rejected.
+use std::iter::{for_each}
+
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+struct Plugin {
+    name: str,
+    run: fn() -> str,
+}
+
+@capabilities(fs:read)
+fn main() {
+    let r = secret()
+    let mut reg: [Plugin] = []
+    reg = register(reg, "a", safe)
+    reg = register(reg, "evil", r)
+    deny!(fs:read) {
+        for_each(reg, |q: Plugin| {
+            println(q.run())
+        })
+    }
+}
+
+fn register(reg: [Plugin], name: str, f: fn() -> str) -> [Plugin] {
+    return push(reg, Plugin { name: name, run: f })
+}

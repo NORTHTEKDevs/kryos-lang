@@ -4,6 +4,14 @@
 // ACTOR HANDLER's own container-parameter invocation is gated -- isolated
 // from the (correct, unrelated) "build_registry must self-declare"
 // rejection the previous strict-mode run actually tripped on.
+//
+// RE-BASELINED 2026-11-01 (LEDGER items 69 and 70): AS WRITTEN this program is
+// DELEGATION and is correctly ACCEPTED in every mode. The sender, `main`, holds
+// fs:read and is charged exactly [fs:read] for the message it sends. The
+// ESCAPING form is the same alias read inside a deny!:
+// tests/security/attack_array_param_alias_invoke_deny.kry (array) and
+// tests/security/attack_map_param_alias_invoke_deny.kry (map), both rejected by
+// the row layer (E0110) now that a closure stored second widens the slot's row.
 
 @capabilities(fs:read)
 fn make_secret_reader() -> fn() -> str {

@@ -1804,3 +1804,497 @@ fn exhaustive_wildcard_covers_all() {
         warnings.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
+
+// ── Capability-row slots (LEDGER root R2) ────────────────────────────
+//
+// A closure stored into a slot must WIDEN the slot's row. Before R2 the first
+// store bound the slot's row var and every later store met a resolved (closed)
+// row, hit the closed/closed no-op in `unify`, and was dropped.
+
+use kryos_types::ty::{CapBits, CapRow};
+
+fn fn_with(caps: CapRow) -> Type {
+    Type::Function {
+        params: vec![],
+        ret: Box::new(Type::Str),
+        caps,
+    }
+}
+
+fn bits_of(engine: &InferenceEngine, var: u32) -> CapBits {
+    engine.resolve_cap_row(&CapRow::var(var)).concrete_bits()
+}
+
+#[test]
+fn slot_row_widens_when_a_second_closure_is_stored() {
+    let mut engine = InferenceEngine::new();
+    let slot = engine.fresh_slot_cap_var();
+    let slot_ty = fn_with(CapRow::var(slot));
+    // First store: a pure closure binds the slot to the empty row.
+    engine
+        .unify(&slot_ty, &fn_with(CapRow::closed(CapBits::EMPTY)), S)
+        .unwrap();
+    assert_eq!(bits_of(&engine, slot), CapBits::EMPTY);
+    // Second store: a privileged closure must reach the slot.
+    engine
+        .unify(&slot_ty, &fn_with(CapRow::closed(CapBits::FS_READ)), S)
+        .unwrap();
+    assert!(
+        bits_of(&engine, slot).contains_bits(CapBits::FS_READ),
+        "the second store was dropped: slot row is {}",
+        engine.resolve_cap_row(&CapRow::var(slot)).display()
+    );
+    // The type carries the slot var, not a closed copy of what it held.
+    match engine.resolve(&slot_ty) {
+        Type::Function { caps, .. } => assert_eq!(caps, CapRow::var(slot)),
+        other => panic!("expected a function type, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_bound_row_that_is_not_a_slot_is_not_widened() {
+    // A function's own total and its parameter / return vars are declaration
+    // facts (or freshened per call site): widening one from inside a body would
+    // change what every caller is charged.
+    let mut engine = InferenceEngine::new();
+    let v = engine.fresh_cap_var();
+    let ty = fn_with(CapRow::var(v));
+    engine
+        .unify(&ty, &fn_with(CapRow::closed(CapBits::EMPTY)), S)
+        .unwrap();
+    engine
+        .unify(&ty, &fn_with(CapRow::closed(CapBits::FS_READ)), S)
+        .unwrap();
+    assert_eq!(bits_of(&engine, v), CapBits::EMPTY);
+}
+
+#[test]
+fn a_type_variable_bound_to_a_closure_becomes_a_slot() {
+    // `fn push<T>(arr: [T], val: T)`: the first closure binds T, the second must
+    // still widen the row T carries.
+    let mut engine = InferenceEngine::new();
+    let t = engine.fresh_var();
+    engine
+        .unify(&t, &fn_with(CapRow::closed(CapBits::EMPTY)), S)
+        .unwrap();
+    engine
+        .unify(&t, &fn_with(CapRow::closed(CapBits::FS_READ)), S)
+        .unwrap();
+    match engine.resolve(&t) {
+        Type::Function { caps, .. } => assert!(
+            engine
+                .resolve_cap_row(&caps)
+                .concrete_bits()
+                .contains_bits(CapBits::FS_READ),
+            "second closure dropped: {}",
+            engine.resolve_cap_row(&caps).display()
+        ),
+        other => panic!("expected a function type, got {other:?}"),
+    }
+}
+
+#[test]
+fn an_array_literal_element_row_is_the_union_of_every_element() {
+    let mut engine = InferenceEngine::new();
+    let first = fn_with(CapRow::closed(CapBits::EMPTY));
+    let elem = engine.literal_slot_type(&first);
+    engine
+        .unify(&elem, &fn_with(CapRow::closed(CapBits::FS_READ)), S)
+        .unwrap();
+    match engine.resolve(&elem) {
+        Type::Function { caps, .. } => assert!(
+            engine
+                .resolve_cap_row(&caps)
+                .concrete_bits()
+                .contains_bits(CapBits::FS_READ),
+            "a literal typed by its first element drops the rest: {}",
+            engine.resolve_cap_row(&caps).display()
+        ),
+        other => panic!("expected a function type, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_type_without_a_function_is_left_alone_by_the_literal_slot_type() {
+    let mut engine = InferenceEngine::new();
+    assert_eq!(engine.literal_slot_type(&Type::I64), Type::I64);
+}
+
+#[test]
+fn binding_a_row_var_to_itself_binds_nothing() {
+    let mut engine = InferenceEngine::new();
+    let v = engine.fresh_cap_var();
+    engine.bind_cap_var(v, CapRow::var(v));
+    // Still open: a self edge must not turn an unbound var into a bound-empty one.
+    assert!(!engine.resolve_cap_row(&CapRow::var(v)).is_closed());
+}
+
+#[test]
+fn a_bodys_store_into_a_global_slot_is_replayed_with_the_callers_closure() {
+    // `fn register(reg, f) { reg.field = f }`: the body stores its OWN parameter
+    // var `p` into the global slot. No call site ever binds `p` -- each freshens a
+    // copy -- so the caller's closure only reaches the slot if the call replays
+    // the store with its copy.
+    let mut engine = InferenceEngine::new();
+    let slot = engine.fresh_cap_var();
+    engine.mark_slot_rows(&fn_with(CapRow::var(slot)), true);
+    let p = engine.fresh_cap_var();
+    let own = engine.fresh_cap_var();
+
+    engine.begin_store_effects(&[p]);
+    engine
+        .unify(&fn_with(CapRow::var(slot)), &fn_with(CapRow::var(p)), S)
+        .unwrap();
+    engine.end_store_effects(Some(own));
+
+    // A call site: its fresh copy of `p` is bound by the argument it passes.
+    let p_call = engine.fresh_cap_var();
+    let mut map = std::collections::HashMap::new();
+    map.insert(p, p_call);
+    engine.replay_store_effects(own, &map);
+    engine
+        .unify(
+            &fn_with(CapRow::var(p_call)),
+            &fn_with(CapRow::closed(CapBits::FS_READ)),
+            S,
+        )
+        .unwrap();
+    assert!(
+        bits_of(&engine, slot).contains_bits(CapBits::FS_READ),
+        "the registration call stored nothing the slot can see: {}",
+        engine.resolve_cap_row(&CapRow::var(slot)).display()
+    );
+}
+
+#[test]
+fn a_local_slot_is_flattened_when_a_row_is_copied_into_a_call_site() {
+    // A local slot's binding can mention the callee's own polymorphic param var;
+    // `instantiate_row` must remap that var, so the local slot is chased like
+    // any other var. A global slot stays a reference.
+    let mut engine = InferenceEngine::new();
+    let p = engine.fresh_cap_var();
+    let local = engine.fresh_slot_cap_var();
+    engine.bind_cap_var(local, CapRow::var(p));
+    let p_call = engine.fresh_cap_var();
+    let mut map = std::collections::HashMap::new();
+    map.insert(p, p_call);
+    let inst = engine.instantiate_row(&CapRow::var(local), &map);
+    assert_eq!(inst, CapRow::var(p_call));
+
+    let global = engine.fresh_cap_var();
+    engine.mark_slot_rows(&fn_with(CapRow::var(global)), true);
+    engine.bind_cap_var(global, CapRow::closed(CapBits::FS_READ));
+    let inst = engine.instantiate_row(&CapRow::var(global), &map);
+    assert_eq!(inst, CapRow::var(global));
+}
+
+// ── Signature vars are inputs (LEDGER root R2, the verifier's refutation) ──
+
+#[test]
+fn a_signature_var_is_not_narrowed_by_a_flow_into_a_closed_slot() {
+    // `let mut a = [safe]; a = push(a, g); return a`: the array's element slot
+    // already holds the EMPTY row when the parameter `g` meets it. The original
+    // rule handed the destination's closed row to the source's unbound vars, so
+    // `g`'s own var was bound to the empty row and every caller was told the
+    // parameter is pure.
+    let mut engine = InferenceEngine::new();
+    let slot = engine.fresh_slot_cap_var();
+    engine.bind_cap_var(slot, CapRow::closed(CapBits::EMPTY));
+    let p = engine.fresh_cap_var();
+    let own = engine.fresh_cap_var();
+
+    engine.begin_store_effects(&[p]);
+    engine
+        .unify(&fn_with(CapRow::var(slot)), &fn_with(CapRow::var(p)), S)
+        .unwrap();
+    engine.end_store_effects(Some(own));
+
+    assert!(
+        !engine.resolve_cap_row(&CapRow::var(p)).is_closed(),
+        "the parameter's var was narrowed to {}",
+        engine.resolve_cap_row(&CapRow::var(p)).display()
+    );
+    assert!(
+        engine
+            .resolve_cap_row(&CapRow::var(slot))
+            .var_ids()
+            .contains(&p),
+        "the slot does not mention the parameter it was handed"
+    );
+}
+
+#[test]
+fn a_call_site_var_still_takes_a_closed_destination_row() {
+    // The original rule is still needed outside a body: `map(tools, invoke)`
+    // unifies the element row with the row of `invoke`'s own parameter (a fresh
+    // call-site var), and that var must take the element's row.
+    let mut engine = InferenceEngine::new();
+    let slot = engine.fresh_slot_cap_var();
+    engine.bind_cap_var(slot, CapRow::closed(CapBits::FS_READ));
+    let q = engine.fresh_cap_var();
+    engine
+        .unify(&fn_with(CapRow::var(slot)), &fn_with(CapRow::var(q)), S)
+        .unwrap();
+    assert_eq!(bits_of(&engine, q), CapBits::FS_READ);
+}
+
+#[test]
+fn a_lambdas_annotated_parameter_is_one_slot_every_call_feeds() {
+    // A lambda is a single monomorphic value: called with a pure function and
+    // then with a privileged one, its parameter row is the union.
+    let mut engine = InferenceEngine::new();
+    let lg = engine.fresh_cap_var();
+    engine.mark_lambda_param_rows(&fn_with(CapRow::var(lg)));
+    engine
+        .unify(&fn_with(CapRow::var(lg)), &fn_with(CapRow::closed(CapBits::EMPTY)), S)
+        .unwrap();
+    engine
+        .unify(
+            &fn_with(CapRow::var(lg)),
+            &fn_with(CapRow::closed(CapBits::FS_READ)),
+            S,
+        )
+        .unwrap();
+    assert!(
+        bits_of(&engine, lg).contains_bits(CapBits::FS_READ),
+        "the second call was dropped: {}",
+        engine.resolve_cap_row(&CapRow::var(lg)).display()
+    );
+}
+
+#[test]
+fn the_rows_in_a_lambdas_parameter_types_are_frozen_while_its_body_is_checked() {
+    // Inside the lambda, the parameter's var is an input: a flow into a closed
+    // slot must not narrow it. Once the body is done the freeze is lifted and
+    // the original rule applies again (the lambda is handed to a higher-order
+    // function that supplies the row).
+    let mut engine = InferenceEngine::new();
+    let slot = engine.fresh_slot_cap_var();
+    engine.bind_cap_var(slot, CapRow::closed(CapBits::EMPTY));
+    let lg = engine.fresh_cap_var();
+    let param = fn_with(CapRow::var(lg));
+    let frozen = engine.freeze_rows_of(&[param.clone()]);
+    engine
+        .unify(&fn_with(CapRow::var(slot)), &param, S)
+        .unwrap();
+    assert!(!engine.resolve_cap_row(&CapRow::var(lg)).is_closed());
+    engine.unfreeze_rows(frozen);
+    // After the body, the same flow binds it again.
+    let slot2 = engine.fresh_slot_cap_var();
+    engine.bind_cap_var(slot2, CapRow::closed(CapBits::FS_READ));
+    engine
+        .unify(&fn_with(CapRow::var(slot2)), &param, S)
+        .unwrap();
+    assert_eq!(bits_of(&engine, lg), CapBits::FS_READ);
+}
+
+#[test]
+fn a_join_of_two_function_values_carries_both_rows() {
+    // The arms of an `if` / `match`: typed by a slot every arm is unified into.
+    let mut engine = InferenceEngine::new();
+    let first = fn_with(CapRow::closed(CapBits::EMPTY));
+    let joined = engine.literal_slot_type(&first);
+    engine
+        .unify(&joined, &fn_with(CapRow::closed(CapBits::FS_READ)), S)
+        .unwrap();
+    match engine.resolve(&joined) {
+        Type::Function { caps, .. } => assert!(engine
+            .resolve_cap_row(&caps)
+            .concrete_bits()
+            .contains_bits(CapBits::FS_READ)),
+        other => panic!("expected a function type, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_parameter_position_is_contravariant() {
+    // `for_each(fns, |g: fn() -> str| ..)`: the element row E is what the
+    // HOF hands the lambda, so it flows into the lambda's parameter row `lg`.
+    // The lambda's var must take E's row, and E must NOT be widened by `lg`.
+    let mut engine = InferenceEngine::new();
+    let e = engine.fresh_slot_cap_var();
+    engine.bind_cap_var(e, CapRow::closed(CapBits::FS_READ));
+    let lg = engine.fresh_cap_var();
+    let expected = Type::Function {
+        params: vec![fn_with(CapRow::var(e))],
+        ret: Box::new(Type::Void),
+        caps: CapRow::closed(CapBits::EMPTY),
+    };
+    let found = Type::Function {
+        params: vec![fn_with(CapRow::var(lg))],
+        ret: Box::new(Type::Void),
+        caps: CapRow::closed(CapBits::EMPTY),
+    };
+    engine.unify(&expected, &found, S).unwrap();
+    assert_eq!(bits_of(&engine, lg), CapBits::FS_READ);
+    // The slot was not widened by the lambda's parameter var.
+    assert!(!engine.resolve_cap_row(&CapRow::var(e)).var_ids().contains(&lg));
+}
+
+fn array_of(element: Type) -> Type {
+    Type::Array {
+        element: Box::new(element),
+        size: None,
+    }
+}
+
+#[test]
+fn a_store_into_a_container_the_body_was_handed_reaches_the_callers_slot() {
+    // `fn put(reg: [fn() -> str], g: fn() -> str) { reg[0] = g }` called as
+    // `put(fns, r)`. The body must NOT bind the parameter's storage var `e`
+    // (reads through `reg` would be charged only what was stored), and the
+    // caller's array slot must learn what the call stored.
+    let mut engine = InferenceEngine::new();
+    let e = engine.fresh_cap_var();
+    let p = engine.fresh_cap_var();
+    let own = engine.fresh_cap_var();
+    engine.begin_store_effects(&[e, p]);
+    engine.mark_input_storage(&[array_of(fn_with(CapRow::var(e))), fn_with(CapRow::var(p))]);
+    engine
+        .unify(&fn_with(CapRow::var(e)), &fn_with(CapRow::var(p)), S)
+        .unwrap();
+    engine.end_store_effects(Some(own));
+    assert!(
+        !engine.resolve_cap_row(&CapRow::var(e)).is_closed(),
+        "the body bound the parameter's storage var to {}",
+        engine.resolve_cap_row(&CapRow::var(e)).display()
+    );
+
+    // A call site. The reference is typed first, so the replay finds the
+    // call's copy of the storage var still unbound.
+    let e_call = engine.fresh_cap_var();
+    let p_call = engine.fresh_cap_var();
+    let mut map = std::collections::HashMap::new();
+    map.insert(e, e_call);
+    map.insert(p, p_call);
+    engine.replay_store_effects(own, &map);
+    // The caller's array was built from a pure function.
+    let caller_slot = engine.fresh_slot_cap_var();
+    engine.bind_cap_var(caller_slot, CapRow::closed(CapBits::EMPTY));
+    // Arguments: the array, then the closure.
+    engine
+        .unify(&fn_with(CapRow::var(e_call)), &fn_with(CapRow::var(caller_slot)), S)
+        .unwrap();
+    engine
+        .unify(
+            &fn_with(CapRow::var(p_call)),
+            &fn_with(CapRow::closed(CapBits::FS_READ)),
+            S,
+        )
+        .unwrap();
+    assert!(
+        bits_of(&engine, caller_slot).contains_bits(CapBits::FS_READ),
+        "the call stored a privileged closure into the caller's array and its slot did not learn: {}",
+        engine.resolve_cap_row(&CapRow::var(caller_slot)).display()
+    );
+}
+
+#[test]
+fn a_store_of_named_privileged_bits_into_a_handed_container_is_replayed() {
+    // `fn seed(reg: [fn() -> str]) { reg[0] = reader }`: the stored row is a
+    // closed row the body names, not one of its own parameters.
+    let mut engine = InferenceEngine::new();
+    let e = engine.fresh_cap_var();
+    let own = engine.fresh_cap_var();
+    engine.begin_store_effects(&[e]);
+    engine.mark_input_storage(&[array_of(fn_with(CapRow::var(e)))]);
+    engine
+        .unify(
+            &fn_with(CapRow::var(e)),
+            &fn_with(CapRow::closed(CapBits::FS_READ)),
+            S,
+        )
+        .unwrap();
+    engine.end_store_effects(Some(own));
+
+    let e_call = engine.fresh_cap_var();
+    let mut map = std::collections::HashMap::new();
+    map.insert(e, e_call);
+    let caller_slot = engine.fresh_slot_cap_var();
+    engine.bind_cap_var(caller_slot, CapRow::closed(CapBits::EMPTY));
+    engine
+        .unify(&fn_with(CapRow::var(e_call)), &fn_with(CapRow::var(caller_slot)), S)
+        .unwrap();
+    engine.replay_store_effects(own, &map);
+    assert!(bits_of(&engine, caller_slot).contains_bits(CapBits::FS_READ));
+}
+
+#[test]
+fn a_read_only_container_parameter_records_no_store() {
+    let mut engine = InferenceEngine::new();
+    let e = engine.fresh_cap_var();
+    let own = engine.fresh_cap_var();
+    engine.begin_store_effects(&[e]);
+    engine.mark_input_storage(&[array_of(fn_with(CapRow::var(e)))]);
+    // The body only READS the elements into a local slot.
+    let local = engine.fresh_slot_cap_var();
+    engine
+        .unify(&fn_with(CapRow::var(local)), &fn_with(CapRow::var(e)), S)
+        .unwrap();
+    engine.end_store_effects(Some(own));
+
+    let e_call = engine.fresh_cap_var();
+    let mut map = std::collections::HashMap::new();
+    map.insert(e, e_call);
+    let caller_slot = engine.fresh_slot_cap_var();
+    engine.bind_cap_var(caller_slot, CapRow::closed(CapBits::EMPTY));
+    engine
+        .unify(&fn_with(CapRow::var(e_call)), &fn_with(CapRow::var(caller_slot)), S)
+        .unwrap();
+    engine.replay_store_effects(own, &map);
+    assert_eq!(bits_of(&engine, caller_slot), CapBits::EMPTY);
+}
+
+#[test]
+fn a_lambdas_store_into_an_annotated_container_parameter_reaches_every_arguments_slot() {
+    // `let put = |reg: [fn() -> str], g: fn() -> str| { reg[0] = g }`. A lambda is one
+    // monomorphic value: there is no per-call copy of the parameter's element row to
+    // replay, so the store is written into the slot of each argument the row is bound
+    // to, the moment it is bound to it.
+    let mut engine = InferenceEngine::new();
+    let e = engine.fresh_cap_var();
+    let lg = engine.fresh_cap_var();
+    let reg_ty = array_of(fn_with(CapRow::var(e)));
+    let g_ty = fn_with(CapRow::var(lg));
+    engine.mark_lambda_param_rows(&reg_ty);
+    engine.mark_lambda_input_storage(&reg_ty);
+    engine.mark_lambda_param_rows(&g_ty);
+    engine.mark_lambda_input_storage(&g_ty);
+    let frozen = engine.freeze_rows_of(&[reg_ty.clone(), g_ty.clone()]);
+    // The body: reg[0] = g.
+    engine
+        .unify(&fn_with(CapRow::var(e)), &fn_with(CapRow::var(lg)), S)
+        .unwrap();
+    engine.unfreeze_rows(frozen);
+    assert!(
+        !engine.resolve_cap_row(&CapRow::var(e)).is_closed(),
+        "the body bound the parameter's element row"
+    );
+
+    // First call: an array built from a pure function, and a privileged closure.
+    let caller_a = engine.fresh_slot_cap_var();
+    engine.bind_cap_var(caller_a, CapRow::closed(CapBits::EMPTY));
+    engine
+        .unify(&fn_with(CapRow::var(e)), &fn_with(CapRow::var(caller_a)), S)
+        .unwrap();
+    engine
+        .unify(
+            &fn_with(CapRow::var(lg)),
+            &fn_with(CapRow::closed(CapBits::FS_READ)),
+            S,
+        )
+        .unwrap();
+    assert!(
+        bits_of(&engine, caller_a).contains_bits(CapBits::FS_READ),
+        "the lambda stored a privileged closure into the caller's array: {}",
+        engine.resolve_cap_row(&CapRow::var(caller_a)).display()
+    );
+
+    // A second call with another array: its slot learns as well.
+    let caller_b = engine.fresh_slot_cap_var();
+    engine.bind_cap_var(caller_b, CapRow::closed(CapBits::EMPTY));
+    engine
+        .unify(&fn_with(CapRow::var(e)), &fn_with(CapRow::var(caller_b)), S)
+        .unwrap();
+    assert!(bits_of(&engine, caller_b).contains_bits(CapBits::FS_READ));
+}

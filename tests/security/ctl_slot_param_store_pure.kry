@@ -1,0 +1,29 @@
+// LEDGER root R2, revise round of PR 38 (control).
+// A helper that stores a PURE function into the array it was handed and the caller reads it inside deny!(fs:read).
+// Must stay ACCEPTED by `kryos check` (default and strict): the stored closure is pure.
+use std::iter::{for_each, map}
+
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+fn put(reg: [fn() -> str], g: fn() -> str) {
+    reg[0] = g
+}
+
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let fns = [safe, safe]
+    put(fns, safe)
+    deny!(fs:read) {
+        for f in fns {
+            println(f())
+        }
+    }
+}

@@ -124,6 +124,98 @@ pub struct InferenceEngine {
     /// `cap_cycle_nodes`. `Rc` so a resolution can hold it without cloning
     /// the set or keeping the `RefCell` borrowed across the walk.
     cap_cycle_cache: std::cell::RefCell<Option<std::rc::Rc<std::collections::HashSet<CapVarId>>>>,
+    /// Capability-row variables that stand for a STORAGE LOCATION (a "slot"):
+    /// a struct field, an enum payload field, a `let`-annotated binding, the
+    /// element row of an array / map literal, a generic type variable's
+    /// binding. LEDGER root R2.
+    ///
+    /// A slot's row is the UNION of every closure ever stored into it, so a
+    /// store into a slot that is already bound must WIDEN it. Before R2 the
+    /// first store bound the var, every later store met a resolved (closed)
+    /// row, hit the closed/closed no-op in `unify`, and was dropped: a
+    /// privileged closure stored second never reached the row that `deny!`
+    /// judges.
+    ///
+    /// Only these vars are widened once bound. A function's own total-row var
+    /// and its parameter / return vars are NOT slots: their binding is the
+    /// declaration's fact (or is freshened per call site), and widening one
+    /// from inside a body would silently change what every caller is charged.
+    slot_cap_vars: std::collections::HashSet<CapVarId>,
+    /// The subset of `slot_cap_vars` that is storage the WHOLE PROGRAM shares:
+    /// a struct field, an enum payload field, a global binding. Everything
+    /// else (a local's annotation, a literal's element row, a generalized
+    /// binding) is local to the function being checked.
+    ///
+    /// The difference matters when a row is copied into a call site's type
+    /// (`instantiate_row`). A local slot's binding can mention the callee's
+    /// own row-polymorphic parameter vars, and those must be remapped to the
+    /// call site's fresh copies, so a local slot is flattened there like any
+    /// other var. A global slot is shared by every function in the program,
+    /// so a call site that flattened it would freeze it at the first value
+    /// stored into it: it stays a reference.
+    global_slot_cap_vars: std::collections::HashSet<CapVarId>,
+    /// The declaration body being checked right now, if any: its polymorphic
+    /// cap vars (the row vars of its parameters, which every call site
+    /// freshens) and the global slots its body widened. See
+    /// `begin_store_effects`.
+    effect_scope: Option<EffectScope>,
+    /// What a declaration's body stores into GLOBAL slots through its own
+    /// parameters, keyed by the declaration's own-row var:
+    /// `(slot, the declaration's polymorphic vars that slot now holds)`.
+    /// Replayed at every call site with that call's fresh copy of the vars.
+    store_effects: HashMap<CapVarId, Vec<(CapVarId, CapRow)>>,
+    /// Row vars of the SIGNATURE of a lambda whose body is being checked right
+    /// now (a count, because lambdas nest). A declaration's own signature vars
+    /// are `effect_scope.poly`. See `is_frozen`.
+    frozen_cap_vars: HashMap<CapVarId, u32>,
+    /// The row vars of a lambda's own ANNOTATED parameters. A lambda is one
+    /// monomorphic value, so every call site and every higher-order use of it
+    /// feeds the SAME parameter row: it is a slot that is widened from either
+    /// side of a flow (`unify_rows` rule 2 widens it instead of skipping it
+    /// once it is bound).
+    lambda_param_cap_vars: std::collections::HashSet<CapVarId>,
+    /// True while `unify` is inside the PARAMETER types of a function type (an
+    /// odd number of levels deep). A parameter position is contravariant: the
+    /// value the EXPECTED function receives flows into the FOUND function's
+    /// parameter, the opposite way to the function value itself. `unify_rows`
+    /// is told which way a flow goes by swapping its arguments.
+    contravariant: bool,
+    /// The row vars that stand for the STORAGE of a container the declaration
+    /// being checked was HANDED: the element row of an array / map / set
+    /// parameter, a generic argument of a struct parameter, the target of a
+    /// `&mut` parameter. They are a subset of `slot_cap_vars`.
+    ///
+    /// Such a row is the CALLER's storage: an index assignment, a `push` or a
+    /// field store in the body writes into the caller's container. The body
+    /// must not bind it (that would tell every caller its container holds
+    /// exactly what the body stored, and the body's own reads of the
+    /// container would be charged only that), so the store is recorded in
+    /// `EffectScope::param_stores` and replayed at every call into the slot
+    /// the argument came from. See `record_param_store` / `store_into_input`.
+    input_storage_cap_vars: std::collections::HashSet<CapVarId>,
+    /// Stores a call replayed into a container whose call-site storage var is
+    /// not bound yet (the arguments are unified after the callee's reference is
+    /// typed, and a function value is called later still): `copy var -> rows`.
+    /// Flushed by `bind_cap_var` the moment the copy is bound to the slot the
+    /// argument came from.
+    deferred_input_stores: HashMap<CapVarId, Vec<CapRow>>,
+    /// The input-storage vars (`input_storage_cap_vars`) that belong to a LAMBDA's
+    /// annotated container parameters, and what the lambda body stored into them.
+    /// A lambda is one monomorphic value, so there is no per-call copy of the var
+    /// and no replay: the stores are re-applied to the slot of every argument the
+    /// var is bound to (`bind_cap_var`), the moment it is bound to it.
+    lambda_input_cap_vars: std::collections::HashSet<CapVarId>,
+    lambda_input_stores: HashMap<CapVarId, Vec<CapRow>>,
+}
+
+/// See `InferenceEngine::effect_scope`.
+#[derive(Debug, Default)]
+struct EffectScope {
+    poly: std::collections::HashSet<CapVarId>,
+    touched: Vec<CapVarId>,
+    /// Stores into the storage of a container the body was handed:
+    /// `(the parameter's storage var, the row stored)`.
+    param_stores: Vec<(CapVarId, CapRow)>,
 }
 
 impl Default for InferenceEngine {
@@ -143,6 +235,17 @@ impl InferenceEngine {
             cap_substitutions: HashMap::new(),
             cap_resolve_cache: std::cell::RefCell::new(HashMap::new()),
             cap_cycle_cache: std::cell::RefCell::new(None),
+            slot_cap_vars: std::collections::HashSet::new(),
+            global_slot_cap_vars: std::collections::HashSet::new(),
+            effect_scope: None,
+            store_effects: HashMap::new(),
+            frozen_cap_vars: HashMap::new(),
+            lambda_param_cap_vars: std::collections::HashSet::new(),
+            contravariant: false,
+            input_storage_cap_vars: std::collections::HashSet::new(),
+            deferred_input_stores: HashMap::new(),
+            lambda_input_cap_vars: std::collections::HashSet::new(),
+            lambda_input_stores: HashMap::new(),
         }
     }
 
@@ -157,14 +260,45 @@ impl InferenceEngine {
     /// unification, invariant to it, and by whatever populates a function's
     /// OWN inferred row once its body has been walked).
     pub fn bind_cap_var(&mut self, id: CapVarId, row: CapRow) {
+        if let Some(scope) = self.effect_scope.as_mut() {
+            if self.global_slot_cap_vars.contains(&id) {
+                scope.touched.push(id);
+            }
+        }
         // A var already bound is UNIONED with the new row rather than
         // overwritten -- mirrors CapRow::union's "more information can only
         // widen, never shrink" direction, and avoids a last-write-wins bug
         // if the same var is bound from two different call sites (e.g. a
         // recursive function whose own row-var is touched more than once
         // while its body is walked).
+        //
+        // A row never needs to mention the var it is bound to: `id = row | id`
+        // says nothing `id >= row` does not, and keeping the self edge would
+        // turn a slot that meets itself into a one-node cycle that
+        // `resolve_cap_var` reports as an OPEN var. A row that was ONLY that
+        // self reference adds no information at all, so it must not turn an
+        // unbound var into a bound-empty one.
+        let row = match row {
+            CapRow::Resolved { concrete, vars } if vars.contains(&id) => {
+                let vars: Vec<CapVarId> = vars.into_iter().filter(|v| *v != id).collect();
+                if concrete == crate::ty::CapBits::EMPTY && vars.is_empty() {
+                    return;
+                }
+                CapRow::Resolved { concrete, vars }
+            }
+            other => other,
+        };
         let merged = match self.cap_substitutions.get(&id) {
-            Some(existing) => existing.union(&row),
+            Some(existing) => {
+                let merged = existing.union(&row);
+                if merged == *existing {
+                    // Widening by a row the var already covers changes
+                    // nothing, so the memo stays valid. R2 makes this the
+                    // common case: every store into a slot calls here.
+                    return;
+                }
+                merged
+            }
             None => row,
         };
         self.cap_substitutions.insert(id, merged);
@@ -176,6 +310,20 @@ impl InferenceEngine {
         // times over between binds.
         self.cap_resolve_cache.borrow_mut().clear();
         *self.cap_cycle_cache.borrow_mut() = None;
+        if !self.deferred_input_stores.is_empty() {
+            if let Some(rows) = self.deferred_input_stores.remove(&id) {
+                for row in rows {
+                    self.store_into_input(id, row);
+                }
+            }
+        }
+        if !self.lambda_input_stores.is_empty() {
+            if let Some(rows) = self.lambda_input_stores.get(&id).cloned() {
+                for row in rows {
+                    self.store_into_input(id, row);
+                }
+            }
+        }
     }
 
     /// Resolve a `CapRow`, recursively chasing every var in it through
@@ -385,6 +533,11 @@ impl InferenceEngine {
     ///   expressed in terms of the parameter's own row var), so resolving
     ///   it here is a no-op and freshening is correct.
     ///
+    /// A GLOBAL slot var (a struct field's or enum payload's row) is the one
+    /// exception to "resolve first": it is shared by every function in the
+    /// program, so it is carried into the call site as a reference rather than
+    /// as the closed copy of what it holds today (`resolve_cap_row_keeping_slots`).
+    ///
     /// Resolving first is what tells the two apart: nothing else about a
     /// `TypeExpr::Function` occurrence at creation time distinguishes them.
     /// Known ordering residual (disclosed, not silently assumed away): this
@@ -397,13 +550,662 @@ impl InferenceEngine {
     /// spec §10's self-recursive-HOF residual, not a new soundness claim
     /// this stage makes and fails to keep.
     pub fn instantiate_row(&self, row: &CapRow, cap_var_map: &HashMap<CapVarId, CapVarId>) -> CapRow {
-        let resolved = self.resolve_cap_row(row);
+        let resolved = self.resolve_cap_row_keeping_slots(row);
         let mut out = CapRow::closed(resolved.concrete_bits());
         for &v in resolved.var_ids() {
             let mapped = cap_var_map.get(&v).copied().unwrap_or(v);
             out = out.union(&CapRow::var(mapped));
         }
         out
+    }
+
+    /// Like `resolve_cap_row`, but a GLOBAL slot var (see
+    /// `global_slot_cap_vars`) is not chased: it stays in the result as an
+    /// open var so the reader keeps a reference to the storage location
+    /// instead of a closed copy of what it holds today.
+    ///
+    /// Every row that is about to be copied into a call site's type
+    /// (`instantiate_row`) goes through here. Flattening a struct field's slot
+    /// at that point froze its row at the moment of the reference: a closure
+    /// stored into the field afterwards never reached the call that read it.
+    pub fn resolve_cap_row_keeping_slots(&self, row: &CapRow) -> CapRow {
+        let (concrete, vars) = match row {
+            CapRow::Unknown => return CapRow::unknown(),
+            CapRow::Resolved { concrete, vars } => (*concrete, vars),
+        };
+        if vars.is_empty() {
+            return row.clone();
+        }
+        let mut bits = concrete;
+        let mut open: Vec<CapVarId> = Vec::new();
+        let mut visited: std::collections::HashSet<CapVarId> = std::collections::HashSet::new();
+        let mut stack: Vec<CapVarId> = vars.clone();
+        while let Some(cur) = stack.pop() {
+            if !visited.insert(cur) {
+                continue;
+            }
+            if self.global_slot_cap_vars.contains(&cur) {
+                open.push(cur);
+                continue;
+            }
+            match self.cap_substitutions.get(&cur) {
+                None => open.push(cur),
+                Some(CapRow::Unknown) => return CapRow::unknown(),
+                Some(CapRow::Resolved { concrete, vars }) => {
+                    bits = bits.union(*concrete);
+                    for &w in vars {
+                        stack.push(w);
+                    }
+                }
+            }
+        }
+        let cycles = self.cap_cycle_nodes();
+        for &c in cycles.iter() {
+            if visited.contains(&c) && !self.global_slot_cap_vars.contains(&c) {
+                open.push(c);
+            }
+        }
+        open.sort_unstable();
+        open.dedup();
+        CapRow::Resolved {
+            concrete: bits,
+            vars: open,
+        }
+    }
+
+    /// Start recording the store effects of ONE declaration body.
+    ///
+    /// A body that hands one of its parameters to a global slot
+    /// (`Plugin { run: f }`, `p.run = g`, `self.items = push(self.items, ..)`)
+    /// binds the slot to the declaration's OWN parameter var. No call site ever
+    /// binds that var: each one freshens a copy of it, so the closure the
+    /// caller passed never reached the slot, and a registration helper
+    /// (`register(reg, name, handler)`) stored nothing the checker could see.
+    /// `end_store_effects` keeps what the body stored; `replay_store_effects`
+    /// re-applies it at each call with that call's copy of the vars.
+    pub fn begin_store_effects(&mut self, poly: &[CapVarId]) {
+        self.effect_scope = Some(EffectScope {
+            poly: poly.iter().copied().collect(),
+            touched: Vec::new(),
+            param_stores: Vec::new(),
+        });
+    }
+
+    /// Finish the scope opened by `begin_store_effects` and file what the body
+    /// stored under the declaration's own-row var `own`.
+    pub fn end_store_effects(&mut self, own: Option<CapVarId>) {
+        let Some(scope) = self.effect_scope.take() else {
+            return;
+        };
+        let Some(own) = own else {
+            return;
+        };
+        if scope.poly.is_empty() || (scope.touched.is_empty() && scope.param_stores.is_empty()) {
+            return;
+        }
+        let mut seen: std::collections::HashSet<CapVarId> = std::collections::HashSet::new();
+        let mut found: Vec<(CapVarId, CapRow)> = Vec::new();
+        // What the body wrote into the storage of a container it was handed.
+        // The row stored may be closed bits (a privileged function the body
+        // names), the body's own polymorphic vars (a parameter it stores) or a
+        // global slot (a field it copies in), so all three are kept.
+        for (storage, row) in &scope.param_stores {
+            let flat = self.resolve_cap_row_keeping_slots(row);
+            let bits = flat.concrete_bits();
+            let vars: Vec<CapVarId> = flat
+                .var_ids()
+                .iter()
+                .copied()
+                .filter(|v| {
+                    v != storage
+                        && (scope.poly.contains(v) || self.global_slot_cap_vars.contains(v))
+                })
+                .collect();
+            if bits == crate::ty::CapBits::EMPTY && vars.is_empty() {
+                continue;
+            }
+            let entry = (*storage, CapRow::Resolved { concrete: bits, vars });
+            if !found.contains(&entry) {
+                found.push(entry);
+            }
+        }
+        for slot in scope.touched {
+            if !seen.insert(slot) {
+                continue;
+            }
+            let Some(binding) = self.cap_substitutions.get(&slot).cloned() else {
+                continue;
+            };
+            // Chase through the body's local slots, stop at global ones: the
+            // polymorphic var may be reached through a local the body used.
+            let flat = self.resolve_cap_row_keeping_slots(&binding);
+            let vars: Vec<CapVarId> = flat
+                .var_ids()
+                .iter()
+                .copied()
+                .filter(|v| scope.poly.contains(v))
+                .collect();
+            if !vars.is_empty() {
+                found.push((
+                    slot,
+                    CapRow::Resolved {
+                        concrete: crate::ty::CapBits::EMPTY,
+                        vars,
+                    },
+                ));
+            }
+        }
+        if found.is_empty() {
+            return;
+        }
+        let entry = self.store_effects.entry(own).or_default();
+        for e in found {
+            if !entry.contains(&e) {
+                entry.push(e);
+            }
+        }
+    }
+
+    /// Re-apply the stores a declaration's body made into global slots at one
+    /// reference to it. `cap_var_map` is that reference's freshening of the
+    /// declaration's polymorphic vars, so the slot ends up holding the row of
+    /// the closure THIS call passed.
+    pub fn replay_store_effects(
+        &mut self,
+        own: CapVarId,
+        cap_var_map: &HashMap<CapVarId, CapVarId>,
+    ) {
+        let Some(effects) = self.store_effects.get(&own).cloned() else {
+            return;
+        };
+        for (slot, row) in effects {
+            let inst = self.instantiate_row(&row, cap_var_map);
+            if self.input_storage_cap_vars.contains(&slot) {
+                // The body stored into a container it was handed: widen the
+                // slot THIS call's argument came from (`store_into_input`).
+                if let Some(&target) = cap_var_map.get(&slot) {
+                    if self.cap_substitutions.contains_key(&target) {
+                        self.store_into_input(target, inst);
+                    } else {
+                        self.deferred_input_stores.entry(target).or_default().push(inst);
+                    }
+                }
+            } else {
+                self.bind_cap_var(slot, inst);
+            }
+        }
+    }
+
+    /// Remember that the body being checked wrote `row` into the storage var
+    /// `storage` of a container it was handed.
+    fn record_param_store(&mut self, storage: CapVarId, row: CapRow) {
+        if let Some(scope) = self.effect_scope.as_mut() {
+            let entry = (storage, row);
+            if !scope.param_stores.contains(&entry) {
+                scope.param_stores.push(entry);
+            }
+        }
+    }
+
+    /// Remember that a lambda body wrote `row` into the storage var `storage` of
+    /// one of its annotated container parameters, and write it into whatever
+    /// slot that var is already bound to (see `lambda_input_stores`).
+    fn record_lambda_store(&mut self, storage: CapVarId, row: CapRow) {
+        let rows = self.lambda_input_stores.entry(storage).or_default();
+        if !rows.contains(&row) {
+            rows.push(row.clone());
+        }
+        self.store_into_input(storage, row);
+    }
+
+    /// Like `mark_input_storage`, for the annotated container parameters of a
+    /// lambda (one monomorphic value: see `lambda_input_cap_vars`).
+    pub fn mark_lambda_input_storage(&mut self, param_ty: &Type) {
+        let mut vars: Vec<CapVarId> = Vec::new();
+        Self::storage_rows_in(param_ty, false, &mut vars);
+        for v in vars {
+            self.slot_cap_vars.insert(v);
+            self.input_storage_cap_vars.insert(v);
+            self.lambda_input_cap_vars.insert(v);
+        }
+    }
+
+    /// Write `row` into the storage the call-site copy `target` of a
+    /// parameter's storage var stands for: every slot reachable from it (the
+    /// caller's array literal slot, a struct field's slot, ...) is widened.
+    ///
+    /// `target` is the call's fresh copy and is bound by unifying the argument
+    /// against the parameter, so this must run AFTER the arguments are unified.
+    /// When no slot is reachable (the argument was a temporary with a closed
+    /// row, or the call reached a function value and the arguments are not
+    /// known yet) there is no storage a later read could see, and nothing is
+    /// bound.
+    ///
+    /// A slot that is itself the storage of a container the ENCLOSING body was
+    /// handed (a helper passing its own parameter on) is recorded as a store of
+    /// that body instead of being bound, so helpers compose.
+    fn store_into_input(&mut self, target: CapVarId, row: CapRow) {
+        let mut slots: Vec<CapVarId> = Vec::new();
+        let mut stack: Vec<CapVarId> = vec![target];
+        let mut seen: std::collections::HashSet<CapVarId> = std::collections::HashSet::new();
+        while let Some(v) = stack.pop() {
+            if !seen.insert(v) {
+                continue;
+            }
+            if v != target && self.slot_cap_vars.contains(&v) {
+                slots.push(v);
+            }
+            if let Some(CapRow::Resolved { vars, .. }) = self.cap_substitutions.get(&v) {
+                stack.extend(vars.iter().copied());
+            }
+        }
+        slots.sort_unstable();
+        for s in slots {
+            if self.input_storage_cap_vars.contains(&s) && self.is_frozen(s) {
+                self.record_param_store(s, row.clone());
+            } else {
+                self.bind_cap_var(s, row.clone());
+            }
+        }
+    }
+
+    /// Mark the rows that are the STORAGE of the containers in `param_types`
+    /// (see `input_storage_cap_vars`). The value's own row is not storage: a
+    /// parameter that IS a function carries the authority of the closure the
+    /// caller passed, and the body cannot store into it.
+    pub fn mark_input_storage(&mut self, param_types: &[Type]) {
+        let mut vars: Vec<CapVarId> = Vec::new();
+        for t in param_types {
+            Self::storage_rows_in(t, false, &mut vars);
+        }
+        for v in vars {
+            self.slot_cap_vars.insert(v);
+            self.input_storage_cap_vars.insert(v);
+        }
+    }
+
+    fn storage_rows_in(ty: &Type, in_container: bool, out: &mut Vec<CapVarId>) {
+        match ty {
+            Type::Function { caps, .. } => {
+                if in_container {
+                    out.extend_from_slice(caps.var_ids());
+                }
+            }
+            Type::Array { element, .. } | Type::Set { element } => {
+                Self::storage_rows_in(element, true, out)
+            }
+            Type::Map { key, value } => {
+                Self::storage_rows_in(key, true, out);
+                Self::storage_rows_in(value, true, out);
+            }
+            Type::Struct { generics, .. } => {
+                for g in generics {
+                    Self::storage_rows_in(g, true, out);
+                }
+            }
+            Type::Reference { inner, mutable } | Type::Pointer { inner, mutable } => {
+                Self::storage_rows_in(inner, in_container || *mutable, out)
+            }
+            Type::Shared { inner } | Type::Weak { inner } => {
+                Self::storage_rows_in(inner, in_container, out)
+            }
+            _ => {}
+        }
+    }
+
+    /// The row a reference to a declaration is charged: its own total, chased
+    /// as far as it is known today, except that a slot var stays a reference
+    /// (see `resolve_cap_row_keeping_slots`).
+    pub fn resolve_own_cap_row(&self, own: CapVarId) -> CapRow {
+        self.resolve_cap_row_keeping_slots(&CapRow::var(own))
+    }
+
+    /// Mint a fresh capability-row variable that stands for a storage
+    /// location. See `slot_cap_vars`.
+    pub fn fresh_slot_cap_var(&mut self) -> CapVarId {
+        let id = self.fresh_cap_var();
+        self.slot_cap_vars.insert(id);
+        id
+    }
+
+    /// Mark every capability-row variable written inside `ty` as a slot.
+    /// Used on the types of declared storage: struct fields, enum payloads,
+    /// annotated `let` bindings. `global` is true for storage the whole
+    /// program shares (a field, a payload, a global binding) and false for a
+    /// local binding's annotation; see `global_slot_cap_vars`.
+    pub fn mark_slot_rows(&mut self, ty: &Type, global: bool) {
+        match ty {
+            Type::Function { ret, caps, .. } => {
+                for &v in caps.var_ids() {
+                    self.slot_cap_vars.insert(v);
+                    if global {
+                        self.global_slot_cap_vars.insert(v);
+                    }
+                }
+                // Parameter rows are the signature's polymorphism, not storage
+                // (see `generalize_rows`); only the value's own row and the
+                // row of what it returns are slots.
+                self.mark_slot_rows(ret, global);
+            }
+            Type::Array { element, .. } | Type::Set { element } => {
+                self.mark_slot_rows(element, global)
+            }
+            Type::Tuple { elements } => {
+                for e in elements {
+                    self.mark_slot_rows(e, global);
+                }
+            }
+            Type::Map { key, value } => {
+                self.mark_slot_rows(key, global);
+                self.mark_slot_rows(value, global);
+            }
+            Type::Option { inner }
+            | Type::Reference { inner, .. }
+            | Type::Shared { inner }
+            | Type::Weak { inner }
+            | Type::Pointer { inner, .. } => self.mark_slot_rows(inner, global),
+            Type::Result { ok, err } => {
+                self.mark_slot_rows(ok, global);
+                self.mark_slot_rows(err, global);
+            }
+            Type::Struct { generics, .. } | Type::Enum { generics, .. } => {
+                for g in generics {
+                    self.mark_slot_rows(g, global);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// True iff a function type appears anywhere inside `ty`.
+    pub fn type_has_fn(ty: &Type) -> bool {
+        match ty {
+            Type::Function { .. } => true,
+            Type::Array { element, .. } | Type::Set { element } => Self::type_has_fn(element),
+            Type::Tuple { elements } => elements.iter().any(Self::type_has_fn),
+            Type::Map { key, value } => Self::type_has_fn(key) || Self::type_has_fn(value),
+            Type::Option { inner }
+            | Type::Reference { inner, .. }
+            | Type::Shared { inner }
+            | Type::Weak { inner }
+            | Type::Pointer { inner, .. } => Self::type_has_fn(inner),
+            Type::Result { ok, err } => Self::type_has_fn(ok) || Self::type_has_fn(err),
+            Type::Struct { generics, .. } | Type::Enum { generics, .. } => {
+                generics.iter().any(Self::type_has_fn)
+            }
+            _ => false,
+        }
+    }
+
+    /// Rewrite every function row inside `ty` into a reference to a slot var,
+    /// so a later store into a location of this type can WIDEN the row.
+    ///
+    /// A row that is already nothing but slot vars is kept when
+    /// `keep_slot_refs` (the type IS that storage location: a generic type
+    /// variable bound to a container's element type). Any other row (a closed
+    /// copy a call returned, a lambda's accumulated charge, a function
+    /// reference) gets a fresh slot bound to it, so widening the slot never
+    /// touches the vars the row mentions.
+    pub fn generalize_rows(&mut self, ty: &Type, keep_slot_refs: bool) -> Type {
+        if !Self::type_has_fn(ty) {
+            return ty.clone();
+        }
+        match ty {
+            Type::Function { params, ret, caps } => {
+                // Only the value's OWN row and the row of what it returns are
+                // storage. A parameter's row is the signature's polymorphism:
+                // the body's charge for calling that parameter is expressed in
+                // THAT var, so a call site binds it by unifying the argument
+                // into the parameter type. Replacing it with a fresh slot cuts
+                // that link and the argument's authority never reaches the
+                // body's charge.
+                let ret = Box::new(self.generalize_rows(ret, keep_slot_refs));
+                let caps = self.slot_row_for(caps, keep_slot_refs);
+                Type::Function {
+                    params: params.clone(),
+                    ret,
+                    caps,
+                }
+            }
+            Type::Array { element, size } => Type::Array {
+                element: Box::new(self.generalize_rows(element, keep_slot_refs)),
+                size: *size,
+            },
+            Type::Set { element } => Type::Set {
+                element: Box::new(self.generalize_rows(element, keep_slot_refs)),
+            },
+            Type::Tuple { elements } => Type::Tuple {
+                elements: elements
+                    .iter()
+                    .map(|e| self.generalize_rows(e, keep_slot_refs))
+                    .collect(),
+            },
+            Type::Map { key, value } => Type::Map {
+                key: Box::new(self.generalize_rows(key, keep_slot_refs)),
+                value: Box::new(self.generalize_rows(value, keep_slot_refs)),
+            },
+            Type::Option { inner } => Type::Option {
+                inner: Box::new(self.generalize_rows(inner, keep_slot_refs)),
+            },
+            Type::Result { ok, err } => Type::Result {
+                ok: Box::new(self.generalize_rows(ok, keep_slot_refs)),
+                err: Box::new(self.generalize_rows(err, keep_slot_refs)),
+            },
+            Type::Struct { name, generics } => Type::Struct {
+                name: name.clone(),
+                generics: generics
+                    .iter()
+                    .map(|g| self.generalize_rows(g, keep_slot_refs))
+                    .collect(),
+            },
+            Type::Enum { name, generics } => Type::Enum {
+                name: name.clone(),
+                generics: generics
+                    .iter()
+                    .map(|g| self.generalize_rows(g, keep_slot_refs))
+                    .collect(),
+            },
+            Type::Reference { inner, mutable } => Type::Reference {
+                inner: Box::new(self.generalize_rows(inner, keep_slot_refs)),
+                mutable: *mutable,
+            },
+            Type::Shared { inner } => Type::Shared {
+                inner: Box::new(self.generalize_rows(inner, keep_slot_refs)),
+            },
+            Type::Weak { inner } => Type::Weak {
+                inner: Box::new(self.generalize_rows(inner, keep_slot_refs)),
+            },
+            Type::Pointer { inner, mutable } => Type::Pointer {
+                inner: Box::new(self.generalize_rows(inner, keep_slot_refs)),
+                mutable: *mutable,
+            },
+            other => other.clone(),
+        }
+    }
+
+    fn slot_row_for(&mut self, row: &CapRow, keep_slot_refs: bool) -> CapRow {
+        match row {
+            // Terminal: an unresolvable row stays unresolvable.
+            CapRow::Unknown => CapRow::Unknown,
+            CapRow::Resolved { concrete, vars } => {
+                if keep_slot_refs
+                    && concrete.is_empty()
+                    && !vars.is_empty()
+                    && vars.iter().all(|v| self.slot_cap_vars.contains(v))
+                {
+                    return row.clone();
+                }
+                let slot = self.fresh_slot_cap_var();
+                self.bind_cap_var(slot, row.clone());
+                CapRow::var(slot)
+            }
+        }
+    }
+
+    /// The element type of an array / map literal whose first element has
+    /// type `first`: the same shape, with every function row replaced by a
+    /// fresh slot (bound to the first element's row), so that unifying the
+    /// remaining elements into it UNIONS their rows. Typing the literal by its
+    /// first element alone dropped every later element's row.
+    pub fn literal_slot_type(&mut self, first: &Type) -> Type {
+        let resolved = self.resolve(first);
+        if !Self::type_has_fn(&resolved) {
+            return first.clone();
+        }
+        self.generalize_rows(&resolved, false)
+    }
+
+    /// Capability-row unification for two function types that flow together.
+    /// `c1` is the DESTINATION row (the expected / declared / slot side) and
+    /// `c2` the row flowing into it; below a function type's parameter list the
+    /// caller swaps them, because a parameter position is contravariant.
+    ///
+    /// A var on the destination side is bound to `c2` when it is still
+    /// unbound (the original behaviour) OR when it is a slot: a slot that is
+    /// already bound is WIDENED, because the destination row is the union of
+    /// everything stored into it. `bind_cap_var` unions, so rows only grow.
+    /// A bound var that is not a slot (a function's own total) is left alone:
+    /// its binding is the declaration's fact, not storage. A var that is the
+    /// storage of a container the body being checked was HANDED is never
+    /// bound: the store is recorded and replayed at the call.
+    ///
+    /// When the destination is fully known (closed), the original rule
+    /// applies: the still-unbound vars of the source take the destination's
+    /// row. It never applies to a SIGNATURE var of the body being checked
+    /// (`is_frozen`): that var stands for whatever the caller passes, and
+    /// binding it narrows the caller's argument away. A lambda's annotated
+    /// parameter row is widened, not skipped, once it is bound.
+    fn unify_rows(&mut self, c1: &CapRow, c2: &CapRow) {
+        if c1 == c2 || c1.is_unknown() {
+            return;
+        }
+        // What the destination holds BEFORE this flow widens it. A destination
+        // that is fully known (closed) hands its row to the source's still
+        // unbound vars -- the original rule, and the one a parameter position
+        // relies on: `map(tools, invoke)` unifies the element row (the
+        // destination) with `invoke`'s own parameter row (an unbound var of
+        // the source), and that var must take the element's row.
+        let before = self.resolve_cap_row(c1);
+        for &v in c1.var_ids() {
+            if self.input_storage_cap_vars.contains(&v) && self.is_frozen(v) {
+                // A store into a container this body was handed (LEDGER root
+                // R2, item 112): never bind the parameter's storage var.
+                if self.lambda_input_cap_vars.contains(&v) {
+                    self.record_lambda_store(v, c2.clone());
+                } else {
+                    self.record_param_store(v, c2.clone());
+                }
+                continue;
+            }
+            if !self.cap_substitutions.contains_key(&v) || self.slot_cap_vars.contains(&v) {
+                self.bind_cap_var(v, c2.clone());
+            }
+        }
+        if before.is_closed() && !c2.is_unknown() {
+            for &v in c2.var_ids() {
+                let open = !self.cap_substitutions.contains_key(&v);
+                if (open || self.lambda_param_cap_vars.contains(&v)) && !self.is_frozen(v) {
+                    self.bind_cap_var(v, before.clone());
+                }
+            }
+        }
+    }
+
+    /// True iff `v` is a row var of the SIGNATURE of a function body that is
+    /// being checked right now: the declaration's polymorphic parameter and
+    /// return vars (`effect_scope.poly`), or the row vars in the parameter types
+    /// of a lambda whose body is open (`frozen_cap_vars`).
+    ///
+    /// A signature var is an INPUT of the body: it stands for whatever the
+    /// caller passes. A flow inside the body must not bind it to anything
+    /// narrower than that, or every caller is told the parameter is that
+    /// narrower row and the argument's authority is never charged (LEDGER root
+    /// R2, the returned-container shape: `let mut a = [safe]; a = push(a, g)`
+    /// bound `g`'s var to `safe`'s empty row).
+    fn is_frozen(&self, v: CapVarId) -> bool {
+        self.frozen_cap_vars.contains_key(&v)
+            || self.effect_scope.as_ref().is_some_and(|s| s.poly.contains(&v))
+    }
+
+    /// Every row var that appears anywhere in `ty`: the value's own row, the
+    /// rows of its parameters and result, and the rows of its element,
+    /// payload and generic argument types.
+    pub fn row_vars_in(ty: &Type, out: &mut Vec<CapVarId>) {
+        match ty {
+            Type::Function { params, ret, caps } => {
+                out.extend_from_slice(caps.var_ids());
+                for p in params {
+                    Self::row_vars_in(p, out);
+                }
+                Self::row_vars_in(ret, out);
+            }
+            Type::Array { element, .. } | Type::Set { element } => Self::row_vars_in(element, out),
+            Type::Tuple { elements } => {
+                for e in elements {
+                    Self::row_vars_in(e, out);
+                }
+            }
+            Type::Map { key, value } => {
+                Self::row_vars_in(key, out);
+                Self::row_vars_in(value, out);
+            }
+            Type::Option { inner }
+            | Type::Reference { inner, .. }
+            | Type::Shared { inner }
+            | Type::Weak { inner }
+            | Type::Pointer { inner, .. } => Self::row_vars_in(inner, out),
+            Type::Result { ok, err } => {
+                Self::row_vars_in(ok, out);
+                Self::row_vars_in(err, out);
+            }
+            Type::Struct { generics, .. } | Type::Enum { generics, .. } => {
+                for g in generics {
+                    Self::row_vars_in(g, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Freeze the row vars in `tys` for the duration of a lambda body (see
+    /// `is_frozen`). Returns what was frozen, to hand back to `unfreeze_rows`.
+    pub fn freeze_rows_of(&mut self, tys: &[Type]) -> Vec<CapVarId> {
+        let mut vars: Vec<CapVarId> = Vec::new();
+        for t in tys {
+            let resolved = self.resolve(t);
+            Self::row_vars_in(&resolved, &mut vars);
+        }
+        vars.sort_unstable();
+        vars.dedup();
+        for &v in &vars {
+            *self.frozen_cap_vars.entry(v).or_insert(0) += 1;
+        }
+        vars
+    }
+
+    /// End the freeze opened by `freeze_rows_of`.
+    pub fn unfreeze_rows(&mut self, vars: Vec<CapVarId>) {
+        for v in vars {
+            if let Some(n) = self.frozen_cap_vars.get_mut(&v) {
+                *n -= 1;
+                if *n == 0 {
+                    self.frozen_cap_vars.remove(&v);
+                }
+            }
+        }
+    }
+
+    /// Mark the rows of a lambda's own annotated parameter type as storage.
+    /// A lambda is one monomorphic value: each call site (and each
+    /// higher-order use of it) feeds the SAME parameter row, so the row is the
+    /// union of everything it was ever called with.
+    pub fn mark_lambda_param_rows(&mut self, ty: &Type) {
+        self.mark_slot_rows(ty, false);
+        if let Type::Function { caps, .. } = ty {
+            for &v in caps.var_ids() {
+                self.lambda_param_cap_vars.insert(v);
+            }
+        }
     }
 
     /// Attach trait bounds to a (fresh, call-site) generic type variable.
@@ -593,12 +1395,14 @@ impl InferenceEngine {
                 Type::Function {
                     params: out,
                     ret: Box::new(self.resolve_bounded(ret, budget)?),
-                    // Capability rows are chased separately (own cycle
-                    // guard in `resolve_cap_row`), not charged against the
-                    // node budget above -- a row is bounded by its own
-                    // (small, finite) var count, never structurally
-                    // recursive the way a paired generic type can be.
-                    caps: self.resolve_cap_row(caps),
+                    // The row is carried AS WRITTEN, not flattened to the
+                    // bits its vars hold today (R2). A flattened row is a
+                    // closed copy: a closure stored into the slot this type
+                    // came from met that copy in `unify`, hit the
+                    // closed/closed no-op, and was dropped. Every consumer
+                    // that needs the bits (the call-site charge, the `deny!`
+                    // verdict, `instantiate_row`) resolves the row itself.
+                    caps: caps.clone(),
                 }
             }
             Type::Reference { inner, mutable } => Type::Reference {
@@ -645,6 +1449,7 @@ impl InferenceEngine {
                         .with_label(span, "recursive type detected"))
                 } else {
                     self.check_var_bounds(*id, &b, span)?;
+                    let b = self.generalize_rows(&b, true);
                     self.substitutions.insert(*id, b);
                     Ok(())
                 }
@@ -657,6 +1462,7 @@ impl InferenceEngine {
                         .with_label(span, "recursive type detected"))
                 } else {
                     self.check_var_bounds(*id, &a, span)?;
+                    let a = self.generalize_rows(&a, true);
                     self.substitutions.insert(*id, a);
                     Ok(())
                 }
@@ -839,39 +1645,33 @@ impl InferenceEngine {
                     ))
                     .with_label(span, "different parameter counts"));
                 }
+                // A parameter position is contravariant (LEDGER root R2): what
+                // the EXPECTED function hands its parameter flows into the
+                // FOUND function's parameter. Rows met below here are told so.
+                let outer_contravariant = self.contravariant;
+                self.contravariant = !outer_contravariant;
+                let mut param_result: Result<(), Diagnostic> = Ok(());
                 for (t1, t2) in p1.iter().zip(p2.iter()) {
-                    self.unify(t1, t2, span)?;
+                    if let Err(e) = self.unify(t1, t2, span) {
+                        param_result = Err(e);
+                        break;
+                    }
                 }
+                self.contravariant = outer_contravariant;
+                param_result?;
                 self.unify(r1, r2, span)?;
                 // Capability-row unification (spec §2.3): never a hard
                 // error -- accept/reject for a function TYPE is decided
                 // entirely by params/ret above (Stage 1 adds no new
-                // rejection). A bare row var on either side binds to the
-                // other side's row (mirroring the ordinary `Type::Var`
-                // arms above); two closed rows UNION rather than requiring
-                // exact equality, which is intentionally MORE permissive
-                // than a naive equality check would be (spec §8's
-                // documented compatibility note: mixing two closed-row
-                // closures, e.g. in an array literal, must still unify).
-                match (c1.is_closed(), c2.is_closed()) {
-                    (false, _) => {
-                        for &v in c1.var_ids() {
-                            self.bind_cap_var(v, c2.clone());
-                        }
-                    }
-                    (true, false) => {
-                        for &v in c2.var_ids() {
-                            self.bind_cap_var(v, c1.clone());
-                        }
-                    }
-                    (true, true) => {
-                        // Both closed: nothing to bind, nothing to reject --
-                        // the union is implicit at every read site via
-                        // `resolve_cap_row`/`CapRow::union` wherever the two
-                        // flow together (e.g. an array literal's element
-                        // type is unioned explicitly by its own checker
-                        // code, not by this arm).
-                    }
+                // rejection). `c1` is the destination row, `c2` the row
+                // flowing into it; see `unify_rows` for the slot widening
+                // that closed the closed/closed no-op (LEDGER root R2). In a
+                // parameter position the flow runs the other way: `c2` is the
+                // destination.
+                if outer_contravariant {
+                    self.unify_rows(c2, c1);
+                } else {
+                    self.unify_rows(c1, c2);
                 }
                 Ok(())
             }
@@ -1033,7 +1833,7 @@ impl InferenceEngine {
     /// actually matters, spec §2.3) calls `instantiate_with_caps` directly
     /// with a real `cap_var_map` instead.
     pub fn instantiate(&self, ty: &Type, var_map: &HashMap<u32, u32>) -> Type {
-        self.instantiate_with_caps(ty, var_map, &HashMap::new())
+        self.instantiate_impl(ty, var_map, None)
     }
 
     /// Same as `instantiate`, but also remaps any `CapVarId` found inside a
@@ -1046,6 +1846,19 @@ impl InferenceEngine {
         var_map: &HashMap<u32, u32>,
         cap_var_map: &HashMap<CapVarId, CapVarId>,
     ) -> Type {
+        self.instantiate_impl(ty, var_map, Some(cap_var_map))
+    }
+
+    /// `cap_var_map == None` is the ordinary-generics entry point: the type's
+    /// rows are carried through untouched. They used to be flattened here
+    /// (`instantiate_row` resolves first), which froze a struct field's
+    /// declaration-global slot var at the first value stored into it.
+    fn instantiate_impl(
+        &self,
+        ty: &Type,
+        var_map: &HashMap<u32, u32>,
+        cap_var_map: Option<&HashMap<CapVarId, CapVarId>>,
+    ) -> Type {
         match ty {
             Type::Var(id) => {
                 if let Some(&new_id) = var_map.get(id) {
@@ -1055,63 +1868,66 @@ impl InferenceEngine {
                 }
             }
             Type::Array { element, size } => Type::Array {
-                element: Box::new(self.instantiate_with_caps(element, var_map, cap_var_map)),
+                element: Box::new(self.instantiate_impl(element, var_map, cap_var_map)),
                 size: *size,
             },
             Type::Tuple { elements } => Type::Tuple {
                 elements: elements
                     .iter()
-                    .map(|e| self.instantiate_with_caps(e, var_map, cap_var_map))
+                    .map(|e| self.instantiate_impl(e, var_map, cap_var_map))
                     .collect(),
             },
             Type::Map { key, value } => Type::Map {
-                key: Box::new(self.instantiate_with_caps(key, var_map, cap_var_map)),
-                value: Box::new(self.instantiate_with_caps(value, var_map, cap_var_map)),
+                key: Box::new(self.instantiate_impl(key, var_map, cap_var_map)),
+                value: Box::new(self.instantiate_impl(value, var_map, cap_var_map)),
             },
             Type::Set { element } => Type::Set {
-                element: Box::new(self.instantiate_with_caps(element, var_map, cap_var_map)),
+                element: Box::new(self.instantiate_impl(element, var_map, cap_var_map)),
             },
             Type::Option { inner } => Type::Option {
-                inner: Box::new(self.instantiate_with_caps(inner, var_map, cap_var_map)),
+                inner: Box::new(self.instantiate_impl(inner, var_map, cap_var_map)),
             },
             Type::Result { ok, err } => Type::Result {
-                ok: Box::new(self.instantiate_with_caps(ok, var_map, cap_var_map)),
-                err: Box::new(self.instantiate_with_caps(err, var_map, cap_var_map)),
+                ok: Box::new(self.instantiate_impl(ok, var_map, cap_var_map)),
+                err: Box::new(self.instantiate_impl(err, var_map, cap_var_map)),
             },
             Type::Struct { name, generics } => Type::Struct {
                 name: name.clone(),
                 generics: generics
                     .iter()
-                    .map(|g| self.instantiate_with_caps(g, var_map, cap_var_map))
+                    .map(|g| self.instantiate_impl(g, var_map, cap_var_map))
                     .collect(),
             },
             Type::Enum { name, generics } => Type::Enum {
                 name: name.clone(),
                 generics: generics
                     .iter()
-                    .map(|g| self.instantiate_with_caps(g, var_map, cap_var_map))
+                    .map(|g| self.instantiate_impl(g, var_map, cap_var_map))
                     .collect(),
             },
             Type::Function { params, ret, caps } => Type::Function {
                 params: params
                     .iter()
-                    .map(|p| self.instantiate_with_caps(p, var_map, cap_var_map))
+                    .map(|p| self.instantiate_impl(p, var_map, cap_var_map))
                     .collect(),
-                ret: Box::new(self.instantiate_with_caps(ret, var_map, cap_var_map)),
-                caps: self.instantiate_row(caps, cap_var_map),
+                ret: Box::new(self.instantiate_impl(ret, var_map, cap_var_map)),
+                caps: match cap_var_map {
+                    Some(map) => self.instantiate_row(caps, map),
+                    None => caps.clone(),
+                },
             },
             Type::Reference { inner, mutable } => Type::Reference {
-                inner: Box::new(self.instantiate_with_caps(inner, var_map, cap_var_map)),
+                inner: Box::new(self.instantiate_impl(inner, var_map, cap_var_map)),
                 mutable: *mutable,
             },
             Type::Shared { inner } => Type::Shared {
-                inner: Box::new(self.instantiate_with_caps(inner, var_map, cap_var_map)),
+                inner: Box::new(self.instantiate_impl(inner, var_map, cap_var_map)),
             },
             Type::Weak { inner } => Type::Weak {
-                inner: Box::new(self.instantiate_with_caps(inner, var_map, cap_var_map)),
+                inner: Box::new(self.instantiate_impl(inner, var_map, cap_var_map)),
             },
             Type::Pointer { inner, mutable } => Type::Pointer {
-                inner: Box::new(self.instantiate_with_caps(inner, var_map, cap_var_map)),
+                inner: Box::new(self.instantiate_impl(inner, var_map, cap_var_map)),
                 mutable: *mutable,
             },
             // Primitives, Error, Never, DynTrait, etc. pass through unchanged.

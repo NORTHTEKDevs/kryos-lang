@@ -1,0 +1,13 @@
+// LEDGER root R2 control for item 59: attack_for_binder_shadow_closure_deny with the
+// privileged closure replaced by a pure one. Must stay ACCEPTED (default and strict).
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let pure2 = || "pure2"
+    let fns = [|| "pure", pure2]
+    deny!(fs:read) {
+        for f in fns {
+            println(f())
+        }
+    }
+}

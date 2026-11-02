@@ -1,0 +1,35 @@
+// LEDGER root R2, revise round of PR 38 (control).
+// The registration helper of attack_slot_register_after_pure_store called with a pure function: the registry holds only pure closures.
+// Must stay ACCEPTED by `kryos check` (default and strict): only pure closures are ever registered.
+use std::iter::{for_each}
+
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+struct Plugin {
+    run: fn() -> str,
+}
+
+fn seed() -> [Plugin] {
+    return [Plugin { run: safe }]
+}
+
+fn register(reg: [Plugin], h: fn() -> str) -> [Plugin] {
+    return push(reg, Plugin { run: h })
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reg = register(seed(), safe)
+    deny!(fs:read) {
+        for_each(reg, |q: Plugin| {
+            println(q.run())
+        })
+    }
+}

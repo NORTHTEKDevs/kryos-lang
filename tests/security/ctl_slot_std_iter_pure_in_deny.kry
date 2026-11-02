@@ -1,0 +1,23 @@
+// LEDGER root R2 control. std::iter HOFs take fn params everywhere; a pure closure through map / filter / fold inside deny!(fs:read) must not be charged anything.
+// Must stay ACCEPTED by `kryos check` (default and strict). Pinned so the slot
+// widening cannot grow into rejecting a program that never stored a privileged
+// closure into the slot it reads.
+use std::iter::{for_each, map, filter, fold}
+
+fn safe() -> str {
+    return "safe"
+}
+
+fn also_safe() -> str {
+    return "also-safe"
+}
+@capabilities(fs:read)
+fn main() {
+    let xs = [1, 2, 3, 4]
+    deny!(fs:read) {
+        let ys = map(xs, |x: i64| x + 1)
+        let zs = filter(ys, |x: i64| x > 2)
+        let total = fold(zs, 0, |acc: i64, x: i64| acc + x)
+        println(to_string(total))
+    }
+}

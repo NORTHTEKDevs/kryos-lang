@@ -1,0 +1,30 @@
+// LEDGER root R2 control for item 67: attack_realprogram_registry_foreach with both
+// plugins pure. Must stay ACCEPTED (default and strict).
+use std::iter::{for_each}
+
+struct Plugin {
+    name: str,
+    run: fn() -> str,
+}
+
+fn safe_plugin() -> str {
+    return "safe-plugin-ran"
+}
+
+fn other_safe_plugin() -> str {
+    return "other-safe-plugin-ran"
+}
+
+@capabilities(fs:read)
+fn main() {
+    let plugins: [Plugin] = [
+        Plugin { name: "safe", run: safe_plugin },
+        Plugin { name: "safe2", run: other_safe_plugin },
+    ]
+    deny!(fs:read) {
+        for_each(plugins, |p: Plugin| {
+            let out = p.run()
+            println("REGISTRY-FOREACH RESULT[" + p.name + "]: " + out)
+        })
+    }
+}

@@ -1,0 +1,39 @@
+// LEDGER root R2, revise round of PR 38 (found by the author while closing the verifier's finding).
+// A fluent builder method returns a new struct whose array field is the old array with the closure parameter pushed onto it.
+// Master dcf72e93: accepted in every mode (check rc=0, default and strict) and `kryos run` prints the secret (executed).
+// First R2 build (PR head dbfb989d): already rejected by the row layer (E0110).
+// Must be REJECTED with E0110 ("capability `fs:read` is denied in this block") under inferred and strict,
+// and `kryos run` must not print the secret.
+use std::iter::{for_each, map}
+
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+
+struct B {
+    items: [fn() -> str],
+}
+impl B {
+    fn add(self: B, g: fn() -> str) -> B {
+        return B { items: push(self.items, g) }
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let r = secret()
+    let b0 = B { items: [safe] }
+    let b = b0.add(r)
+    deny!(fs:read) {
+        for f in b.items {
+            println(f())
+        }
+    }
+}

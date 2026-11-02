@@ -1,0 +1,29 @@
+// LEDGER root R2 (stores: reassigned Option cell).
+// An Option<fn> binding reassigned from a pure closure to a privileged one.
+// Master dcf72e93 accepts this in every mode (both capability layers miss it) and
+// `kryos run` prints the secret. Must be REJECTED with E0110 ("capability `fs:read`
+// is denied in this block") under inferred and strict, and `kryos run` must not
+// print the secret.
+use std::iter::{for_each}
+
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let r = secret()
+    let mut cell = Some(|| "pure")
+    cell = Some(r)
+    deny!(fs:read) {
+        if let Some(f) = cell {
+            println(f())
+        }
+    }
+}

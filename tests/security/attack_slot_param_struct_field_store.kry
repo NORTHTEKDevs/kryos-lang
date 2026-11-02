@@ -1,0 +1,43 @@
+// LEDGER item 113 (found while landing root R2; CLOSED by it).
+// A callee stores a closure it was handed into a struct field of a value it was
+// handed: `p.run = g`. The field's row var is a declaration-global slot, and the
+// widening bound it to the callee's own parameter var `g`, a polymorphic var no
+// call site ever binds, instead of the row of the closure the CALLER passed. The
+// call site `swap_in(p, r)` now replays the callee's store with its own copy of
+// that var. This is the ordinary "registry.register(name, handler)" shape.
+//
+// Master dcf72e93: check rc=0 in default and strict mode, and `kryos run` prints
+// TOPSECRET-CLOSURE-... (executed). Must be REJECTED with E0110 ("denied in this
+// block") in default and strict mode, and `kryos run` must not print the secret.
+use std::iter::{for_each}
+
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+struct Plugin {
+    name: str,
+    run: fn() -> str,
+}
+
+fn swap_in(p: Plugin, g: fn() -> str) {
+    p.run = g
+}
+
+@capabilities(fs:read)
+fn main() {
+    let r = secret()
+    let p = Plugin { name: "a", run: safe }
+    swap_in(p, r)
+    let ps = [p]
+    deny!(fs:read) {
+        for_each(ps, |q: Plugin| {
+            println(q.run())
+        })
+    }
+}

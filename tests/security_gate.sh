@@ -1087,5 +1087,194 @@ else
     tail -3 "$TMP/sdc" | sed 's/^/    /'; fail=1
 fi
 
+# LEDGER root R2: a closure stored into a SLOT must widen the slot's row.
+#
+# The row layer typed an array / map literal by its FIRST element, bound a struct
+# field's declaration-global row var (and an enum payload's, an annotated
+# binding's, a generic type variable's) to the first closure stored into it, and
+# let every later store meet a resolved row, hit the closed/closed no-op in
+# `unify`, and vanish. `deny!` judges that row, so a privileged closure stored
+# second was never seen. Every program below was accepted in every mode and
+# printed the secret on master dcf72e93 (executed).
+#
+# Items 65 and 68 (a factory that wraps its parameter in a struct field) close with
+# the same root: the factory's body stores its OWN parameter var in the field, and
+# the call now replays that store with the caller's closure.
+#
+# The assertion is on the ROW layer specifically (E0110, "denied in this block"):
+# the shape layer is blind to these forms, which is why they escaped, and a
+# program that is still rejected only by E0507 would hide a row-layer regression.
+# `kryos run` must also refuse to run the program and print nothing.
+R2_ESCAPES="attack_for_binder_shadow_closure_deny \
+    attack_realprogram_registry_list_wrapper \
+    attack_realprogram_registry_foreach \
+    attack_map_param_alias_invoke_deny \
+    attack_array_param_alias_invoke_deny \
+    attack_actor_explicit_self_swapped_params_deny \
+    attack_match_bound_var_field_invoke \
+    attack_index_field_invoke_factory_element_deny \
+    attack_slot_array_push_blinded \
+    attack_slot_array_index_assign_blinded \
+    attack_slot_struct_field_assign_blinded \
+    attack_slot_enum_payload_second_store \
+    attack_slot_nested_array_literal \
+    attack_slot_tuple_array_literal \
+    attack_slot_struct_array_field_literal \
+    attack_slot_two_struct_instances \
+    attack_slot_empty_array_two_pushes \
+    attack_slot_array_from_call_push \
+    attack_slot_option_cell_reassign \
+    attack_slot_tuple_reassign \
+    attack_slot_loop_carried_store_via_helper \
+    attack_slot_register_helper \
+    attack_slot_register_method \
+    attack_slot_param_struct_field_store \
+    assault_r1_real_program_plugin_platform_stores_first"
+# Revise round of PR 38 (LEDGER root R2): SIGNATURE VARS ARE INPUTS.
+#
+# The independent verifier of the first R2 build found that a callee which builds a
+# container from a pure function and then stores its own closure PARAMETER into it
+# (`let mut a = [safe]; a = push(a, g); return a`, or `return [safe, g]`) was still
+# accepted and printed the secret. The slot WAS widened, but the original
+# unify rule also handed the slot's closed row to the source's unbound vars, so
+# the parameter's own row var was bound to the empty row and every caller was told
+# the parameter is pure. A signature var is an input of the body (it stands for
+# whatever the caller passes): the body may never bind it. The same defect hid in
+# a registration helper declared after a pure store, in a lambda's annotated
+# parameter (bound in the body, and first-call-wins afterwards), and in the
+# functions that return one of several function values (the several `return`s of
+# a function and the arms of an `if` / `match` were typed by the first one).
+R2_ESCAPES="$R2_ESCAPES \
+    attack_slot_ret_push_param \
+    attack_slot_ret_literal_param \
+    attack_slot_ret_middleware_chain \
+    attack_slot_ret_two_arrays \
+    attack_slot_ret_captures_param \
+    attack_slot_ret_struct_items \
+    attack_slot_ret_option_cell \
+    attack_slot_ret_enum_payload \
+    attack_slot_ret_generic_container \
+    attack_slot_ret_generic_fn \
+    attack_slot_ret_static_method \
+    attack_slot_ret_trait_method \
+    attack_slot_ret_method_returns \
+    attack_slot_ret_lambda_of_container \
+    attack_slot_two_returns \
+    attack_slot_if_arms \
+    attack_slot_match_arms \
+    attack_slot_lambda_param_single_call \
+    attack_slot_lambda_param_two_calls \
+    attack_slot_register_after_pure_store \
+    attack_slot_call_after_narrow \
+    attack_slot_ret_recursion \
+    attack_slot_ret_result_cell \
+    attack_slot_ret_fluent_builder \
+    attack_slot_ret_rebuild_from_param_array"
+# Parameter positions are contravariant (LEDGER root R2, revise round). A lambda
+# with an ANNOTATED closure parameter handed to a higher-order function over an
+# array the helper was given (`for_each(fns, |g: fn() -> str| g())`) was never
+# linked to the array's element row: the unify direction was the function value's,
+# not the parameter's. The default mode rejects it through the shape layer; under
+# --strict-capabilities nothing else does, so the pin asserts the ROW layer in both.
+R2_ESCAPES="$R2_ESCAPES \
+    attack_slot_lambda_param_over_container \
+    attack_slot_lambda_param_over_container_map"
+# A callee that stores a closure into a container it was HANDED (LEDGER item 112 and
+# its map variant from the verifier of PR 38). Arrays and maps are shared handles, so
+# the store lands in the CALLER's container; the callee used to bind its own
+# parameter's element row (so its reads through the parameter were charged only what it
+# stored) and the caller's slot never learned. Now the store is recorded and replayed
+# into the slot each call's argument came from.
+R2_ESCAPES="$R2_ESCAPES \
+    attack_slot_param_container_store \
+    attack_slot_param_index_assign \
+    attack_slot_param_push_inplace \
+    attack_slot_param_map_store \
+    attack_slot_param_helper_chain \
+    attack_slot_param_store_pure_then_read \
+    attack_slot_param_store_closed_privileged \
+    attack_slot_param_list_push \
+    attack_slot_param_mut_ref \
+    attack_slot_param_method \
+    attack_slot_param_fn_value"
+# The lambda form of item 112: a LAMBDA with an annotated array parameter that stores
+# its closure parameter into it. A lambda is one monomorphic value, so there is no
+# per-call copy of the parameter row to replay; the stores are written into the slot
+# of each argument the parameter is bound to.
+R2_ESCAPES="$R2_ESCAPES \
+    attack_slot_lambda_container_param_store \
+    attack_slot_lambda_container_param_push"
+for esc in $R2_ESCAPES; do
+    esc_ok=1
+    for mode in "" "--strict-capabilities"; do
+        if "$K" check $mode "tests/security/$esc.kry" >"$TMP/slot" 2>&1; then
+            echo "  FAIL: $esc.kry passed \`check $mode\` -- a closure stored into a slot never widened its row"
+            esc_ok=0; fail=1
+        elif ! grep -q "is denied in this block" "$TMP/slot"; then
+            echo "  FAIL: $esc.kry rejected by \`check $mode\`, but not by the row layer (E0110):"
+            tail -3 "$TMP/slot" | sed 's/^/    /'; esc_ok=0; fail=1
+        fi
+    done
+    if timeout 60 "$K" run "tests/security/$esc.kry" >"$TMP/slotrun" 2>&1; then
+        echo "  FAIL: $esc.kry RAN (exit 0) -- the run must be refused at check time"
+        esc_ok=0; fail=1
+    elif grep -qE "TOPSECRET|EVIL-SUPPLY-CHAIN-LEAK" "$TMP/slotrun"; then
+        echo "  FAIL: $esc.kry printed the secret"
+        esc_ok=0; fail=1
+    fi
+    [ $esc_ok -eq 1 ] && echo "  ok   $esc.kry rejected by the row layer in default and strict mode, run refused"
+done
+# The twin of every program above has only pure closures in the slot, or denies a
+# capability none of the stored closures uses, and must stay accepted. The cost of
+# a per-declaration slot is that a registry mixing a pure and a privileged closure
+# is judged by the union: the controls below are the cases where that union is
+# still harmless. std::iter HOFs take fn params everywhere and must not be charged.
+R2_CONTROLS="ctl_slot_pure_registries_in_deny \
+    ctl_slot_mixed_registry_other_deny \
+    ctl_slot_mixed_registry_outside_deny \
+    ctl_slot_std_iter_pure_in_deny \
+    ctl_slot_registered_pure_list_plugins \
+    ctl_slot_for_binder_shadow_pure \
+    ctl_slot_registry_list_wrapper_pure \
+    ctl_slot_registry_foreach_pure \
+    ctl_slot_map_param_alias_pure \
+    ctl_slot_array_param_alias_pure \
+    ctl_slot_actor_explicit_self_pure"
+R2_CONTROLS="$R2_CONTROLS \
+    ctl_slot_ret_push_param_pure \
+    ctl_slot_ret_other_cap_deny \
+    ctl_slot_two_returns_pure \
+    ctl_slot_if_match_arms_pure \
+    ctl_slot_lambda_param_pure_calls \
+    ctl_slot_register_after_pure_store_pure"
+R2_CONTROLS="$R2_CONTROLS \
+    ctl_slot_param_store_pure \
+    ctl_slot_param_store_privileged_other_array"
+R2_CONTROLS="$R2_CONTROLS \
+    ctl_slot_lambda_container_param_store_pure"
+for ctl in $R2_CONTROLS; do
+    ctl_ok=1
+    for mode in "" "--strict-capabilities"; do
+        if ! "$K" check $mode "tests/security/$ctl.kry" >"$TMP/slotc" 2>&1; then
+            echo "  FAIL: slot widening over-rejects $ctl.kry under \`check $mode\`:"
+            tail -3 "$TMP/slotc" | sed 's/^/    /'; ctl_ok=0; fail=1
+        fi
+    done
+    [ $ctl_ok -eq 1 ] && echo "  ok   $ctl.kry accepted in default and strict mode (no over-rejection)"
+done
+# The two shipped registry-dispatch programs are the precision witnesses the
+# fail-closed row work is measured against: both hold privileged closures in
+# slots and both must keep compiling.
+for prog in examples/showcase/repo_auditor.kry ecosystem/kryos-tool-broker; do
+    prog_ok=1
+    for mode in "" "--strict-capabilities"; do
+        if ! "$K" check $mode "$prog" >"$TMP/slotp" 2>&1; then
+            echo "  FAIL: slot widening rejects $prog under \`check $mode\`:"
+            tail -3 "$TMP/slotp" | sed 's/^/    /'; prog_ok=0; fail=1
+        fi
+    done
+    [ $prog_ok -eq 1 ] && echo "  ok   $prog still accepted in default and strict mode"
+done
+
 [ $fail -eq 0 ] && echo "security-gate: PASS" || echo "security-gate: FAIL"
 exit $fail

@@ -1,0 +1,33 @@
+// LEDGER root R2 (stores: push onto an array a call returned).
+// A call returns its function rows as closed copies, so the array bound to the result had no row a later push could widen.
+// Master dcf72e93 accepts this in every mode (both capability layers miss it) and
+// `kryos run` prints the secret. Must be REJECTED with E0110 ("capability `fs:read`
+// is denied in this block") under inferred and strict, and `kryos run` must not
+// print the secret.
+use std::iter::{for_each}
+
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+fn build() -> [fn() -> str] {
+    return [|| "pure"]
+}
+
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let r = secret()
+    let mut fns = build()
+    fns = push(fns, r)
+    deny!(fs:read) {
+        for f in fns {
+            println(f())
+        }
+    }
+}

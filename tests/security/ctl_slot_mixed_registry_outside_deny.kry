@@ -1,0 +1,32 @@
+// LEDGER root R2 control. A registry that mixes a pure and an fs:read closure, run in main where fs:read is held and nothing is denied (delegation).
+// Must stay ACCEPTED by `kryos check` (default and strict). Pinned so the slot
+// widening cannot grow into rejecting a program that never stored a privileged
+// closure into the slot it reads.
+use std::iter::{for_each}
+
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+fn also_safe() -> str {
+    return "also-safe"
+}
+struct Plugin {
+    name: str,
+    run: fn() -> str,
+}
+@capabilities(fs:read)
+fn main() {
+    let r = secret()
+    let a = Plugin { name: "a", run: safe }
+    let b = Plugin { name: "b", run: r }
+    let ps = [a, b]
+    for_each(ps, |q: Plugin| {
+        println(q.run())
+    })
+}

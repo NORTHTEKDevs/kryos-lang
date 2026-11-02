@@ -1,0 +1,34 @@
+// LEDGER root R2, revise round of PR 38 (found by the independent verifier of PR 38).
+// A callee builds an array from a pure closure, pushes its own closure PARAMETER onto it and returns it. The independent verifier of PR 38 found this: the first store left the array's slot row closed and empty, and the second flow bound the parameter's own row var to that empty row instead of widening the slot, so the caller was never charged for the argument. The loop binder shadows an outer harmless f.
+// Master dcf72e93: accepted in every mode (check rc=0, default and strict) and `kryos run` prints the secret (executed).
+// First R2 build (PR head dbfb989d): accepted in every mode (check rc=0, default and strict) and `kryos run` prints the secret (executed).
+// Must be REJECTED with E0110 ("capability `fs:read` is denied in this block") under inferred and strict,
+// and `kryos run` must not print the secret.
+use std::iter::{for_each}
+
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+fn build_with(g: fn() -> str) -> [fn() -> str] {
+    let mut a = [safe]
+    a = push(a, g)
+    return a
+}
+
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let r = secret()
+    let fns = build_with(r)
+    deny!(fs:read) {
+        for f in fns {
+            println(f())
+        }
+    }
+}

@@ -89,6 +89,66 @@ files="
 109|attack_reassign_container_map_unsafe
 110|attack_reassign_container_map_while_cond
 111|attack_reassign_container_struct_field_ifexpr_arg
+112|attack_slot_param_container_store
+113|attack_slot_param_struct_field_store
+114|attack_slot_register_after_main
+115|attack_deny_in_callee_before_stores
+116|attack_deny_in_method_before_stores
+slot01|attack_slot_array_push_blinded
+slot02|attack_slot_array_index_assign_blinded
+slot03|attack_slot_struct_field_assign_blinded
+slot04|attack_slot_enum_payload_second_store
+slot05|attack_slot_nested_array_literal
+slot06|attack_slot_tuple_array_literal
+slot07|attack_slot_struct_array_field_literal
+slot08|attack_slot_two_struct_instances
+slot09|attack_slot_empty_array_two_pushes
+slot10|attack_slot_array_from_call_push
+slot11|attack_slot_option_cell_reassign
+slot12|attack_slot_tuple_reassign
+slot13|attack_slot_loop_carried_store_via_helper
+slot14|attack_slot_register_helper
+slot15|attack_slot_register_method
+slot16|assault_r1_real_program_plugin_platform_stores_first
+slot17|attack_slot_ret_push_param
+slot18|attack_slot_ret_literal_param
+slot19|attack_slot_ret_middleware_chain
+slot20|attack_slot_ret_two_arrays
+slot21|attack_slot_ret_captures_param
+slot22|attack_slot_ret_struct_items
+slot23|attack_slot_ret_option_cell
+slot24|attack_slot_ret_enum_payload
+slot25|attack_slot_ret_generic_container
+slot26|attack_slot_ret_generic_fn
+slot27|attack_slot_ret_static_method
+slot28|attack_slot_ret_trait_method
+slot29|attack_slot_ret_method_returns
+slot30|attack_slot_ret_lambda_of_container
+slot31|attack_slot_two_returns
+slot32|attack_slot_if_arms
+slot33|attack_slot_match_arms
+slot34|attack_slot_lambda_param_single_call
+slot35|attack_slot_lambda_param_two_calls
+slot36|attack_slot_register_after_pure_store
+slot37|attack_slot_call_after_narrow
+slot38|attack_slot_ret_recursion
+slot39|attack_slot_ret_result_cell
+slot40|attack_slot_ret_fluent_builder
+slot41|attack_slot_ret_rebuild_from_param_array
+slot42|attack_slot_lambda_param_over_container
+slot43|attack_slot_lambda_param_over_container_map
+slot44|attack_slot_param_index_assign
+slot45|attack_slot_param_push_inplace
+slot46|attack_slot_param_map_store
+slot47|attack_slot_param_helper_chain
+slot48|attack_slot_param_store_pure_then_read
+slot49|attack_slot_param_store_closed_privileged
+slot50|attack_slot_param_list_push
+slot51|attack_slot_param_mut_ref
+slot52|attack_slot_param_method
+slot53|attack_slot_param_fn_value
+slot54|attack_slot_lambda_container_param_store
+slot55|attack_slot_lambda_container_param_push
 "
 
 printf "%-6s %-52s %-10s %-10s %s\n" ITEM FILE CHECK STRICT RUN
@@ -108,6 +168,13 @@ for row in $files; do
   echo "$out" | grep -qiE "leak|TOPSECRET|ESCAPE" && leak="LEAK"
   verdict="fixed"
   if [ "$c1" -eq 0 ] && [ "$leak" = "LEAK" ]; then verdict="ESCAPES"; fi
+  # A program the strict mode accepts but the default mode rejects (the default
+  # mode's shape layer catches it, the strict mode relies on the row layer alone)
+  # is an escape too: run it under --strict-capabilities and look for the leak.
+  if [ "$c2" -eq 0 ] && [ "$verdict" != "ESCAPES" ]; then
+    sout=$( cd "$ROOT" && timeout 60 "$K" run --strict-capabilities "$f" 2>&1 )
+    if echo "$sout" | grep -qiE "leak|TOPSECRET|ESCAPE"; then leak="LEAK"; verdict="ESCAPES"; fi
+  fi
   [ "$verdict" = "ESCAPES" ] && esc=$((esc+1)) || fixed=$((fixed+1))
   printf "%-6s %-52s rc=%-7s rc=%-7s %s %s\n" "$item" "$name" "$c1" "$c2" "$leak" "$verdict"
 done
