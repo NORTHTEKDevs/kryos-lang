@@ -318,37 +318,80 @@ the union of every closure ever stored into it, so a store into a slot that is
 already bound widens it. The slots are a struct field and an enum payload (one
 row var per declaration, shared by every value: a *global* slot), an annotated
 `let` or top-level binding, the element row of an array or map literal, an
-unannotated `let` of a function value or a container, and a generic type
-variable bound to a closure (`push<T>`, `List<T>`, `Some(..)`).
+unannotated `let` of a function value or a container, a generic type variable
+bound to a closure (`push<T>`, `List<T>`, `Some(..)`), the rows of a function's
+returned value, and the rows of a lambda's annotated parameters.
 
 - `unify` binds a destination row var when it is unbound, widens it when it is a
-  slot, and leaves any other bound var alone: a function's own total and its
-  parameter and return vars are the declaration's facts (or are freshened per
-  call site), not storage.
+  slot, and leaves any other bound var alone: a function's own total is the
+  declaration's fact, not storage. The original rule also hands the destination's
+  closed row to the still-unbound vars of the SOURCE (`map(tools, invoke)` needs
+  `invoke`'s fresh parameter var to take the element row); it never applies to a
+  signature var of the body being checked (below).
 - `resolve` carries a function type's row as written. It no longer flattens a
   bound var into a closed copy, which is what made the second store meet
   closed/closed and vanish.
 - An array or map literal is typed by a fresh slot every element is unified into.
-  Typing it by its first element dropped every other row.
+  Typing it by its first element dropped every other row. The value of an `if`
+  or a `match` is typed the same way, and so are the several `return`s of one
+  function (the rows of a declaration's returned type are slots).
 - A reference to a declaration copies its own row into the call site
   (`instantiate_row`). A global slot stays a reference there (a copy would freeze
   it at the first value stored). A local slot is flattened, because its binding
   can mention the callee's polymorphic parameter vars, which must be remapped to
   the call's fresh copies.
+- **A signature var is an input of its body.** The row vars of a declaration's
+  parameters, and of the parameter types of a lambda whose body is open, stand for
+  whatever the caller passes. A flow inside the body must not bind one: the first
+  R2 build let `let mut a = [safe]; a = push(a, g); return a` hand the array
+  slot's closed (empty) row to `g`'s own var, so every caller was told `g` is
+  pure. Such a var stays open and the slot mentions it; the caller's per-call copy
+  of the var is bound by the argument.
+- A **lambda** is one monomorphic value, not a quantified declaration: the rows of
+  its annotated parameters are slots every call (and every higher-order use)
+  feeds, so a second call with a privileged closure widens what the first call
+  bound.
+- A **parameter position is contravariant.** What the expected function hands its
+  parameter flows into the found function's parameter, so `unify` swaps the roles
+  of the two rows below a function type's parameter list. A lambda with an
+  annotated closure parameter handed to a higher-order function over an array
+  takes the array's element row; the other direction used to widen the array's
+  row by a var that was still unbound.
 - A body that stores one of its own parameters into a global slot
   (`fn register(reg, f) { reg.items = push(reg.items, Plugin { run: f }) }`) binds
   the slot to a polymorphic var no call binds. The stores a body makes into global
   slots through its parameters are recorded when the body is checked and replayed
   at every reference to the declaration with that call's copy of the vars.
-- Not covered: a callee that stores into a container it was handed (the caller's
-  slot is not widened; LEDGER item 112), and the arms of an `if` / `match` and the
-  several `return`s of one function (the shape layer fails closed on both).
-- The `deny!` verdict is taken when its block has been checked, so a store declared
-  later in the file than the block is not seen (LEDGER item 72, root R3).
-- A body's stores are recorded when the body is checked, and declarations are
-  checked in file order, so a call that appears before the declaration replays
-  nothing (LEDGER item 114; the same forward-reference class as a function's own
-  row, see `instantiate_row`).
+- **Input storage.** The element / value / generic-argument rows of a container the
+  body was HANDED (an array, a map, a `List<T>`, the target of a `&mut`) are the
+  caller's storage, not the body's. The body never binds them; a flow into one
+  (`reg[0] = g`, `push(reg, g)`, `m[key] = g`, a store of a privileged function
+  the body names) is recorded, as bits, polymorphic vars or global slots, and
+  replayed at the call into every slot the argument's element row reaches. The
+  call's copy of the storage var is bound when the argument is unified, which is
+  after the reference was typed (and, through a function value, much later), so a
+  replay that finds the copy unbound waits for the bind. A helper that passes its
+  own container on composes. A lambda's annotated container parameter has no
+  per-call copy: its stores are written into the slot of each argument the
+  parameter is bound to, at the moment it is bound.
+- Not covered:
+  * The `deny!` verdict is taken when its block has been checked. A block whose row
+    depends on a callee's own parameter (a `deny!` inside a function declared before
+    the call that passes it the closure: LEDGER item 115) or on a field filled by
+    stores that come later in the file (items 72 and 116) is judged on the unbound
+    var (root R3).
+  * A body's effects are recorded when it is checked, and declarations are checked
+    in file order, so a call that appears before the declaration replays nothing
+    and reads an unbound return row (LEDGER item 114: a registration helper, a
+    container-storing helper or a container-building function declared below
+    `main`; the same forward-reference class as a function's own row, see
+    `instantiate_row`).
+  * A store inside a lambda into a variable the lambda captured by move is a dead
+    store at run time, but the slot is shared, so the program is rejected when the
+    privileged closure reaches a `deny!` that reads the variable.
+  * A monomorphic lambda called with a pure and a privileged closure is judged by
+    the union at every call; a struct field's row is shared by every value of the
+    struct. Both are precision costs of the design, not bugs.
 
 ## 3. Subtyping and variance
 

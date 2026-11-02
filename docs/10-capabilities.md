@@ -431,13 +431,24 @@ a literal registry was typed by its first element, and the first closure stored
 into a struct field, an enum payload, an annotated binding or a generic container
 pinned its row. A slot is now the union of every closure stored into it, whether
 the store is a literal element, a `push`, an index or field assignment, a
-constructor argument, or (through a registration helper such as
-`register(reg, name, handler)` or `reg.add(name, handler)`) a call. Two costs, both
-deliberate: a struct field's row is shared by every value of that struct in the
-program, so a registry that mixes a pure and a privileged plugin is judged by the
-union (a `deny!` of that capability that only calls the pure one is rejected); and
-the verdict is taken when its block is checked, so stores declared later in the
-file than the `deny!` are not seen (LEDGER item 72). Rejected: the
+constructor argument, a `return` or an arm of an `if` / `match` (the value is one of
+several function values), or (through a helper such as
+`register(reg, name, handler)`, `reg.add(name, handler)` or `put(reg, g)`) a call,
+including a call that stores into an array or map the caller handed it. A
+function's parameter row is an input of its body: the body can narrow neither the
+row of a closure it was passed nor the element row of a container it was handed,
+so a function that builds a container from a pure function and then stores its own
+closure parameter into it (`return [safe, g]`) is charged for the argument. Two
+costs, both deliberate: a struct field's row is shared by every value of that
+struct in the program, and a lambda's annotated parameter row is shared by every
+call of that lambda, so a registry that mixes a pure and a privileged plugin (or a
+lambda called with both) is judged by the union (a `deny!` of that capability that
+only calls the pure one is rejected). Still open, because the verdict is taken
+when the `deny!` block is checked: stores declared later in the file than the
+`deny!` are not seen (LEDGER items 72 and 116), a `deny!` inside a function
+declared before the call that passes it the privileged closure is judged on the
+callee's unbound parameter (item 115), and a helper declared after the function
+that calls it replays nothing (item 114). Rejected: the
 `tests/security/attack_slot_*.kry` programs (E0110). Accepted: the
 `tests/security/ctl_slot_*.kry` controls, including a pure-only registry and a mixed
 registry read inside a `deny!` of a capability none of its closures uses.

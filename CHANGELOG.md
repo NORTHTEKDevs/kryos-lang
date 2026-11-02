@@ -77,15 +77,28 @@ Upgrade notes:
   an array of pure closures or a registration helper
   (`register(reg, name, handler)`, `reg.add(name, handler)`) printed the secret
   inside `deny!(fs:read)` in every mode. A slot is now the union of everything
-  stored into it, including the stores a helper makes through its parameters.
-  Pinned: 25 programs that master accepted are rejected (E0110), 11 controls stay
-  accepted, and a verdict diff over 1342 programs moved only the targeted
-  repros. One conservative cost: a struct field's row is shared by every value of
-  the struct, so a registry that mixes a pure and a privileged plugin is judged by
-  the union. Still open: a callee that stores a closure into an array it was
-  handed, a `deny!` that sits in the file before the stores that fill the
-  registry it reads, and a registration helper declared after the function that
-  calls it; the README lists them with the other live shapes.
+  stored into it, including the stores a helper makes through its parameters and
+  into the containers it was handed.
+  An independent review of the first fix found the same hole one level up and
+  refuted it: a function that builds a container from a pure function and then
+  stores its own closure parameter into it (`return [safe, g]`, `a = push(a, g)`),
+  a function with several `return`s or an `if` / `match` whose arms are different
+  function values, a lambda called with different closures, a lambda with an
+  annotated closure parameter handed to a higher-order function over an array
+  (which `--strict-capabilities` also accepted), and a callee that stores a
+  closure into an array or map it was handed all printed the secret the same way.
+  A parameter's row is now an input of its body (the body can no longer narrow
+  it), a function type's parameter position is contravariant, and the rows of
+  every `return` and of every arm are joined.
+  Pinned: 64 programs that master accepts are rejected (E0110) and 20 controls stay
+  accepted; a verdict diff over 1393 programs in both modes moved nothing else.
+  Conservative costs: a struct field's row is shared by every value of the
+  struct, and a lambda's annotated parameter row by every call of that lambda,
+  so a registry (or a lambda) that mixes a pure and a privileged closure is judged
+  by the union. Still open: a `deny!` that sits in the file before the stores that
+  fill the registry it reads or before the call that hands it the closure
+  (LEDGER items 72, 115, 116), and a helper declared after the function that
+  calls it (item 114); the README lists them with the other live shapes.
 
 ### Fixed - `kryos repl`
 
