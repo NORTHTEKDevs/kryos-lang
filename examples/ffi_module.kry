@@ -15,6 +15,7 @@ extern "C" {
     fn kryos_ffi_cstr(s: str) -> i64
 }
 
+@capabilities(ffi)
 fn main() {
     println("--- runtime FFI demo ---")
     let lib = kryos_ffi_dlopen("libc.so.6")

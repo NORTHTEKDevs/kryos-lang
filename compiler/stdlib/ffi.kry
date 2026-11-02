@@ -8,6 +8,15 @@
 //   ffi.call3(init, 800, 600, ffi.cstr("hello"))
 //
 // All pointer values are i64. Null is 0. Function pointers are also i64.
+//
+// Every export hands its caller raw process memory or an arbitrary C call, so
+// every export is declared `@capabilities(ffi)`: a caller must hold `ffi`
+// (E0507 otherwise, in the default and strict modes, and inside `deny!(ffi)`),
+// and a user module that imports any of these names is also gated in
+// permissive mode (check_raw_memory_direct). The stdlib is exempt from the
+// raw-memory gate because it is built on these primitives; this module is the
+// one place where the exports ARE the primitives, so the exemption must not
+// reach them (LEDGER bypass class B3).
 
 extern "C" {
     fn kryos_ffi_dlopen(name: str) -> i64
@@ -54,60 +63,92 @@ extern "C" {
 
 // ---- Library loading ----
 
+@capabilities(ffi)
 pub fn open(name: str) -> i64       { kryos_ffi_dlopen(name) }
+@capabilities(ffi)
 pub fn sym(handle: i64, name: str) -> i64 { kryos_ffi_dlsym(handle, name) }
+@capabilities(ffi)
 pub fn close(handle: i64) -> i64    { kryos_ffi_dlclose(handle) }
 
 // ---- Indirect calls (int-return) ----
 
+@capabilities(ffi)
 pub fn call0(fp: i64) -> i64                                                  { kryos_ffi_dlcall0(fp) }
+@capabilities(ffi)
 pub fn call1(fp: i64, a1: i64) -> i64                                         { kryos_ffi_dlcall1(fp, a1) }
+@capabilities(ffi)
 pub fn call2(fp: i64, a1: i64, a2: i64) -> i64                                { kryos_ffi_dlcall2(fp, a1, a2) }
+@capabilities(ffi)
 pub fn call3(fp: i64, a1: i64, a2: i64, a3: i64) -> i64                       { kryos_ffi_dlcall3(fp, a1, a2, a3) }
+@capabilities(ffi)
 pub fn call4(fp: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64              { kryos_ffi_dlcall4(fp, a1, a2, a3, a4) }
+@capabilities(ffi)
 pub fn call5(fp: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64) -> i64     { kryos_ffi_dlcall5(fp, a1, a2, a3, a4, a5) }
+@capabilities(ffi)
 pub fn call6(fp: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64) -> i64 {
     kryos_ffi_dlcall6(fp, a1, a2, a3, a4, a5, a6)
 }
 
 // ---- Indirect calls (void-return) ----
 
+@capabilities(ffi)
 pub fn callv0(fp: i64)                                                        { kryos_ffi_dlcallv0(fp) }
+@capabilities(ffi)
 pub fn callv1(fp: i64, a1: i64)                                               { kryos_ffi_dlcallv1(fp, a1) }
+@capabilities(ffi)
 pub fn callv2(fp: i64, a1: i64, a2: i64)                                      { kryos_ffi_dlcallv2(fp, a1, a2) }
+@capabilities(ffi)
 pub fn callv3(fp: i64, a1: i64, a2: i64, a3: i64)                             { kryos_ffi_dlcallv3(fp, a1, a2, a3) }
+@capabilities(ffi)
 pub fn callv4(fp: i64, a1: i64, a2: i64, a3: i64, a4: i64)                    { kryos_ffi_dlcallv4(fp, a1, a2, a3, a4) }
 
 // 4-float-arg void call, for graphics APIs like DrawLine, DrawCircle.
+@capabilities(ffi)
 pub fn callv_4f(fp: i64, a: f64, b: f64, c: f64, d: f64)                      { kryos_ffi_dlcallv_4f(fp, a, b, c, d) }
 
 // ---- String / pointer interop ----
 
 // Get a NUL-terminated *const u8 pointer to the bytes of a Kryos string.
 // The pointer is valid as long as the source string is alive.
+@capabilities(ffi)
 pub fn cstr(s: str) -> i64 { kryos_ffi_cstr(s) }
 
 // Build a Kryos string by copying `len` bytes from a raw pointer.
 // Pass len = -1 to use C strlen instead.
+@capabilities(ffi)
 pub fn from_ptr(ptr: i64, len: i64) -> str { kryos_ffi_string_from_ptr(ptr, len) }
 
 // ---- Memory ----
 
+@capabilities(ffi)
 pub fn alloc(n: i64) -> i64       { kryos_ffi_malloc(n) }
+@capabilities(ffi)
 pub fn free(p: i64, n: i64)       { kryos_ffi_free(p, n) }
 
 // ---- Raw pointer reads / writes ----
 
+@capabilities(ffi)
 pub fn read_i8(p: i64) -> i64     { kryos_ffi_read_i8(p) }
+@capabilities(ffi)
 pub fn read_i16(p: i64) -> i64    { kryos_ffi_read_i16(p) }
+@capabilities(ffi)
 pub fn read_i32(p: i64) -> i64    { kryos_ffi_read_i32(p) }
+@capabilities(ffi)
 pub fn read_i64(p: i64) -> i64    { kryos_ffi_read_i64(p) }
+@capabilities(ffi)
 pub fn read_f32(p: i64) -> f64    { kryos_ffi_read_f32(p) }
+@capabilities(ffi)
 pub fn read_f64(p: i64) -> f64    { kryos_ffi_read_f64(p) }
 
+@capabilities(ffi)
 pub fn write_i8(p: i64, v: i64)   { kryos_ffi_write_i8(p, v) }
+@capabilities(ffi)
 pub fn write_i16(p: i64, v: i64)  { kryos_ffi_write_i16(p, v) }
+@capabilities(ffi)
 pub fn write_i32(p: i64, v: i64)  { kryos_ffi_write_i32(p, v) }
+@capabilities(ffi)
 pub fn write_i64(p: i64, v: i64)  { kryos_ffi_write_i64(p, v) }
+@capabilities(ffi)
 pub fn write_f32(p: i64, v: f64)  { kryos_ffi_write_f32(p, v) }
+@capabilities(ffi)
 pub fn write_f64(p: i64, v: f64)  { kryos_ffi_write_f64(p, v) }

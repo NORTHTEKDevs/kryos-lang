@@ -1,0 +1,19 @@
+// BYPASS CLASS B2 -- a builtin name shadowed by a bodiless TRAIT method.
+//
+// Same defect as b1_env_get_shadowed_by_method.kry with only a trait method
+// DECLARATION named like the gated builtin (no impl at all, nothing ever
+// callable). `collect_defined_fns` recursed into trait bodies too.
+// On 2026-11-01 master: rc 0 in default and --strict-capabilities, and
+// `kryos run` printed BYPASS-B2-OK.
+//
+// MUST be rejected with E0505 (`env_get` requires `process`).
+trait Reader {
+    fn env_get(self, name: str) -> str
+}
+
+fn main() {
+    let p = env_get("PATH")
+    if len(p) > 0 {
+        println("BYPASS-B2-OK")
+    }
+}

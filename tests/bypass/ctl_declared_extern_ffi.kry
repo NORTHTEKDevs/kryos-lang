@@ -1,0 +1,18 @@
+// CONTROL for B4: the kryos_ffi_* natives are authority, and `ffi` pays for them.
+// MUST stay accepted in default, strict and permissive and print CTL-B4-FFI-OK.
+extern "C" {
+    fn kryos_ffi_cstr(s: str) -> i64
+    fn kryos_ffi_read_i8(p: i64) -> i64
+}
+
+@capabilities(ffi)
+fn main() {
+    let p = kryos_ffi_cstr("CTL-B4-FFI-OK")
+    let mut out = ""
+    let mut i = 0
+    while i < 13 {
+        out = out + char_from(kryos_ffi_read_i8(p + i))
+        i = i + 1
+    }
+    println(out)
+}

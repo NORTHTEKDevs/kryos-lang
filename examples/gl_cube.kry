@@ -75,6 +75,7 @@ extern "C" {
 // ---------------------------------------------------------------------------
 // Helpers to write vertex data and MVP matrix
 // ---------------------------------------------------------------------------
+@capabilities(ffi)
 fn write_vertex_buf(buf: i64) {
     // 8 vertices of a unit cube, 3 f32 each = 24 floats = 96 bytes
     // f32(-0.5) bits = 3204448256
@@ -115,6 +116,7 @@ fn write_vertex_buf(buf: i64) {
     kryos_ffi_write_f32_bits(buf + 92, pos)
 }
 
+@capabilities(ffi)
 fn write_index_buf(buf: i64) {
     // 36 indices (12 triangles, 6 faces)
     // front (z+): 4,5,6, 4,6,7
@@ -161,6 +163,7 @@ fn write_index_buf(buf: i64) {
     kryos_ffi_write_i32(buf + 140, 4)
 }
 
+@capabilities(ffi)
 fn write_mvp(buf: i64) {
     // Pre-computed MVP = proj * view * model (column-major, 16 f32)
     // model = rotY(0.5) * rotX(0.3), view = translate(0,0,-3)
@@ -186,10 +189,12 @@ fn write_mvp(buf: i64) {
 // ---------------------------------------------------------------------------
 // Read a u32 from a 4-byte buffer (little-endian)
 // ---------------------------------------------------------------------------
+@capabilities(ffi)
 fn read_u32(p: i64) -> i64 {
     return kryos_ffi_read_i32(p)
 }
 
+@capabilities(ffi)
 fn main() {
     println("[gl] Kryos OpenGL 3.3 cube demo")
     // ---- Constants ----

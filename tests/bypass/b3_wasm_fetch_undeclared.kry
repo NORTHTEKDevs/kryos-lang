@@ -1,0 +1,14 @@
+// BYPASS CLASS B3 (audit) -- std::wasm network wrappers carried no declaration.
+//
+// `kryos_http_fetch` was unclassified (ambient) and `std::wasm::http_fetch*`
+// were unannotated, so in permissive mode an annotated caller was not charged
+// for outbound HTTP, and `fetch_text` broke `--strict-capabilities` for the
+// whole module. They are `@capabilities(net:http)` now.
+//
+// MUST be rejected: an unannotated main calling them needs `net:http`
+// (E0507), in default and --strict-capabilities.
+use std::wasm::{http_fetch_get}
+
+fn main() {
+    println(to_string(http_fetch_get(0)))
+}

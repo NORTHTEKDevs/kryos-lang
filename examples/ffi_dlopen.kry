@@ -11,6 +11,7 @@ extern "C" {
     fn kryos_ffi_dlcall1(fp: i64, a1: i64) -> i64
 }
 
+@capabilities(ffi)
 fn main() {
     // On Linux, "libc.so.6" is always available.
     let lib = kryos_ffi_dlopen("libc.so.6")

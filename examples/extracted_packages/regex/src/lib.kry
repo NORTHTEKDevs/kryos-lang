@@ -56,6 +56,7 @@ let mut POSIX_CHECKED: i64 = 0
 let REGEX_T_SIZE: i64 = 64
 let REGMATCH_SIZE: i64 = 8
 
+@capabilities(ffi)
 fn posix_init() -> i64 {
     if POSIX_CHECKED == 1 {
         return POSIX_AVAILABLE
@@ -92,6 +93,7 @@ fn posix_init() -> i64 {
 
 // posix_regex_match returns 1 if pattern matches anywhere in text, 0 if not,
 // -1 on compilation error.
+@capabilities(ffi)
 fn posix_regex_match(pattern: str, text: str) -> i64 {
     // Allocate regex_t on the heap
     let re_buf: i64 = kryos_ffi_malloc(REGEX_T_SIZE)
@@ -128,6 +130,7 @@ fn posix_regex_match(pattern: str, text: str) -> i64 {
 }
 
 // posix_regex_find returns the byte offset of the first match, or -1.
+@capabilities(ffi)
 fn posix_regex_find(pattern: str, text: str) -> i64 {
     let re_buf: i64 = kryos_ffi_malloc(REGEX_T_SIZE)
     if re_buf == 0 {
@@ -293,6 +296,7 @@ fn fallback_find(pattern: str, text: str) -> i64 {
 
 // regex_match returns true if pattern matches anywhere in text.
 // Uses POSIX ERE (via libc) when available; falls back to wildcard matching.
+@capabilities(ffi)
 fn regex_match(pattern: str, text: str) -> bool {
     if posix_init() == 1 {
         let rc: i64 = posix_regex_match(pattern, text)
@@ -304,6 +308,7 @@ fn regex_match(pattern: str, text: str) -> bool {
 // regex_find returns the byte offset of the first match in text, or -1 if
 // no match is found. Uses POSIX ERE (via libc) when available; falls back
 // to wildcard substring search.
+@capabilities(ffi)
 fn regex_find(pattern: str, text: str) -> i64 {
     if posix_init() == 1 {
         return posix_regex_find(pattern, text)

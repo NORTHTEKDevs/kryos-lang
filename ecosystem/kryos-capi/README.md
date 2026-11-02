@@ -16,15 +16,18 @@ against what the function actually calls, so kryos-capi can emit a companion
   "abi": "c",
   "schema": "kryos-capi-caps-v1",
   "exports": {
-    "csv_field_count":  { "capabilities": [],     "verified": true },
-    "csv_row_count":    { "capabilities": [],     "verified": true },
-    "csv_to_json_file": { "capabilities": ["io"], "verified": true }
+    "csv_field_count":  { "capabilities": ["ffi"],       "verified": true },
+    "csv_row_count":    { "capabilities": ["ffi"],       "verified": true },
+    "csv_to_json_file": { "capabilities": ["io", "ffi"], "verified": true }
   }
 }
 ```
 
-`csv_field_count` is **compute-only** (`[]`); `csv_to_json_file` calls
-`file_write`, so the compiler *forces* it to declare `io`. A host can read this
+`csv_field_count` holds only `ffi` (it rebuilds a string from the caller's C
+pointer, which is raw memory access; std::ffi requires the declaration, and the
+exports read `[]` only while std::ffi was ungated -- LEDGER bypass class B3);
+`csv_to_json_file` also calls `file_write`, so the compiler *forces* it to
+declare `io`. A host can read this
 **before it binds a single symbol** and refuse anything that exceeds its
 allow-set.
 
@@ -33,7 +36,7 @@ allow-set.
 Kryos rejects a function whose declared capabilities understate what it does:
 
 ```kryos
-@capabilities()                       // claims compute-only ...
+@capabilities(ffi)                    // claims no file access ...
 fn mislabeled_export(ptr: i64) -> i64 {
     file_write("x.txt", "data")       // ... but calls io
     return ptr
@@ -49,8 +52,8 @@ Because the library would not compile otherwise, a clean build is proof the
 
 ```
 src/csvlib.kry      the demo library -> compiled to dist/csvlib.dll
-                    exports: csv_field_count [compute], csv_row_count [compute],
-                             csv_to_json_file [io]
+                    exports: csv_field_count [ffi], csv_row_count [ffi],
+                             csv_to_json_file [io, ffi]
 src/capset.kry      runtime capability-set algebra (subset / excess / render)
 src/manifest.kry    reads a <lib>.caps.json -> declared caps for a C symbol
 gen_caps.kry        build wrapper: raw `kryos manifest --caps` -> curated caps.json
@@ -73,15 +76,15 @@ kryos test --path ecosystem/kryos-capi
 The consumer, run under two different allow-sets:
 
 ```bash
-# compute-only host: the io export is REFUSED, the compute exports run
-kryos run consumer.kry dist/csvlib.caps.json dist/csvlib.dll compute
-#   ALLOW   csv_field_count  requires={}      -> csv_field_count = 3
-#   ALLOW   csv_row_count    requires={}      -> csv_row_count = 2
-#   REFUSE  csv_to_json_file requires={io}  excess={io}
+# {ffi} host: the io export is REFUSED, the two string exports run
+kryos run consumer.kry dist/csvlib.caps.json dist/csvlib.dll ffi
+#   ALLOW   csv_field_count  requires={ffi}   -> csv_field_count = 3
+#   ALLOW   csv_row_count    requires={ffi}   -> csv_row_count = 2
+#   REFUSE  csv_to_json_file requires={io, ffi}  excess={io}
 
-# {compute, io} host: all three run
-kryos run consumer.kry dist/csvlib.caps.json dist/csvlib.dll compute,io
-#   ALLOW   csv_to_json_file requires={io}   -> wrote 80 bytes to dist/csvlib_out.json
+# {ffi, io} host: all three run
+kryos run consumer.kry dist/csvlib.caps.json dist/csvlib.dll ffi,io
+#   ALLOW   csv_to_json_file requires={io, ffi}   -> wrote 80 bytes to dist/csvlib_out.json
 ```
 
 ## How the shared library is produced

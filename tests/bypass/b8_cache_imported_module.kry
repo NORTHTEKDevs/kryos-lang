@@ -1,0 +1,7 @@
+// Imported module for the B8 staleness check (copied to m.kry by the gate).
+// The cache key used to be the ROOT source text only, so editing this file left
+// the root file's key unchanged and `kryos build --cache` handed back the binary
+// built from the OLD module.
+fn answer() -> str {
+    return "b8-imported-one"
+}

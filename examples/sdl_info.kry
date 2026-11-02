@@ -18,6 +18,7 @@ extern "C" {
     fn kryos_ffi_string_from_ptr(p: i64, len: i64) -> str
 }
 
+@capabilities(ffi)
 fn main() {
     println("--- SDL2 via Kryos FFI ---")
     let sdl = kryos_ffi_dlopen("libSDL2-2.0.so.0")

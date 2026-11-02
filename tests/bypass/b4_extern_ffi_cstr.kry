@@ -1,0 +1,26 @@
+// BYPASS CLASS B4 -- an `extern` naming a kryos_* runtime native the capability
+// table did not map needs no capability.
+//
+// `required_capability_for_native_symbol`'s default arm returned "no
+// capability" ("genuine ambient plumbing"), so any native it had never heard
+// of was ambient. kryos_ffi_cstr and kryos_ffi_read_i8 exist in the shipped
+// runtime and read arbitrary memory. On 2026-11-01 master: `kryos check` rc 0 in
+// default and --strict-capabilities, and `kryos run` printed BYPASS-B4-OK.
+// (`extern "C" { fn getpid() }` was always rejected: E0506/E0508.)
+//
+// MUST be rejected with E0506 (`requires ffi`) in default, strict and permissive.
+extern "C" {
+    fn kryos_ffi_cstr(s: str) -> i64
+    fn kryos_ffi_read_i8(p: i64) -> i64
+}
+
+fn main() {
+    let p = kryos_ffi_cstr("BYPASS-B4-OK")
+    let mut out = ""
+    let mut i = 0
+    while i < 12 {
+        out = out + char_from(kryos_ffi_read_i8(p + i))
+        i = i + 1
+    }
+    println(out)
+}

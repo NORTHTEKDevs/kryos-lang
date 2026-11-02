@@ -1,0 +1,22 @@
+// CONTROL for B1/B2: method-call syntax on a user method named like a gated
+// builtin resolves to the user method, so charging the builtin there would be
+// an over-rejection. MUST stay accepted (default + strict) and print
+// CTL-METHOD-OK?.
+struct Decoy {
+    x: i64,
+}
+
+impl Decoy {
+    fn env_get(self, name: str) -> str {
+        return name + "?"
+    }
+    fn file_read(self, name: str) -> str {
+        return name + "#"
+    }
+}
+
+fn main() {
+    let d = Decoy { x: 1 }
+    println(d.env_get("CTL-METHOD-OK"))
+    println(d.file_read("CTL-METHOD-FILE-OK"))
+}

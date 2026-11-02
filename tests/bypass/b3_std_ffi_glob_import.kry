@@ -1,0 +1,15 @@
+// BYPASS CLASS B3 -- importing std::ffi as a whole (glob form).
+//
+// `use std::ffi::*` (and the bare `use std::ffi`) bring all 32 exports into the
+// namespace; the import-name gate has to treat that as importing every one of
+// them. This program is checked, not run: on master the whole-module forms are
+// accepted by `kryos check` but fail at codegen (the stdlib `free(p, n)` collides
+// with the runtime's one-argument `free`).
+//
+// MUST be rejected (E0505 or E0507) in default, strict and permissive.
+use std::ffi::*
+
+fn main() {
+    let p = cstr("BYPASS-B3-GLOB-OK")
+    println(to_string(read_i8(p)))
+}

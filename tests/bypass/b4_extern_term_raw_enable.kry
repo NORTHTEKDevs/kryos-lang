@@ -1,0 +1,14 @@
+// BYPASS CLASS B4 -- kryos_term_raw_enable: terminal control, ambient.
+//
+// std::term is `@capabilities(term)`; only kryos_term_clear was in the table.
+// MUST be rejected with E0506 (`requires term`) in default and strict.
+extern "C" {
+    fn kryos_term_raw_enable() -> i32
+    fn kryos_term_raw_disable() -> i32
+}
+
+fn main() {
+    kryos_term_raw_enable()
+    kryos_term_raw_disable()
+    println("BYPASS-B4-TERM-OK")
+}

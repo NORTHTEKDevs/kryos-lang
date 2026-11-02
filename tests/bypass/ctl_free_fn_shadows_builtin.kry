@@ -1,0 +1,11 @@
+// CONTROL for B1/B2: a user FREE function named like a gated builtin shadows it
+// on both backends (CLAUDE.md gotcha 18), so the call is to the user function
+// and carries no `process` requirement. MUST stay accepted (default + strict)
+// and print CTL-FREEFN-OK!.
+fn env_get(name: str) -> str {
+    return name + "!"
+}
+
+fn main() {
+    println(env_get("CTL-FREEFN-OK"))
+}
