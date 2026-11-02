@@ -193,6 +193,12 @@ r3-22|attack_deny_param_in_nested_array
 r3-23|attack_deny_param_pick_passthrough
 r3-24|attack_deny_param_factory_guard
 r3-25|attack_deny_late_if_branch_store
+r3-26|attack_fwd_array_param_alias_invoke_deny
+r3-27|attack_fwd_map_param_alias_invoke_deny
+r3-28|attack_fwd_slot_call_after_narrow
+r3-29|attack_fwd_slot_param_store_pure_then_read
+r3-30|attack_fwd_slot_lambda_param_over_container
+r3-31|attack_fwd_slot_lambda_param_over_container_map
 "
 
 printf "%-6s %-52s %-10s %-10s %s\n" ITEM FILE CHECK STRICT RUN

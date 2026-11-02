@@ -1274,6 +1274,8 @@ done
 # on master 732714ab (executed), except attack_deny_param_factory_guard, _lambda_annotated
 # and _pick_passthrough, which the shape layer already rejects there and which are pinned
 # so the row layer no longer depends on it.
+# The six attack_fwd_* programs are R2 attack programs with `main` moved above everything else:
+# the helper is declared AFTER the code that calls it, and the reference found nothing to replay.
 #
 # The assertion is on the ROW layer ("is denied in this block"): the shape layer is
 # blinded by the outer harmless `f`, which is why these escaped, and a program rejected
@@ -1295,7 +1297,13 @@ R3_ESCAPES="attack_deny_double_indirection_wrapper_local \
     attack_slot_param_fn_value_hof_param \
     attack_slot_param_fn_value_struct_field \
     attack_slot_param_fn_value_map_of_ops \
-    attack_slot_lambda_wrapper_calls_put"
+    attack_slot_lambda_wrapper_calls_put \
+    attack_fwd_array_param_alias_invoke_deny \
+    attack_fwd_map_param_alias_invoke_deny \
+    attack_fwd_slot_call_after_narrow \
+    attack_fwd_slot_param_store_pure_then_read \
+    attack_fwd_slot_lambda_param_over_container \
+    attack_fwd_slot_lambda_param_over_container_map"
 # The parameter-row family: the privileged closure reaches the block through a row the
 # declaration holding the block never binds, by every route a reference can take.
 R3_ESCAPES="$R3_ESCAPES \
