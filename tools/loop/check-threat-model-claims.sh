@@ -86,26 +86,22 @@ fn main() {
 }
 KRY
 out="$(timeout 180 "$K" run "$TMP/canary_pure.kry" 2>&1)"; rc=$?
-if [ "$rc" -eq 0 ] && printf '%s
-' "$out" | tr -d '' | grep -qx "KRYOS-CANARY-OK-7731"; then
+if [ "$rc" -eq 0 ] && printf '%s\n' "$out" | tr -d '\r' | grep -qx "KRYOS-CANARY-OK-7731"; then
   echo "  ok   canary: a pure program builds, runs and prints its marker"
 else
   echo "check-threat-model-claims: FAIL -- canary: \`kryos run\` of a pure program did not exit 0 and print its marker (rc=$rc)."
   echo "  The toolchain cannot build and run programs (are kryos_rt.lib and kryos_stdlib_native.lib beside the binary?),"
   echo "  so the claims would be checked against a toolchain that cannot back them."
-  printf '%s
-' "$out" | tail -5 | sed 's/^/    /'
+  printf '%s\n' "$out" | tail -5 | sed 's/^/    /'
   exit 1
 fi
 out="$(timeout 120 "$K" check "$TMP/canary_deny.kry" 2>&1)"; rc=$?
-if [ "$rc" -ne 0 ] && printf '%s
-' "$out" | grep -qE "E0110|E0505|E0507"; then
+if [ "$rc" -ne 0 ] && printf '%s\n' "$out" | grep -qE "E0110|E0505|E0507"; then
   echo "  ok   canary: file_read inside deny!(fs:read) is rejected by \`kryos check\`"
 else
   echo "check-threat-model-claims: FAIL -- canary: \`kryos check\` did not reject file_read inside deny!(fs:read) (rc=$rc)."
   echo "  The capability checker is not rejecting a direct call, so the claims would be vacuous."
-  printf '%s
-' "$out" | tail -5 | sed 's/^/    /'
+  printf '%s\n' "$out" | tail -5 | sed 's/^/    /'
   exit 1
 fi
 

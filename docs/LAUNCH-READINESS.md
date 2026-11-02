@@ -11,7 +11,7 @@
 > master 7cab5799: **`STILL ESCAPING: 10    now-rejected: 180    missing: 0`**. The
 > ten accepted repros are listed, each with a committed repro and its root, in
 > [docs/THREAT-MODEL.md](THREAT-MODEL.md) section 4.1. Do not read any "zero"
-> below as current. Only this banner and a one-line pointer beside the
+> below as current. Only this banner and a short pointer beside the
 > section 1 quote further down were added; the rest is unchanged.
 
 

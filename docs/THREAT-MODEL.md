@@ -379,7 +379,10 @@ trusted"), but the only thing that limits it is the checker.
 
 **N9. Process, environment, argv.** `env_get`, `env_set`, `exec` and
 `spawn_process` need `process` (pinned for `env_get`: claims.tsv
-N9-env-get-default, -strict). `args()` does not (N3).
+N9-env-get-default, -strict). On this build `env_set`, `exec` and
+`spawn_process` are also `E0102` (undefined variable) beside `E0505`, the same
+resolver defect noted for `abort` in N3 (executed 2026-11-02, not pinned).
+`args()` does not need `process` (N3).
 
 **N10. Randomness and time.** `random_bytes` needs `crypto` (source). `std::random`
 is a deterministic, seedable PRNG and is ambient (source). Time is ambient (N3).
@@ -418,7 +421,7 @@ unsigned JSON file beside the module, written by a build script after a
 `--strict-capabilities` check; nothing binds it to the DLL bytes, and the same
 README says a native DLL gives "process isolation only; any Windows API callable
 in principle". Treat it as a declaration, not a boundary; a DLL built by a
-compiler older than PR #40 can carry B1 to B4, and one built by this compiler can
+compiler older than PR #40 can carry B1 to B4 and B8, and one built by this compiler can
 still carry B9.
 
 **N15. Zero known escapes is not a soundness proof.** The corpus is 190 repros
@@ -427,9 +430,10 @@ were written by the authors of the checker. Section 4.5 lists four accepted
 shapes that are in neither, and the first version of this document listed eight;
 they were found by reading the source and probing while that version was
 reviewed, and five of them were real defects that PR #40 then closed, which is
-itself evidence that the corpus was incomplete. Every previous "zero escapes"
-claim in this repository was later wrong: the README claimed zero while twelve
-were live (2026-08-10) and again before the 2026-10-15 wave added eighteen.
+itself evidence that the corpus was incomplete. Every previous low-count claim
+in this repository was later wrong: on 2026-08-10 the README claimed a single
+residual while twelve others were live, and on 2026-10-15 "0 escaping" was true
+of the 19 named repros while eighteen other shapes escaped (LEDGER preamble).
 
 **N16. Authority travels with a closure (delegation).** A function-typed
 parameter, and an actor-handler parameter, is charged to the *sender* at the
@@ -570,8 +574,9 @@ items 119, 121, 122 and 123 (4.1).
   that calls them (pinned: claims.tsv N3-latent-intrinsics-default and -strict, for
   `str_data_ptr`, `mem_read_byte`, `mem_write_byte`), and on this build `kryos
   run` of it fails to link (`LNK2001: unresolved external symbol mem_write_byte`
-  and `LNK1120`, executed 2026-11-02; pinned as a nonzero status only, the
-  message is linker specific: claims.tsv N3-latent-intrinsics-run), so nothing
+  and `LNK1120`, executed 2026-11-02; pinned as a nonzero status plus the
+  symbol name `str_data_ptr`, the rest of the message is linker specific:
+  claims.tsv N3-latent-intrinsics-run), so nothing
   runs. They are a limitation, not a bypass today: a toolchain that resolved the
   symbols (the self-hosted compiler's runtime does) would give a zero-capability
   program raw memory and syscalls, and the Rust toolchain's checker would still
@@ -594,8 +599,8 @@ behaving as documented (a fixed bypass must be removed from this table in the
 same change) or if a `bypass_*.kry` file is not listed. "verified by": `runs`
 means `kryos check` rc 0 in default **and** `--strict-capabilities`, and `kryos
 run` printed `BYPASS-<id>-OK`; `inferred-only` means rc 0 in default and rc 1 in
-strict, not run; `cache` means the three-build sequence in the B8 repro (no row
-uses it any more). Binary: `kryos 1.2.0`, the 2026-11-02 build of `a9c4680b`;
+strict, not run; `cache` meant the build sequence of the B8 repro, which was
+deleted when PR #40 closed B8 (no row uses it any more). Binary: `kryos 1.2.0`, the 2026-11-02 build of `a9c4680b`;
 executed 2026-11-02 for every row (B9 added by this revision).
 
 <!-- known-bypasses:begin -->
