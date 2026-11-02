@@ -9234,3 +9234,206 @@ by measurement (all gates above). Next stage (per the spec's Stage 3) is the
 dual-run differential harness comparing this inference against the old
 checker's charge, call-site by call-site, before either mechanism gets
 enforcement authority.
+
+---
+
+## Zero-authority bypass classes B1-B8 (2026-11-01)
+
+Kryos is deployed as capability-attenuated infrastructure, and the repo's own
+CLAUDE.md promised "there is no FFI bypass around deny-by-default" and "you
+cannot obtain a pointer without declaring ffi". Each class below lets a program
+that declares NO capability (or fewer than it uses) read the environment or
+files, read or write process memory, call C functions, or be handed an artifact
+the checker rejected, in the default AND `--strict-capabilities` modes. All were
+executed before they were touched. Measured on master dcf72e93 (full `cargo
+build --release`; the binary was copied aside with both `.lib` files AND its
+`stdlib/` directory to `kryos-bypass-bins/master/` before the first edit, because
+a copied `kryos.exe` resolves the stdlib from `<exe_dir>/stdlib` first and then
+from the checkout it was BUILT in, so without that copy the "master" binary
+reads the modified stdlib). Fix head: see the PR. Pinned by the new gate
+`tests/bypass_gate.sh` (programs in `tests/bypass/`, wired into `kryos-loop.sh`
+and both security-gate sites of `ci.yml`).
+
+| id | repro (tests/bypass/) | root | fix | evidence |
+|---|---|---|---|---|
+| B1 | `b1_env_get_shadowed_by_method.kry`, `b1_env_get_shadowed_by_imported_impl.kry`, `b1_raw_memory_shadowed_by_method.kry` | `collect_defined_fns` (kryos-capabilities `checker.rs`) recursed into `Decl::Impl`/`Decl::Trait`, so ANY method named like a gated builtin put the name in `defined_fns`; every bare call to the builtin was then read as a user-function call and never charged, while MIR lowers a method to `Type__name` and codegen still ran the builtin. The raw-memory gate is the same walk, so decoy methods named `str_to_ptr`/`ptr_byte_at` opened it in every mode. | `defined_fns` holds free functions only. A static call `Type::name(..)` on a DECLARED struct/enum is that type's own method (MIR: `Type__name`) and is not charged the builtin of the same name; any other `Name::f(..)` still lowers to the bare builtin and is charged. | master: rc 0 default + strict, `run` prints BYPASS-B1-OK / BYPASS-B1-IMPORTED-OK / `recovered: TOPSECRET-B1-RAWMEM` (raw-memory decoy: rc 0 in permissive too). Fix: rc 1, E0505, nothing runs. Revert of this fix alone: 13 gate checks FAIL. |
+| B2 | `b2_env_get_shadowed_by_trait_decl.kry` | same walk; a bodiless trait method declaration is enough. | same | master rc 0/0, prints BYPASS-B2-OK; fix rc 1 E0505. |
+| B1b (NEW) | `b1b_param_named_like_{method,free_fn,builtin}.kry` | the callee side of the same confusion. `callee_is_named` asked whether the NAME of a call's callee is a free fn / actor / variant / builtin / extern, and a hit skipped the fail-closed resolution of a closure called inside `deny!()`. A fn-typed parameter shadows every global of its name in call position (verified: a param named `max` or like a free fn is what `p()` runs), so any same-named global, a method-only decoy before B1 was fixed, turned the E0507 of `fn outer(r: fn() -> str) { deny!(fs:read) { return r() } }` into an accepted program that read the file inside the deny block. | a local (param, `let`, `for`, `match`, `catch`, lambda parameter) is never "named": enforcement uses the flow-sensitive `current_locals`; the order-independent inference walk counts only fn-bearing params and closure-valued `let`s (counting every `let` made `let max = max(a, b)` read as a local call and demanded `all`). | master: rc 0 default + strict, `run` prints the secret from inside `deny!(fs:read)` (B1B-SECRET-MARKER) for all three. Fix: rc 1, E0507. Revert of this fix alone: 6 checks FAIL. Params named like an actor or an enum variant were also accepted, but codegen calls the constructor there (rc 139 / an empty line), so they are not pinned. |
+| B3 | `b3_std_ffi_zero_cap.kry`, `b3_std_ffi_qualified.kry`, `b3_std_ffi_c_call.kry` (strlen through dlopen/dlsym/dlcall1), `b3_std_ffi_under_deny.kry`, `b3_stdlib_helper_reads_caller_address.kry`, `b3_wasm_fetch_undeclared.kry` | `compiler/stdlib/ffi.kry` exported 32 functions with no `@capabilities`, and the stdlib is exempt from the raw-memory gate, so its exports laundered the authority to any caller. `deny!(ffi)` could not stop them: nothing in the block asked for `ffi`. Audit: `tensor::arr_data_ptr(header)` and `crypto::_bytes_to_hex(data, n)` read an address the caller passes and a glob import puts them in the program's namespace (`_` hides a name from an explicit import list only); `std::wasm`'s four network wrappers were undeclared. | every `std::ffi` export is `@capabilities(ffi)`; a user module that imports a `std::ffi` name (list form, whole-module, glob, alias) or calls one of the two helpers is also gated by the pre-merge raw-memory pass, so it holds in permissive mode like `str_to_ptr`; the four `std::wasm` wrappers declare `net:http`. Tests: `stdlib_raw_exports` (the 32 exports are exactly the declared set; no stdlib function derefs a bare `i64` parameter unless listed), `stdlib_authority` (no unannotated stdlib function has a non-empty effective capability set, except 10 reviewed ones). | master: rc 0 in default, strict and permissive for every program; `run` prints BYPASS-B3-OK and BYPASS-B3-CCALL-OK; the helper program prints a word read from the tensor handle + 32. Fix: rc 1 E0505/E0507 in all three modes. Revert of annotations + name gate: 12 checks FAIL; annotations alone reverted: a program that declares `ffi` and uses `std::ffi` is rejected in strict (1 check) and 2 cargo tests FAIL. |
+| B4 | `b4_extern_ffi_cstr.kry`, `b4_extern_unknown_native.kry`, `b4_extern_raw_pointer_natives.kry`, `b4_extern_db_open.kry`, `b4_extern_tls_connect.kry`, `b4_extern_term_raw_enable.kry`, `b4_extern_fs_read.kry`, `b4_extern_file_open_truncate.kry`, `b4_extern_file_open_write_with_read_cap.kry` | `required_capability_for_native_symbol` ended in `_ => None` ("genuine ambient plumbing"), so any native the table had never heard of was ambient: `kryos_ffi_*` (arbitrary read/write, dlopen/dlsym/dlcall), `kryos_ptr_*` and the allocators, `kryos_db_*`, `kryos_tls_connect`, `kryos_term_raw_enable` and its siblings, `kryos_fs_read`/`fs_write`/`fs_rename`, `kryos_env_cwd`/`env_home`, `kryos_sha1`, `kryos_path_absolute`, `kryos_poll_readable`, and `kryos_file_open` (mode 1 creates/truncates). | `native_symbols.rs` classifies all 607 symbols `kryos-rt` and `kryos-stdlib-native` export (411 ambient by name, 196 with a capability) plus the 19 wasm host-import names `std::wasm` declares (17 ambient, 2 `net:http`); an unclassified `kryos_*` requires `ffi`. The ARC allocators (`kryos_arc_alloc`, `kryos_arc_alloc_i64`) are ambient because the repo pins them so (`tests/inferred_soundness.sh` `native_extern_pure_alloc`); the ARC natives that act on a caller-supplied address (`retain`, `release`, `set_drop`, `ref_count`) are `ffi`. `kryos_file_open` is `fs:write`, narrowed to `fs:read` only by a literal mode `0` at the call. The pre-merge raw-memory pass also reports extern calls that need `ffi` (so they hold in permissive mode like `str_to_ptr`), restricted to `kryos_*` names so non-`kryos_` externs keep their E0508. Test `native_symbols`: scans both crates' sources for `#[no_mangle] extern "C"` (and macro-generated) symbols and every `kryos_*` extern the stdlib declares, and fails on an unclassified one, a stale one, a duplicate, or a classification looser than the old spelling-based mapping. | master: rc 0 in default and strict for every program, `run` prints BYPASS-B4-OK; the repo's own older probe `tests/security/attack_infer_extern_unknown_kryos_name.kry` was accepted. Fix: rc 1 E0506 naming the capability. Revert of this fix alone: 19 gate checks and 3 cargo tests FAIL. |
+| B8 | `b8_cache_target.kry`, `b8_cache_imported_module.kry` + `b8_cache_imported_main.kry` | `compile_file_with_backend` consulted the cache before the lexer ran. The key (source text, target, mode, output type, compiler version) omitted the capability mode, the strict flag, the manifest mode and every imported file. | the cache is consulted inside `compile_module_impl`, after type check, ownership and the capability check accepted the program in the mode THIS build asked for, so a hit can speed a build up but never change its verdict. The key also covers the effective capability mode and strict flag, the backend and its options (lto, `-g`, skip-ownership, async split), the stdlib directory, and the path and content hash of every module file read (`resolve.rs` records them). `SCHEMA_VERSION` is 2: every entry written under the old key is unreachable. | master: build 1 rc 1; build 2 (`--capabilities-mode=permissive --cache`) rc 0, cached; build 3 (default `--cache`) rc 0 and an artifact; strict `--cache` and `KRYOS_CACHE=1` also rc 0. Edit an imported module and rebuild: master HITS and hands back the artifact that still holds and prints the OLD text (`b8-imported-one`). Fix: builds 3, 3b, 3c rc 1 E0505 and write nothing; permissive still hits; the edited module misses and the rebuilt artifact holds and prints `b8-imported-two`. Revert alone: 9 checks FAIL. |
+| B5 | `tests/security/bypass_inferred_library_entry_no_main.kry` (fin/v1.3-finish) | in inferred mode only `main` and annotated functions are charged | NOT CHANGED: by design (documented in docs/THREAT-MODEL.md 4.5 on that branch) | not a defect. |
+| B6 | `tests/security/bypass_delegation_zero_cap_callee.kry` | a closure parameter's authority is charged to its sender (delegation) | NOT CHANGED: by design | not a defect. |
+| B7 | `tests/security/bypass_pure_mutates_argument.kry` | `@pure` restricts calls only | NOT CHANGED: by design | not a defect. |
+
+### Found while fixing, and its status
+
+- **B1b** (above) was found by testing whether the B1 decoy also defeated
+  `callee_is_named`; it did, and so did a plain free function and a builtin
+  name. Fixed and pinned.
+- **B9 (NEW, OPEN, not fixed): a stdlib API publishes a raw address as a plain
+  `i64`, and nothing stops a zero-capability program from using it.**
+  `std::sync::AtomicInt { cell: i64, mu: Mutex }` has a public `cell` (a heap
+  address), struct literals are unrestricted, and `load()`/`store()` dereference
+  whatever `cell` holds. Executed on master and on the fix head (`check` rc 0 in
+  default and strict, no capability declared): an `AtomicInt` built with a
+  `cell` the program chose, rather than one it was handed, is accepted and
+  `load()` reads that address. The same shape exists in
+  `std::chan::ChanWaitGroup.count_cell` and the `std::string::StringBuilder`
+  buffer cell (by reading the source, not run), and every `std::tensor` handle
+  is a heap address as an `i64` (a printed handle is a plain heap address;
+  executed). The raw-memory gate guards the language builtins; the stdlib is
+  exempt, so its public API is the gap. The ambient allow-list in
+  `native_symbols.rs` rests on the same assumption that a handle cannot be
+  forged from an integer; it is stated there, and was not measured beyond the
+  stdlib surfaces above. NOT fixed because the root fix is an opaque handle type / field privacy
+  (a language change), and gating `AtomicInt.load()`/`StringBuilder.append()`
+  with `ffi` would demand `ffi` from every program that uses an atomic or a
+  string builder (a measured over-rejection of the stdlib's ordinary use, not
+  precision-neutral). CLAUDE.md's "you cannot obtain a pointer without declaring
+  ffi" is now qualified accordingly.
+- **Environment, not a defect (gate robustness):** while this was being verified
+  Windows Defender began blocking the exact `a.exe` the B8 imported-module check
+  builds (`Trojan:Win32/Bearfoos.A!ml`, an ML false positive on a tiny
+  Kryos-built program; even `grep` on the file got "Permission denied"). The
+  check now decides on the build log and the rebuilt artifact's bytes and only
+  then runs it, reporting BLOCKED instead of failing when the host refuses; its
+  marker strings changed so the build is a different file. Against the master
+  binary the section still fails three ways. No Defender setting was touched.
+- **Latent, not a bypass today:** `syscall1/2/3/6`, `mem_read_byte`,
+  `mem_write_byte`, `mem_read_i64`, `mem_write_i64`, `mem_copy`, `str_data_ptr`,
+  `str_byte_len`, `str_from_bytes` are registered by the type checker as
+  ambient self-host intrinsics. `kryos check` accepts a zero-capability program
+  that calls them; on this build they are unresolved at link time
+  (`LNK2001: unresolved external symbol mem_read_byte`), so nothing runs. They
+  stay ambient because `compiler/self-host/runtime.kry` is built on them.
+- `kryos_budget_*` natives can push and pop `@budget` frames from a hand-declared
+  extern. They are on the ambient list on purpose (ecosystem packages declare
+  them; there is no capability for a resource limit), recorded here so the
+  decision is visible.
+
+### B3: stdlib audit (modules with an extern block or raw memory, plus ffi and fmt)
+
+`gated-before` / `gated-after` is what a CALLER is charged: `declared X` means
+the export carries `@capabilities(X)`, so every mode charges it; `inferred only`
+means unannotated, charged by inference in the default mode only; `none` means
+not charged. Authority-free exports (pure compute, internal raw memory behind a
+safe API) are counted, not listed; they must stay ambient.
+
+| module | exports | authority | gated-before | gated-after |
+|---|---|---|---|---|
+| ffi | 32 (`open sym close call0-6 callv0-4 callv_4f cstr from_ptr alloc free read_i8..f64 write_i8..f64`) | raw process memory, arbitrary C calls | none | declared `ffi` (+ name gate in user modules, every mode) |
+| wasm | `http_fetch http_fetch_get http_fetch_post` | outbound HTTP | none (`kryos_http_fetch` was ambient) | declared `net:http` |
+| wasm | `fetch_text` | outbound HTTP | inferred only | declared `net:http` |
+| wasm | 31 others (DOM, canvas, alert, string/array/json/regex helpers) | none | none | none (ambient host plumbing) |
+| tensor | `arr_data_ptr(header)` | reads the word at a caller-supplied address | none | name-gated `ffi` in user modules (`STD_RAW_MEMORY_HELPERS`) |
+| crypto | `_bytes_to_hex(data, n)` | reads `n` bytes at a caller-supplied address | none | name-gated `ffi` in user modules |
+| crypto | 12 (`sha256 sha512 hmac_sha256 random_* uuid_v4 ...`) | crypto | declared `crypto` | declared `crypto` (unchanged) |
+| db | 20 | database (sqlite files) | declared `db` | declared `db`; natives now `db` |
+| fs | 15 | `fs:read`, `fs:write` | declared | declared; `fs_rename`, `file_open` etc. classified |
+| io | 5 (`open create open_append open_with_mode BufReader.read_line`) | `fs:read`, `fs:write` | declared | declared; `open` passes the literal read mode `0` |
+| io | `read_line` | stdin (ambient) | inferred only `fs:read`, a bare-name union with `BufReader.read_line` | unchanged (reviewed, on the allow list) |
+| net | 7 (`connect connect_tls bind net_listen http_*`) | `net` | declared | declared; `tls_connect` native now `net:tcp` |
+| os | 20 | `process`, `fs:read` | declared | declared |
+| process | `env_get env_get_or env_has`, `Command.run`, `Command.run_simple` | `process` | declared | declared (unchanged) |
+| term | 20 | `term` | declared | declared; `term_raw_enable` etc. natives now `term` |
+| llm | 6 | `net` | declared | declared |
+| agent_bridge, datetime, json, re, strext, string, fmt | all | none (budget counters, clock, pure compute; raw memory internal behind a safe API) | none | none, stay ambient |
+| sync, chan | atomics, mutex, wait groups | none by the capability model | none | none; B9 (public raw-address fields) is open |
+| tensor | 41 `tensor_*` | none by the capability model (handle arguments) | none | none; B9 (a tensor handle is a raw address) is open |
+
+Outside the audit set and left alone (pre-existing, documented in the
+`stdlib_authority` allow list): `jwt` (4 crypto functions) and `smtp` (3 net
+functions) are unannotated, so they are charged in the default mode but not to an
+annotated caller in permissive mode; `test::run_suite`/`run_tests` delegate to
+caller-supplied closures (B6).
+
+### Verdict diff
+
+Corpus: every `.kry` under `tests examples ecosystem compiler/self-host
+compiler/stdlib compiler/examples compiler/benchmarks compiler/tests packages
+benchmarks demo` of the fix tree (1,349 programs at the PR head), `check` in the
+default and `--strict-capabilities` modes, master binary + master stdlib vs fix
+binary + fix stdlib (`verdict_pass.py` / `verdict_diff.sh` from
+`origin/wave/r2-slot-rows`, copied out of git and not committed): 2,698
+verdicts compared at the PR head.
+
+First pass, before any program was touched: 72 verdicts changed (68 newly
+rejected, 4 reason-moved, 0 newly accepted), 36 programs:
+
+- (a) bypass-class programs now correctly rejected: the 22 new `tests/bypass`
+  programs and `tests/security/attack_infer_extern_unknown_kryos_name.kry`
+  (a B4 instance that had no gate).
+- (a) repo-owned programs that genuinely need the authority, FIXED BY DECLARING IT:
+  `examples/ffi_dlopen.kry`, `ffi_module.kry`, `gl_cube.kry`, `sdl_imgui.kry`,
+  `sdl_info.kry`, `sdl_savepng.kry`, `sdl_window.kry` (`@capabilities(ffi)` on every
+  function that reaches an ffi extern, so they stay strict-clean),
+  `examples/extracted_packages/regex/src/lib.kry`, `sqlite/src/lib.kry` (libc
+  regex / sqlite3 through dlopen), `ecosystem/kryos-capi/consumer.kry` and
+  `src/csvlib.kry`. The last one is a real finding: the package labelled three
+  exports `compute-only`/`io` while rebuilding strings from the host's pointer
+  with `std::ffi::from_ptr`; the labels are now `[ffi]`, `[ffi]`, `[io, ffi]` and
+  its README, build script and consumer follow (`build.sh` needs `zig` and was NOT
+  executed; its pure-logic tests, 4/4, were).
+- reason moved (2): `ecosystem/kryos-secrets/tests/fixtures/leak_compute.kry` and
+  `kryos-typed-config/tests/fixtures/leak_config.kry`, compile-fail fixtures
+  rejected with E0508 before and E0506 after, because the pre-merge pass now
+  reported a non-`kryos_` extern first. Fixed by restricting that pass to
+  `kryos_*` externs; the reason is back to E0508.
+
+Final pass, at the PR head: 48 verdicts changed (24 programs), all newly
+rejected: the 23 `tests/bypass` programs (46) and the existing B4 probe
+`tests/security/attack_infer_extern_unknown_kryos_name.kry` (2), every one class
+(a). 0 newly accepted, 0 reason-moved, 0 over-rejections (c) in the corpus. Per
+stdlib module (66 modules, `use std::<m>::*`, both modes): identical except
+`wasm` strict, rejected before, accepted now.
+
+One over-rejection the corpus diff could not see, found by the gates: the first
+version of the B4 table put the ARC allocators `kryos_arc_alloc` /
+`kryos_arc_alloc_i64` under `ffi`, and `tests/inferred_soundness.sh`
+`native_extern_pure_alloc` (a pinned want_pass: a genuinely pure allocator stays
+ambient) became a false positive. That probe is an inline heredoc in a shell
+script, so it is not a `.kry` file in the corpus; `gates 2` reported it. Fixed
+by keeping the two allocators ambient; the ARC natives that act on a
+caller-supplied address stay `ffi`. Pinned by `ctl_ambient_natives.kry` and the
+`native_symbols` spot checks (reverting the table fails 3 gate checks and the
+spot-check test). Inline programs in `tests/*.sh` are covered by the gates, not
+by the verdict diff.
+
+### Gates (master dcf72e93 vs fix head)
+
+Each tree was built in full (`cargo build --release`) and the binary path and
+mtime printed before every run. Master is dcf72e93, the base of this branch;
+"head" is db6913f1, the last commit before this section was written (the
+commits after it change only LEDGER.md and FULL-REFERENCE.md).
+
+| gate | master dcf72e93 | head |
+|---|---|---|
+| `tests/security_gate.sh` | PASS, 187 ok | PASS, 187 ok |
+| `tests/capability_matrix_gate.sh` | PASS, 0 escapes in 75 shapes, precision 34/75 | identical |
+| `tests/authority_surface_gate.sh` | PASS, 82 builtins, 77 gated, 5 rejected without a named cap | identical |
+| `tools/loop/escape_status.sh` | STILL ESCAPING 12, now-rejected 68, missing 0 | identical |
+| `tools/loop/kryos-loop.sh gates 2` | tier 1 and tier 2 GREEN | GREEN, plus the new `bypass` step PASS |
+| `compiler/self-host/test_bootstrap.sh` | 16 / 16 | 16 / 16 |
+| `tests/bypass_gate.sh` (new) | FAIL: 80 FAIL lines, 18 control `ok` lines (every control passes) | PASS: 57 ok, 0 FAIL, cargo section included |
+| `cargo test --release`: `kryos-capabilities`, `kryos-driver`, `build_cache_smoke` | - | all pass |
+| `tools/docs-examples/check.py` | - | 188/188 blocks type-check (63 skipped) |
+
+`examples/showcase/repo_auditor.kry` and every source of `ecosystem/kryos-tool-broker`
+are accepted in the default and the strict mode on the head.
+
+Master has since moved to 732714ab (PR #38). A local trial merge of that commit
+into this head (not pushed) merges without a conflict and measures the same as
+732714ab itself on every gate it was run through: security_gate PASS (274 ok),
+capability_matrix precision 34/75, authority_surface 82 / 77 / 5, escape_status
+STILL ESCAPING 7, now-rejected 133; and `tests/bypass_gate.sh` PASS on the merge.
+
+### Not fixed
+
+- B9 (above): public raw addresses in stdlib structs and tensor handles.
+- B5, B6, B7 and the six closure-flow escapes (64, 72, 77a, 77b, 112, 114): out
+  of scope, unchanged (`escape_status.sh` STILL ESCAPING is 12 on master and on
+  the fix head).
+- The 64-bit non-cryptographic hash behind the cache key is unchanged.
+- `ecosystem/kryos-capi/build/build.sh` was edited to follow the new labels and
+  not executed (it needs `zig`).
