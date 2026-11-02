@@ -1,0 +1,28 @@
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+// a module-level slot, read inside deny! by a function declared before the main that fills it.
+let mut REG: [fn() -> str] = []
+
+fn run_all() {
+    let f = || "harmless"
+    deny!(fs:read) {
+        for f in REG {
+            println(f())
+        }
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let r = secret()
+    REG = push(REG, safe)
+    REG = push(REG, r)
+    run_all()
+}

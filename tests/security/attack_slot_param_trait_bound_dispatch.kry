@@ -1,0 +1,39 @@
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+fn put(reg: [fn() -> str], g: fn() -> str) {
+    reg[0] = g
+}
+
+// item 112 through a generic fn with a trait bound (static dispatch the checker does not replay).
+trait Reg {
+    fn add(self: Self, reg: [fn() -> str], g: fn() -> str)
+}
+struct I1 {}
+impl Reg for I1 {
+    fn add(self: I1, reg: [fn() -> str], g: fn() -> str) {
+        reg[0] = g
+    }
+}
+fn use_reg<R: Reg>(x: R, fns: [fn() -> str], g: fn() -> str) {
+    x.add(fns, g)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let r = secret()
+    let fns = [safe]
+    use_reg(I1 {}, fns, r)
+    deny!(fs:read) {
+        for f in fns {
+            println(f())
+        }
+    }
+}

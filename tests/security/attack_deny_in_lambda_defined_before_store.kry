@@ -1,0 +1,29 @@
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+// a lambda holding the deny! block is checked (and judged) before the store; it is called after.
+fn put(a: [fn() -> str], g: fn() -> str) {
+    a[0] = g
+}
+
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let r = secret()
+    let fns = [safe]
+    let run = || {
+        deny!(fs:read) {
+            for f in fns {
+                println(f())
+            }
+        }
+    }
+    put(fns, r)
+    run()
+}

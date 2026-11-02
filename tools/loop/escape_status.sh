@@ -149,6 +149,24 @@ slot52|attack_slot_param_method
 slot53|attack_slot_param_fn_value
 slot54|attack_slot_lambda_container_param_store
 slot55|attack_slot_lambda_container_param_push
+118a|attack_slot_param_fn_value_hof_param
+118b|attack_slot_param_fn_value_struct_field
+118c|attack_slot_param_fn_value_factory
+118d|attack_slot_param_fn_value_map_of_ops
+118e|attack_slot_lambda_wrapper_calls_put
+118f|attack_slot_param_trait_bound_dispatch
+118g|attack_slot_dyn_registrar_store
+119a|attack_slot_param_container_in_tuple
+119b|attack_slot_param_container_in_result
+119c|attack_slot_param_array_of_option
+119d|attack_slot_param_option_of_nested_array
+119e|attack_slot_param_tuple_of_two_arrays
+120a|attack_deny_loop_carried_store_after_block
+120b|attack_deny_in_callee_after_main
+120c|attack_deny_in_lambda_defined_before_store
+120d|attack_deny_global_slot_reader_before_main
+120e|attack_deny_show_after_add_before_main
+121|attack_deny_coarse_family_row_blind
 "
 
 printf "%-6s %-52s %-10s %-10s %s\n" ITEM FILE CHECK STRICT RUN

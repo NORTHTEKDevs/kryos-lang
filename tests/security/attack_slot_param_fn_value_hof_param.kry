@@ -1,0 +1,30 @@
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+fn put(reg: [fn() -> str], g: fn() -> str) {
+    reg[0] = g
+}
+
+// item 112, the storing helper is reached through a function-typed PARAMETER of a higher-order function.
+fn apply2(op: fn([fn() -> str], fn() -> str), a: [fn() -> str], g: fn() -> str) {
+    op(a, g)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let r = secret()
+    let fns = [safe]
+    apply2(put, fns, r)
+    deny!(fs:read) {
+        for f in fns {
+            println(f())
+        }
+    }
+}

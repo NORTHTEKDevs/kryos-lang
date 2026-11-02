@@ -1,0 +1,30 @@
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+// item 115 with the storing helper too: a deny!-bearing show(fns) declared before main, called after add(fns, r).
+fn add(fns: [fn() -> str], g: fn() -> str) {
+    fns[0] = g
+}
+
+fn show(fns: [fn() -> str]) {
+    let f = || "harmless"
+    deny!(fs:read) {
+        for f in fns {
+            println(f())
+        }
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let r = secret()
+    let fns = [safe]
+    add(fns, r)
+    show(fns)
+}

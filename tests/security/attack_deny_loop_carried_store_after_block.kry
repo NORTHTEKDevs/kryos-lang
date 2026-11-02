@@ -1,0 +1,26 @@
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+// deny! block textually BEFORE the store, in a loop: iteration 2 runs the privileged closure inside the block.
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let r = secret()
+    let mut fns = [safe]
+    let mut i = 0
+    while i < 2 {
+        deny!(fs:read) {
+            for f in fns {
+                println(f())
+            }
+        }
+        fns = push(fns, r)
+        i = i + 1
+    }
+}
