@@ -69,6 +69,23 @@ Upgrade notes:
 - **A `select` timeout body and duration expression were never checked.** A
   gated builtin there ran in an unannotated `main`, or inside a `deny!`
   block that forbids it, in every mode.
+- **A closure stored second into an array, map, struct field, enum payload or
+  generic container never reached the capability row `deny!` judges.** The type
+  checker typed an array or map literal by its first element and froze a struct
+  field's, an enum payload's or a generic container's row at the first closure
+  stored into it, so `[pure, reader]`, a second `Plugin { run: .. }`, a `push` onto
+  an array of pure closures or a registration helper
+  (`register(reg, name, handler)`, `reg.add(name, handler)`) printed the secret
+  inside `deny!(fs:read)` in every mode. A slot is now the union of everything
+  stored into it, including the stores a helper makes through its parameters.
+  Pinned: 25 programs that master accepted are rejected (E0110), 11 controls stay
+  accepted, and a verdict diff over 1342 programs moved only the targeted
+  repros. One conservative cost: a struct field's row is shared by every value of
+  the struct, so a registry that mixes a pure and a privileged plugin is judged by
+  the union. Still open: a callee that stores a closure into an array it was
+  handed, a `deny!` that sits in the file before the stores that fill the
+  registry it reads, and a registration helper declared after the function that
+  calls it; the README lists them with the other live shapes.
 
 ### Fixed - `kryos repl`
 

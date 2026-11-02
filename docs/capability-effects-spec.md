@@ -278,9 +278,9 @@ which the pragmatic-migration draft's tie-to-`<T,U>` rule does not achieve.
   `unify` (`infer.rs:321`) gets one new `Type::Function` arm that, after
   unifying `params`/`ret` pairwise, also unifies `caps`: if one side is a
   bare `Var(v)`, bind `cap_substitutions[v] = other_side_row`; if both
-  sides are closed and unequal, **union** rather than hard-error (this
-  matters for array/collection literals mixing closures of different
-  concrete rows — see §8's compatibility note).
+  sides are closed, nothing is bound and nothing is rejected. The union a
+  slot needs (an array literal mixing closures of different rows, a struct
+  field stored twice) is taken by §2.6, not by this arm.
 - The return type resolves (mirroring `resolve`, `infer.rs:203-314`, which
   already chases `substitutions` recursively — add one arm chasing
   `cap_substitutions` the same way) to the real row, with zero new tracing
@@ -297,6 +297,10 @@ value restriction and Kryos's existing non-generalization of locals. This
 is why module globals and ordinary `let x = || file_read(p)` locals never
 carry an open row — only a declared function signature can.
 
+(Amended 2026-11-01 by LEDGER root R2, see §2.6: a `let` of a function value now
+binds a SLOT row var of its own, bound to what it holds, so a later store into it can
+widen it. It is storage, not a quantifier: it is never freshened per use.)
+
 ### 2.5 No annotation burden for ordinary code
 
 A function that never takes or returns a fn-value, and is not a `pub`
@@ -306,6 +310,45 @@ only where it documents a published ceiling — the same bar the roadmap
 sketch already set.
 
 ---
+
+### 2.6 Slots: a store into storage widens the row (LEDGER root R2, 2026-11-01)
+
+A row var can stand for a **slot**, a place a closure is stored. A slot's row is
+the union of every closure ever stored into it, so a store into a slot that is
+already bound widens it. The slots are a struct field and an enum payload (one
+row var per declaration, shared by every value: a *global* slot), an annotated
+`let` or top-level binding, the element row of an array or map literal, an
+unannotated `let` of a function value or a container, and a generic type
+variable bound to a closure (`push<T>`, `List<T>`, `Some(..)`).
+
+- `unify` binds a destination row var when it is unbound, widens it when it is a
+  slot, and leaves any other bound var alone: a function's own total and its
+  parameter and return vars are the declaration's facts (or are freshened per
+  call site), not storage.
+- `resolve` carries a function type's row as written. It no longer flattens a
+  bound var into a closed copy, which is what made the second store meet
+  closed/closed and vanish.
+- An array or map literal is typed by a fresh slot every element is unified into.
+  Typing it by its first element dropped every other row.
+- A reference to a declaration copies its own row into the call site
+  (`instantiate_row`). A global slot stays a reference there (a copy would freeze
+  it at the first value stored). A local slot is flattened, because its binding
+  can mention the callee's polymorphic parameter vars, which must be remapped to
+  the call's fresh copies.
+- A body that stores one of its own parameters into a global slot
+  (`fn register(reg, f) { reg.items = push(reg.items, Plugin { run: f }) }`) binds
+  the slot to a polymorphic var no call binds. The stores a body makes into global
+  slots through its parameters are recorded when the body is checked and replayed
+  at every reference to the declaration with that call's copy of the vars.
+- Not covered: a callee that stores into a container it was handed (the caller's
+  slot is not widened; LEDGER item 112), and the arms of an `if` / `match` and the
+  several `return`s of one function (the shape layer fails closed on both).
+- The `deny!` verdict is taken when its block has been checked, so a store declared
+  later in the file than the block is not seen (LEDGER item 72, root R3).
+- A body's stores are recorded when the body is checked, and declarations are
+  checked in file order, so a call that appears before the declaration replays
+  nothing (LEDGER item 114; the same forward-reference class as a function's own
+  row, see `instantiate_row`).
 
 ## 3. Subtyping and variance
 

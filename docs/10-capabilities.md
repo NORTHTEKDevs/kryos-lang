@@ -423,6 +423,25 @@ anywhere) is unaffected and still compiles clean. See
 `tests/security/cap_escape_closure_launder_local_registry_index_field.kry`'s
 own header comment for a live-verified example of this trade-off.
 
+**The type checker's capability rows close the same family independently
+(2026-11-01, LEDGER root R2).** The checker infers a capability row for every
+function value, and `deny!` rejects a block whose row contains a denied
+capability. That row layer used to drop the second closure stored into any slot:
+a literal registry was typed by its first element, and the first closure stored
+into a struct field, an enum payload, an annotated binding or a generic container
+pinned its row. A slot is now the union of every closure stored into it, whether
+the store is a literal element, a `push`, an index or field assignment, a
+constructor argument, or (through a registration helper such as
+`register(reg, name, handler)` or `reg.add(name, handler)`) a call. Two costs, both
+deliberate: a struct field's row is shared by every value of that struct in the
+program, so a registry that mixes a pure and a privileged plugin is judged by the
+union (a `deny!` of that capability that only calls the pure one is rejected); and
+the verdict is taken when its block is checked, so stores declared later in the
+file than the `deny!` are not seen (LEDGER item 72). Rejected: the
+`tests/security/attack_slot_*.kry` programs (E0110). Accepted: the
+`tests/security/ctl_slot_*.kry` controls, including a pure-only registry and a mixed
+registry read inside a `deny!` of a capability none of its closures uses.
+
 See `tests/security/cap_escape_closure_launder_local_struct_field.kry`,
 `..._local_registry_index_field.kry` (the array-of-struct-field flagship
 shape), `..._local_map_of_struct_field.kry`, `..._local_array_direct.kry`,
