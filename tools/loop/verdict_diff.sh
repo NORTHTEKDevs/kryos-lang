@@ -25,6 +25,14 @@
 #   CORPUS_DIRS   space-separated directories to scan (default: see below)
 #   JOBS          parallel checks (default 8)
 #   KEEP_LISTS    when set, keep the per-binary TSVs in <outdir>
+#   VERDICT_SHELL_LOOP  when set, run the checks from a shell loop instead of
+#                 tools/loop/verdict_pass.py (the default whenever python3 exists)
+#   BASELINE_TSV  a baseline.tsv kept by an earlier run (KEEP_LISTS) for the SAME
+#                 baseline binary. The baseline pass is then skipped for every
+#                 program the file already covers (a program it does not cover is
+#                 still run). The file's sibling baseline.id must hold the sha256
+#                 of the baseline binary, so a stale cache cannot be reused by
+#                 mistake; a run with KEEP_LISTS writes that id.
 #
 # Both binaries run from the repository root of THIS checkout with the SAME
 # KRYOS_STDLIB_DIR, so only the binary differs. Exit status: 0 when no verdict
@@ -54,6 +62,8 @@ echo "  baseline : $BASE"
 echo "  candidate: $CAND"
 ls -l --time-style=long-iso "$BASE" "$CAND" 2>/dev/null | awk '{print "    " $6 " " $7 "  " $8}'
 
+BASE_SHA="$(sha256sum "$BASE" | cut -d' ' -f1)"
+
 one() {
     # $1 binary  $2 mode ("" or flag)  $3 file
     local out rc code
@@ -64,17 +74,49 @@ one() {
 export -f one
 
 run_all() {
-    local bin="$1" tsv="$2"
+    # $1 binary  $2 output tsv  $3 file holding the programs to run
+    local bin="$1" tsv="$2" list="$3"
+    # Fast path: one python process drives the checks. The loop below starts a
+    # `bash -c` per program, which costs about a second each on Windows (half an
+    # hour for the 1343-program corpus); verdict_pass.py writes the same rows.
+    if [ -z "${VERDICT_SHELL_LOOP:-}" ] && command -v python3 >/dev/null 2>&1; then
+        python3 "$ROOT/tools/loop/verdict_pass.py" "$bin" "$list" "$tsv" "$JOBS" && return
+        echo "verdict_diff: verdict_pass.py failed; falling back to the shell loop" >&2
+    fi
     : > "$tsv.tmp"
     for mode in "" "--strict-capabilities"; do
         # shellcheck disable=SC2016
-        xargs -a "$OUT/corpus.txt" -d '\n' -P "$JOBS" -I{} bash -c 'one "$0" "$1" "$2"' "$bin" "$mode" {} >> "$tsv.tmp"
+        xargs -a "$list" -d '\n' -P "$JOBS" -I{} bash -c 'one "$0" "$1" "$2"' "$bin" "$mode" {} >> "$tsv.tmp"
     done
     LC_ALL=C sort "$tsv.tmp" > "$tsv"; rm -f "$tsv.tmp"
 }
 
-run_all "$BASE" "$OUT/baseline.tsv"
-run_all "$CAND" "$OUT/candidate.tsv"
+BASE_LIST="$OUT/corpus.txt"
+BASE_CACHED=""
+if [ -n "${BASELINE_TSV:-}" ]; then
+    [ -f "$BASELINE_TSV" ] || { echo "verdict_diff: BASELINE_TSV not found: $BASELINE_TSV" >&2; exit 2; }
+    ID_FILE="${BASELINE_TSV%.tsv}.id"
+    if [ ! -f "$ID_FILE" ] || [ "$(tr -d '[:space:]' < "$ID_FILE")" != "$BASE_SHA" ]; then
+        echo "verdict_diff: $ID_FILE does not hold the sha256 of $BASE ($BASE_SHA); refusing to reuse a cache for a different baseline binary" >&2
+        exit 2
+    fi
+    # keep only the cached rows whose program is still in the corpus
+    LC_ALL=C awk -F'\t' 'NR == FNR { keep[$0] = 1; next } ($1 in keep)' "$OUT/corpus.txt" "$BASELINE_TSV" > "$OUT/baseline.cached.tsv"
+    cut -f1 "$OUT/baseline.cached.tsv" | LC_ALL=C sort -u > "$OUT/baseline.cached.files"
+    LC_ALL=C comm -23 "$OUT/corpus.txt" "$OUT/baseline.cached.files" > "$OUT/baseline.missing.txt"
+    BASE_LIST="$OUT/baseline.missing.txt"
+    BASE_CACHED="$OUT/baseline.cached.tsv"
+    echo "  baseline : reusing $(wc -l < "$BASE_CACHED" | tr -d ' ') cached verdicts, running $(wc -l < "$BASE_LIST" | tr -d ' ') uncached programs"
+fi
+
+run_all "$BASE" "$OUT/baseline.new.tsv" "$BASE_LIST"
+if [ -n "$BASE_CACHED" ]; then
+    LC_ALL=C sort "$OUT/baseline.new.tsv" "$BASE_CACHED" > "$OUT/baseline.tsv"
+else
+    mv "$OUT/baseline.new.tsv" "$OUT/baseline.tsv"
+fi
+printf '%s\n' "$BASE_SHA" > "$OUT/baseline.id"
+run_all "$CAND" "$OUT/candidate.tsv" "$OUT/corpus.txt"
 
 # join on (file, mode)
 TAB="$(printf '\t')"
