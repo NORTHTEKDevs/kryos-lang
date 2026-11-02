@@ -182,8 +182,8 @@ lower the mode: not verified.
 **N3. Some authority is ambient and never charged.**
 `println`, `print`, `eprintln`, `exit`, `abort`, `time_now`, `time_millis`,
 `sleep`, `args()` and `read_line()` need no capability (source: `model.rs`;
-executed: a program calling `args()`, `time_now()`, `sleep(1)` and
-`read_line()` passes default check). Consequences: any data a program is allowed
+executed: one program calling `args()`, `time_now()` and `sleep(1)`
+and another calling `read_line()` both pass default check). Consequences: any data a program is allowed
 to read can leave through stdout or stderr; program arguments and standard input
 are readable by everything; timing and stalling are not bounded. `Capability::Time`
 exists in the enum and is not enforced (`model.rs`, source). `file_exists` is
@@ -321,7 +321,8 @@ it does not make the check sound.
 - **112** (item 112). Do not rely on `deny!` when a helper stores a closure into
   an array, map or struct it received as an argument (`reg[0] = g`). Have the
   helper return the new container and assign it at the call site; that form
-  (`reg = register(reg, name, f)`) is rejected when the helper is declared first.
+  (`reg = register(reg, name, f)`) is rejected when the helper is declared first
+  (pinned: `tests/security/attack_slot_register_helper.kry`).
 - **114** (item 114). Declare registration helpers above the functions that call
   them (the form above the call is rejected). Do not rely on file order alone.
 
