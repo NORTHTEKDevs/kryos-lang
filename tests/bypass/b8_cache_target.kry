@@ -1,0 +1,15 @@
+// BYPASS CLASS B8 -- `kryos build --cache` consulted the artifact cache BEFORE
+// the capability checker, and the cache key (source hash, target, mode, output
+// type, compiler version) did not include the capability mode. So:
+//   1. `kryos build x.kry`                                        -> rejected, E0505
+//   2. `kryos build --capabilities-mode=permissive --cache x.kry` -> built, cached
+//   3. `kryos build --cache x.kry` (default mode)                 -> cache hit, built
+//      (`--strict-capabilities --cache` and KRYOS_CACHE=1 hit the same entry)
+// Step 3 is the same source step 1 rejected. On 2026-11-01 master (dcf72e93):
+// rc 1, 0, 0.
+//
+// Pinned by tests/bypass_gate.sh section 8 (with KRYOS_CACHE_DIR in a scratch
+// directory): after the fix step 3 is rejected with E0505 and writes nothing.
+fn main() {
+    println("home=" + env_get("PATH"))
+}

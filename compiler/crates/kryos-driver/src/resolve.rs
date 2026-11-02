@@ -382,12 +382,62 @@ pub fn extract_imports(module: &Module) -> Vec<(ImportPath, kryos_errors::Span)>
         .collect()
 }
 
+thread_local! {
+    /// Every module file the current compile read (the stdlib's included):
+    /// canonical path -> hash of its text. The build cache keys on this, so an
+    /// edit to an imported module (or a different stdlib directory) can never be
+    /// answered with an artifact built from the old text (B8).
+    static READ_SOURCES: RefCell<std::collections::BTreeMap<String, u64>> =
+        RefCell::new(std::collections::BTreeMap::new());
+}
+
+/// Forget the module files recorded so far. Call at the start of a compile.
+pub fn reset_read_sources() {
+    READ_SOURCES.with(|r| r.borrow_mut().clear());
+}
+
+fn record_read_source(path: &Path, source: &str) {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    source.len().hash(&mut h);
+    source.hash(&mut h);
+    let key = fs::canonicalize(path)
+        .unwrap_or_else(|_| path.to_path_buf())
+        .to_string_lossy()
+        .to_string();
+    READ_SOURCES.with(|r| {
+        r.borrow_mut().insert(key, h.finish());
+    });
+}
+
+/// `path=hash` for every module file read since the last
+/// [`reset_read_sources`], one per line in path order: a stable text for the
+/// build-cache key.
+pub fn read_sources_fingerprint() -> String {
+    READ_SOURCES.with(|r| {
+        r.borrow()
+            .iter()
+            .map(|(p, h)| format!("{p}={h:016x}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    })
+}
+
+/// The stdlib directory `use std::..` resolves against for `importing_file`,
+/// as the build cache records it ("none" when no stdlib is found).
+pub fn stdlib_dir_fingerprint(importing_file: &Path) -> String {
+    find_stdlib_dir(importing_file)
+        .map(|d| fs::canonicalize(&d).unwrap_or(d).to_string_lossy().to_string())
+        .unwrap_or_else(|| "none".to_string())
+}
+
 /// Parse a module file and return its AST.
 fn parse_module_file(path: &Path) -> Result<(Module, kryos_errors::SourceMap), ResolveError> {
     let source = crate::read_source(path).map_err(|e| ResolveError::ReadError {
         path: path.to_path_buf(),
         error: e.to_string(),
     })?;
+    record_read_source(path, &source);
 
     let mut source_map = kryos_errors::SourceMap::default();
     let file_id = source_map.add_file(path.to_string_lossy().to_string(), source.clone());
