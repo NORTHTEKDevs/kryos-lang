@@ -8,7 +8,9 @@
 # could pass on a broken toolchain: a kryos.exe without kryos_rt.lib beside it
 # cannot link, no run prints the leak marker, so every row counted as "fixed".
 # Measured 2026-11-01: "STILL ESCAPING: 0 now-rejected: 99" on a toolchain that
-# could not run a single program.
+# could not run a single program. (Both kryos_rt.lib and
+# kryos_stdlib_native.lib must be missing for that: either one alone still links
+# a program; measured 2026-11-02.)
 #
 # What this does, in order:
 #   1. resolve the binary exactly like escape_status.sh; FAIL if it is missing;
@@ -36,10 +38,10 @@
 set -u
 
 # Floor on the number of rows escape_status.sh must print. Rows are only ever
-# added (99 at PR #38); a lower count means rows were deleted, which would let
-# an escape disappear from the measurement and from the table together. Raise
-# this when the corpus grows.
-MIN_ROWS=99
+# added (99 at PR #38, 190 at master 7cab5799); a lower count means rows were
+# deleted, which would let an escape disappear from the measurement and from the
+# table together. Raise this when the corpus grows.
+MIN_ROWS=190
 
 if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
   echo "check-escapes-documented: FAIL -- bash >= 4 is required (associative arrays); this is ${BASH_VERSION:-unknown}"
