@@ -16,6 +16,16 @@ to a `documented-limitation` node — the limitation goes into `docs/THREAT-MODE
 and the README with a committed repro test, and the graph proceeds. A documented,
 reproducible limitation is shippable; an undocumented one is not.
 
+**After conversion (2026-11-01):** the target of `stage2-rows` and `escape-root` is
+no longer "STILL ESCAPING: 0". It is "every known escape is documented with a
+committed repro, and no closed escape reopens". `tests/security_gate.sh` pins
+every closed repro as must-reject, so a reopened one fails `escape-root`. A new
+find is added to `tools/loop/escape_status.sh` and to the table in
+`docs/THREAT-MODEL.md`; it does not block the release unless it is undocumented
+(accepted by `kryos check` and not in the table) or it reopens a closed repro.
+`tools/loop/check-escapes-documented.sh` enforces this and refuses to run on a
+toolchain that cannot build and run a program.
+
 ## Node format
 
     ### <id>
@@ -42,12 +52,14 @@ accept: test -f tools/loop/ESCAPE-ROUTING.md && bash tools/loop/check-routing-co
 ### stage2-rows
 deps: escape-instrument
 why: The remaining escapes cannot be closed by the shape-matcher (four failed attempts, logged in ESCAPE-ROUTING.md) and must not be closed by annotating dispatchers `all` (measured 2026-08-12: `all` cascades to every consumer of std::http/std::agent, nullifying the capability system for its flagship use case). Type-directed row enforcement is the answer and stage 1 already exists. Plan: tools/loop/STAGE2-PLAN.md.
-accept: bash tools/loop/escape_status.sh | grep -q "STILL ESCAPING: 0" && bash tests/ir_signature_gate.sh >/dev/null && "$PWD/compiler/target/release/kryos.exe" check tests/conformance/conf_stdlib_wave14.kry >/dev/null
+converted: 2026-11-01 to a documented-limitation node (failure policy above). The old accept, `escape_status.sh | grep -q "STILL ESCAPING: 0"`, was chased from 2026-08-12 while the corpus grew (LEDGER: 17 repros on 2026-08-13, 40 on 2026-10-15, 80 on 2026-10-31, 99 at PR #38) because each round of directed search adds shapes. Attempts: (1) the four shape-matcher fixes logged in tools/loop/ESCAPE-ROUTING.md (all failed or were reverted); (2) PR #18 `fin/trust`; (3) PR #38, the R2 wave (slot rows): measured 6 of 99 repros still accepted at dbfb989d; plus the R3 and item-77 close-out waves (PRs pending). What remains is documented in docs/THREAT-MODEL.md section "Known limitations", one row per accepted repro, and checked both ways by check-escapes-documented.sh. The old accept could also pass vacuously (a kryos.exe without kryos_rt.lib beside it reported "STILL ESCAPING: 0 now-rejected: 99" on 2026-11-01); the new one runs a canary first.
+accept: bash tools/loop/check-escapes-documented.sh && bash tests/ir_signature_gate.sh >/dev/null && "$PWD/compiler/target/release/kryos.exe" check tests/conformance/conf_stdlib_wave14.kry >/dev/null
 
 ### escape-root
 deps: stage2-rows
 why: The remaining escapes are one root in many syntactic dresses -- enforcement resolves a callee by pattern-matching expression SHAPE, and every unmatched shape falls into a fail-OPEN default. Adding shapes one at a time has not converged across three rounds.
-accept: bash tools/loop/escape_status.sh | grep -q "STILL ESCAPING: 0" && bash tests/security_gate.sh >/dev/null && bash tests/ir_signature_gate.sh >/dev/null
+converted: 2026-11-01 to a documented-limitation node (failure policy above). The root ("shape matching with fail-open defaults") was attacked in three rounds that did not converge: the shape-matcher attempts in tools/loop/ESCAPE-ROUTING.md; PR #18 `fin/trust`; PR #38, the R2 wave, which closed items 59, 65-71 and 113 at the row layer and left 6 of 99 repros accepted; plus the R3 and item-77 close-out waves (PRs pending). The deferred alternate roots R6 and R7 reject examples/showcase/repo_auditor.kry and ecosystem/kryos-tool-broker (LEDGER, 2026-10-15). The accepted escapes are documented in docs/THREAT-MODEL.md; this node is green when that table equals the measurement and tests/security_gate.sh, which pins every closed repro as must-reject, still passes.
+accept: bash tools/loop/check-escapes-documented.sh && bash tests/security_gate.sh >/dev/null && bash tests/ir_signature_gate.sh >/dev/null
 
 ### threat-model
 deps: escape-root

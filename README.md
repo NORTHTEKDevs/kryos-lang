@@ -37,6 +37,8 @@ kryos run hello.kry
 
 > **Status:** Kryos is **1.2.0** - feature-complete, self-hosting, and usable. Conformance is 68/68 on both backends (`bash tests/conformance/run_conformance.sh`; this count grows as tests are added -- `tests/docs_status_gate.sh` fails CI if this number drifts from the live file count). The CLI surface, LSP method set, stdlib symbol table, and ABI symbols are **frozen** as of 1.0 under semver; see [STABILITY.md](STABILITY.md) for the contract and [§5 Known limitations](STABILITY.md#5-known-limitations-v100) for what is measured, open, and deliberately shipped. One of those is worth reading before you adopt: **1.0 was cut without the external-workload soak** [VERSIONING.md](VERSIONING.md) originally required - the owner waived that precondition, and the waiver is recorded there rather than quietly dropped.
 
+**Capabilities are a compile-time check, not a sandbox.** [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md) states what `@capabilities`, `deny!` and `@pure` guarantee, what they do not, and lists every capability escape that is known and still accepted, each with a committed repro. `bash tools/loop/check-escapes-documented.sh` fails if that list and the measurement disagree. Do not run code you do not trust behind them alone.
+
 ---
 
 ## Start here
