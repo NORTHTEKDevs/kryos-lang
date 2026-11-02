@@ -1,0 +1,33 @@
+// LEDGER root R2, revise round of PR 38 (found by the author while closing the verifier's finding).
+// The same through std::iter::map with an annotated lambda parameter.
+// Master dcf72e93: rejected in the default mode by the shape layer (E0507) but ACCEPTED by `check --strict-capabilities`, where `kryos run --strict-capabilities` prints the secret (executed).
+// First R2 build (PR head dbfb989d): rejected in the default mode by the shape layer (E0507) but ACCEPTED by `check --strict-capabilities`, where `kryos run --strict-capabilities` prints the secret (executed).
+// Must be REJECTED with E0110 ("capability `fs:read` is denied in this block") under inferred and strict,
+// and `kryos run` must not print the secret.
+use std::iter::{for_each, map}
+
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+fn run_all(fns: [fn() -> str]) -> [str] {
+    return map(fns, |g: fn() -> str| g())
+}
+
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let r = secret()
+    let fns = [safe, r]
+    deny!(fs:read) {
+        let outs = run_all(fns)
+        for s in outs {
+            println(s)
+        }
+    }
+}

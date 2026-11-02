@@ -133,6 +133,8 @@ slot38|attack_slot_ret_recursion
 slot39|attack_slot_ret_result_cell
 slot40|attack_slot_ret_fluent_builder
 slot41|attack_slot_ret_rebuild_from_param_array
+slot42|attack_slot_lambda_param_over_container
+slot43|attack_slot_lambda_param_over_container_map
 "
 
 printf "%-6s %-52s %-10s %-10s %s\n" ITEM FILE CHECK STRICT RUN

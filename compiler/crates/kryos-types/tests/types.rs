@@ -2105,3 +2105,28 @@ fn a_join_of_two_function_values_carries_both_rows() {
         other => panic!("expected a function type, got {other:?}"),
     }
 }
+
+#[test]
+fn a_parameter_position_is_contravariant() {
+    // `for_each(fns, |g: fn() -> str| ..)`: the element row E is what the
+    // HOF hands the lambda, so it flows into the lambda's parameter row `lg`.
+    // The lambda's var must take E's row, and E must NOT be widened by `lg`.
+    let mut engine = InferenceEngine::new();
+    let e = engine.fresh_slot_cap_var();
+    engine.bind_cap_var(e, CapRow::closed(CapBits::FS_READ));
+    let lg = engine.fresh_cap_var();
+    let expected = Type::Function {
+        params: vec![fn_with(CapRow::var(e))],
+        ret: Box::new(Type::Void),
+        caps: CapRow::closed(CapBits::EMPTY),
+    };
+    let found = Type::Function {
+        params: vec![fn_with(CapRow::var(lg))],
+        ret: Box::new(Type::Void),
+        caps: CapRow::closed(CapBits::EMPTY),
+    };
+    engine.unify(&expected, &found, S).unwrap();
+    assert_eq!(bits_of(&engine, lg), CapBits::FS_READ);
+    // The slot was not widened by the lambda's parameter var.
+    assert!(!engine.resolve_cap_row(&CapRow::var(e)).var_ids().contains(&lg));
+}

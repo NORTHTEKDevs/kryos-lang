@@ -174,6 +174,12 @@ pub struct InferenceEngine {
     /// side of a flow (`unify_rows` rule 2 widens it instead of skipping it
     /// once it is bound).
     lambda_param_cap_vars: std::collections::HashSet<CapVarId>,
+    /// True while `unify` is inside the PARAMETER types of a function type (an
+    /// odd number of levels deep). A parameter position is contravariant: the
+    /// value the EXPECTED function receives flows into the FOUND function's
+    /// parameter, the opposite way to the function value itself. `unify_rows`
+    /// is told which way a flow goes by swapping its arguments.
+    contravariant: bool,
 }
 
 /// See `InferenceEngine::effect_scope`.
@@ -206,6 +212,7 @@ impl InferenceEngine {
             store_effects: HashMap::new(),
             frozen_cap_vars: HashMap::new(),
             lambda_param_cap_vars: std::collections::HashSet::new(),
+            contravariant: false,
         }
     }
 
@@ -1422,17 +1429,34 @@ impl InferenceEngine {
                     ))
                     .with_label(span, "different parameter counts"));
                 }
+                // A parameter position is contravariant (LEDGER root R2): what
+                // the EXPECTED function hands its parameter flows into the
+                // FOUND function's parameter. Rows met below here are told so.
+                let outer_contravariant = self.contravariant;
+                self.contravariant = !outer_contravariant;
+                let mut param_result: Result<(), Diagnostic> = Ok(());
                 for (t1, t2) in p1.iter().zip(p2.iter()) {
-                    self.unify(t1, t2, span)?;
+                    if let Err(e) = self.unify(t1, t2, span) {
+                        param_result = Err(e);
+                        break;
+                    }
                 }
+                self.contravariant = outer_contravariant;
+                param_result?;
                 self.unify(r1, r2, span)?;
                 // Capability-row unification (spec §2.3): never a hard
                 // error -- accept/reject for a function TYPE is decided
                 // entirely by params/ret above (Stage 1 adds no new
                 // rejection). `c1` is the destination row, `c2` the row
                 // flowing into it; see `unify_rows` for the slot widening
-                // that closed the closed/closed no-op (LEDGER root R2).
-                self.unify_rows(c1, c2);
+                // that closed the closed/closed no-op (LEDGER root R2). In a
+                // parameter position the flow runs the other way: `c2` is the
+                // destination.
+                if outer_contravariant {
+                    self.unify_rows(c2, c1);
+                } else {
+                    self.unify_rows(c1, c2);
+                }
                 Ok(())
             }
 

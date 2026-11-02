@@ -1170,6 +1170,15 @@ R2_ESCAPES="$R2_ESCAPES \
     attack_slot_ret_result_cell \
     attack_slot_ret_fluent_builder \
     attack_slot_ret_rebuild_from_param_array"
+# Parameter positions are contravariant (LEDGER root R2, revise round). A lambda
+# with an ANNOTATED closure parameter handed to a higher-order function over an
+# array the helper was given (`for_each(fns, |g: fn() -> str| g())`) was never
+# linked to the array's element row: the unify direction was the function value's,
+# not the parameter's. The default mode rejects it through the shape layer; under
+# --strict-capabilities nothing else does, so the pin asserts the ROW layer in both.
+R2_ESCAPES="$R2_ESCAPES \
+    attack_slot_lambda_param_over_container \
+    attack_slot_lambda_param_over_container_map"
 for esc in $R2_ESCAPES; do
     esc_ok=1
     for mode in "" "--strict-capabilities"; do
