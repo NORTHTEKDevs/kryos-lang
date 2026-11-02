@@ -136,6 +136,9 @@ echo "== 3. B3: std::ffi (and what hands out raw memory like it) needs ffi at th
 for p in b3_std_ffi_zero_cap b3_std_ffi_qualified b3_std_ffi_c_call b3_std_ffi_under_deny; do
     reject "$B/$p.kry" 'E050[57].*(requires `ffi`|requires capabilities \[ffi\])' default strict permissive
 done
+# whole-module / glob imports bring in all 32 exports (checked only: on master that form
+# passes `check` and fails at codegen, so there is no marker to look for)
+reject "$B/b3_std_ffi_glob_import.kry" 'E050[57].*(requires `ffi`|requires capabilities \[ffi\])' default strict permissive
 run_silent "$B/b3_std_ffi_zero_cap.kry" BYPASS-B3-OK
 run_silent "$B/b3_std_ffi_qualified.kry" BYPASS-B3-QUALIFIED-OK
 run_silent "$B/b3_std_ffi_c_call.kry" BYPASS-B3-CCALL-OK
@@ -212,6 +215,29 @@ second="$(./c$EXE 2>&1 | tr -d '\r')"
 [ "$second" = "answer-v2" ] || b8 "imported: after editing m.kry the program printed '$second', not answer-v2"
 cd "$ROOT"
 [ $b8_bad -eq 0 ] && echo "  ok   an edited imported module misses the cache and the new artifact runs"
+
+# the project's kryos.toml [capabilities] mode is an input of the verdict too
+PRJ="$TMP/b8proj"; mkdir -p "$PRJ/src"; cp "$B/b8_cache_target.kry" "$PRJ/src/main.kry"
+printf '[package]
+name = "cacheproj"
+version = "0.1.0"
+
+[capabilities]
+mode = "permissive"
+' > "$PRJ/kryos.toml"
+cd "$PRJ" || { echo "  FAIL: cannot enter $PRJ"; fail=1; }
+b8_bad=0
+cache_build "$TMP/cache3" --cache . >/dev/null 2>&1 || b8 "manifest: the permissive project --cache build failed"
+printf '[package]
+name = "cacheproj"
+version = "0.1.0"
+' > kryos.toml
+rm -f "cacheproj$EXE"
+if cache_build "$TMP/cache3" --cache . >p.log 2>&1; then b8 "manifest: dropping the manifest's permissive mode still got the cached artifact"; fi
+[ -e "cacheproj$EXE" ] && b8 "manifest: the rejected build wrote an artifact"
+grep -q 'E0505' p.log || b8 "manifest: the build was not rejected with E0505"
+cd "$ROOT"
+[ $b8_bad -eq 0 ] && echo "  ok   dropping a manifest's permissive mode is rejected, not served the cached artifact"
 
 echo "== 9. the tables stay honest (cargo tests)"
 if [ "${BYPASS_GATE_SKIP_CARGO:-0}" = "1" ]; then
