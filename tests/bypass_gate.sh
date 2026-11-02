@@ -205,16 +205,40 @@ IMP="$TMP/b8imp"; mkdir -p "$IMP"
 cp "$B/b8_cache_imported_module.kry" "$IMP/m.kry"; cp "$B/b8_cache_imported_main.kry" "$IMP/prog.kry"
 cd "$IMP" || { echo "  FAIL: cannot enter $IMP"; fail=1; }
 b8_bad=0
+# The verdict is decided by the build log (a stale artifact is a cache HIT) and by the bytes of the
+# rebuilt artifact. The artifacts are then also run, but a host antivirus may refuse to open or
+# execute a freshly built exe (Windows Defender's ML heuristics have flagged tiny Kryos-built
+# programs as Trojan:Win32/Bearfoos.*!ml, a false positive that says nothing about the cache): that
+# is reported as BLOCKED, never silently passed, and the checks that need no artifact access
+# (the cache-hit log line) still decide the verdict.
+b8_blocked=0
+b8_run() { # b8_run <exe> : what the artifact prints, or BLOCKED when the host would not execute it
+    local out rc
+    out="$("$1" 2>&1)"; rc=$?
+    if [ $rc -eq 126 ] || printf '%s' "$out" | grep -q 'Permission denied'; then echo BLOCKED
+    else printf '%s' "$out" | tr -d '\r'; fi
+}
+b8_holds() { # b8_holds <exe> <text> : 0 the artifact embeds the text, 1 it does not, 2 the host denied access
+    grep -qa -- "$2" "$1" 2>/dev/null; return $?
+}
 cache_build "$TMP/cache2" --cache prog.kry -o a$EXE >/dev/null 2>&1 || b8 "imported: cold build failed"
-first="$(./a$EXE 2>&1 | tr -d '\r')"
-[ "$first" = "answer-v1" ] || b8 "imported: first build printed '$first', not answer-v1"
-sed 's/answer-v1/answer-v2/' m.kry > m.kry.new && mv m.kry.new m.kry
+b8_holds a$EXE b8-imported-one; case $? in 0) ;; 2) b8_blocked=1;; *) b8 "imported: the first artifact does not hold b8-imported-one";; esac
+first="$(b8_run ./a$EXE)"
+case "$first" in b8-imported-one) ;; BLOCKED) b8_blocked=1;; *) b8 "imported: first build printed '$first', not b8-imported-one";; esac
+sed 's/b8-imported-one/b8-imported-two/' m.kry > m.kry.new && mv m.kry.new m.kry
 cache_build "$TMP/cache2" -v --cache prog.kry -o c$EXE >c.log 2>&1 || b8 "imported: rebuild after editing the module failed"
 grep -q 'cache: hit' c.log && b8 "imported: an edited imported module HIT the cache (stale artifact)"
-second="$(./c$EXE 2>&1 | tr -d '\r')"
-[ "$second" = "answer-v2" ] || b8 "imported: after editing m.kry the program printed '$second', not answer-v2"
+b8_holds c$EXE b8-imported-two; case $? in 0) ;; 2) b8_blocked=1;; *) b8 "imported: the rebuilt artifact does not hold b8-imported-two (a stale artifact was served)";; esac
+second="$(b8_run ./c$EXE)"
+case "$second" in b8-imported-two) ;; BLOCKED) b8_blocked=1;; *) b8 "imported: after editing m.kry the program printed '$second', not b8-imported-two";; esac
 cd "$ROOT"
-[ $b8_bad -eq 0 ] && echo "  ok   an edited imported module misses the cache and the new artifact runs"
+if [ $b8_bad -eq 0 ]; then
+    if [ $b8_blocked -eq 1 ]; then
+        echo "  ok   an edited imported module misses the cache and the rebuilt artifact holds the new text (BLOCKED: the host refused to open or run a built exe, see the comment above)"
+    else
+        echo "  ok   an edited imported module misses the cache and the new artifact runs"
+    fi
+fi
 
 # the project's kryos.toml [capabilities] mode is an input of the verdict too
 PRJ="$TMP/b8proj"; mkdir -p "$PRJ/src"; cp "$B/b8_cache_target.kry" "$PRJ/src/main.kry"

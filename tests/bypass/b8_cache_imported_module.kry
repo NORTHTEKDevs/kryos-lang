@@ -3,5 +3,5 @@
 // the root file's key unchanged and `kryos build --cache` handed back the binary
 // built from the OLD module.
 fn answer() -> str {
-    return "answer-v1"
+    return "b8-imported-one"
 }
