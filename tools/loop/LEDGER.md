@@ -10,7 +10,7 @@ green CI) > (leak) > (papercut). A silent wrong answer outranks a crash - a
 crash announces itself. A trust-model hole outranks both: nothing above it in
 the stack can be sound if the boundary leaks.
 
-## Wave: item 77, shape layer -- a call through a local closure was charged what invoking the closure needs, not what it returns (item 77 closed in both layers; item 128 and twenty shape-layer escapes closed; items 124-127 recorded first and left open) (2026-11-02)
+## Wave: item 77, shape layer -- a call through a local closure was charged what invoking the closure needs, not what it returns (item 77 closed in both layers; item 128 and twenty shape-layer escapes closed; items 124-127 recorded first and item 129 recorded, all left open) (2026-11-02)
 
 Trust-model wave, branch `wave/item77-local-closure-return` off master `e2fbc46c` (the merge of the R3 wave), one round. Everything
 here was measured on a full `cargo build --release` of each tree; every "master" number is the binary built from `e2fbc46c` (copied aside
@@ -70,15 +70,17 @@ before the first edit, sha256 `053d2754...`).
   authority of the returned closure); the same shape with a local at the head, and through a local bound to a call result.
 - Recorded first (the owner's rule), measured on master `e2fbc46c` before any code was touched: items 124 (seven repros) and 125 (six repros), root F, and item 126 (three repros), root R4,
   reported by the independent verifier of the R3 wave (PR 39), and item 127 (two repros) and item 128, found by this wave. 19 repros, each with an escape_status row, a LEDGER item and a
-  measured routing row; `escape_status.sh` 10 escaping / 180 rejected (190) on master -> 29 / 180 (209) with them recorded -> 28 / 200 (228) here.
+  measured routing row; `escape_status.sh` 10 escaping / 180 rejected (190) on master -> 29 / 180 (209) with them recorded -> 31 / 200 (231) here (item 128 and the 19 shape programs fixed; the 3 repros of item 129, found after the fix was written and present on master, recorded).
 - NOT closed by this wave:
+  * Item 129 (found by this wave, present on master and measured unchanged here): the flat map is built once in textual order, so a loop-carried rebinding of an alias or of a
+    local closure (`g = f` then `f = reader`; `f = op(reader)` then `op = |r| { r }`) and a lambda `let` that replaces the entry of an earlier binding of the same name are not seen.
   * Items 119, 121, 122, 123 (other roots, recorded by the R2 and R3 waves) and the items this wave recorded: 124 and 125 (the `deny!` verdict through a function declared above the callee it
     hands a closure to, and a store made by a callee declared below its caller; the swapped declaration order of every probe is rejected), 126 (`deny!` in a `select` arm, which also hides
     every shape-layer defect from the row layer), 127 (a closure returned by a top-level function that uses a captured parameter through a helper, or two captured parameters: the
     captured-parameter case of `resolve_closure_caps` records one, chosen by a `HashSet`; `compose2(harmless, reader)` with `|| { a() + run(b) }` leaks, the swapped call is rejected).
   * A closure whose definition the checker does not see (a closure received as a parameter and called, a closure read out of a container) still answers `Unknown`: calling it returns a value
     charged `all`. That is unchanged and was the rule for a parameter before this wave.
-  * Soundness of the shape layer is still a floor, not a proof: the flat map is per name, not per scope, a loop variable or a catch parameter that shadows a closure name is read through the
+  * Soundness of the shape layer is still a floor, not a proof: the flat map is per name, not per scope (and built once, item 129), a loop variable or a catch parameter that shadows a closure name is read through the
     closure's entry (the blinding the corpus uses against the shape layer), and every defect above is invisible to the row layer when the `deny!` sits in a `select` arm.
 
 ## Wave: R3 deny! verdict timing -- the verdict was taken on a row whose vars were still unbound (items 64, 72, 114, 115, 116 and 120 closed; 77 and four repros of 118 closed with them; 119, 121, 122 and three repros of 118 open) (2026-11-02)
@@ -6428,7 +6430,7 @@ capability-escape item and every other OPEN item below remain untouched.
 > this section and the README were BOTH wrong in both directions at once: item
 > 10 was ranked the highest-priority OPEN escape but had actually been fixed,
 > while twelve others were open and the README claimed a single residual. As of
-> 2026-11-02 the true count is **28 escaping, 200 rejected**.
+> 2026-11-02 the true count is **31 escaping, 200 rejected**.
 >
 > **It happened again, and worse (2026-10-15).** The corpus was the 19 named
 > repros, and "0 escaping" was true OF THOSE 19 while eighteen other shapes
@@ -6482,7 +6484,7 @@ capability-escape item and every other OPEN item below remain untouched.
 >   catches it; `security_gate.sh` check 66 pins it.
 
 
-### Items 119, 121, 122, 123 and 124-127: what is still open of the capability-escape waves of 2026-10-15, 2026-10-31 and 2026-11-01, and the findings recorded first by the item-77 wave
+### Items 119, 121, 122, 123, 124-127 and 129: what is still open of the capability-escape waves of 2026-10-15, 2026-10-31 and 2026-11-01, and the findings recorded first by the item-77 wave
 
 Items 55-72 are all closed (59 and 65-71 by the R2 wave of 2026-11-01; 64 and 72 by the R3 wave of
 2026-11-02, the first entry at the top of this file, which also closed items 77, 114, 115, 116 and
@@ -6491,10 +6493,11 @@ in the CLOSED table. What is live: item 119 (item 112 where the handed container
 Option, Result or Enum parameter; root R2), item 121 (the row layer's deny! does not match a coarse
 family), item 122 (the body of a trait default method is never checked; found by the R3 wave) and item
 123 (what is left of 118: a store helper reached through a factory result, a trait bound or a dyn;
-root R2), and four recorded first by the item-77 wave of 2026-11-02: items 124 and 125 (forward references,
+root R2), and five recorded by the item-77 wave of 2026-11-02: items 124 and 125 (forward references,
 root F) and 126 (a `deny!` in a `select` arm, root R4), found by the independent verifier of the R3 wave, and
-item 127 (a closure returned by a top-level function that uses a captured parameter through a helper, or two of
-them), found by the wave itself. (The wave also found item 128, a chained call of a function that returns a closure,
+items 127 (a closure returned by a top-level function that uses a captured parameter through a helper, or two of
+them) and 129 (the build order of the flat map: a loop-carried rebinding, a lambda `let` that replaces an earlier
+binding), found by the wave itself. (The wave also found item 128, a chained call of a function that returns a closure,
 and closed it with item 77.) `escape_status.sh` counts them (28) and `ESCAPE-ROUTING.md` carries a routing row for each.
 
 ### 119. LIVE CAPABILITY ESCAPE -- item 112 where the container the callee was handed sits inside a Tuple, Option, Result or Enum parameter: `storage_rows_in` does not walk them, so the callee's store is not input storage -- NOT FIXED
@@ -6528,6 +6531,10 @@ Found by the independent verifier of the R3 wave (PR 39); recorded first by the 
 ### 127. LIVE CAPABILITY ESCAPE -- a closure returned by a top-level function that uses a captured parameter other than by calling it by name (it forwards it to a helper), or that uses two captured parameters, is charged the authority of at most one of them -- NOT FIXED
 
 Found by the item-77 wave while hunting the siblings of item 77 (the return flow of a function value). Two probes, committed (escape_status.sh rows 127a and 127b): tests/security/attack_shape_named_closure_forwards_captured_via_helper.kry (`fn mk(b) -> fn() -> str { return || run(b) }` with `fn run(h) { return h() }`, `f = mk(reader)`) and attack_shape_named_closure_two_captured_params.kry (`fn compose2(a, b) -> fn() -> str { return || { a() + run(b) } }`, `f = compose2(harmless, reader)`). The `deny!(fs:read)` block that calls `f()` sits in a `select` arm, which the row layer does not judge (item 126), so the shape layer is the only judge; with the block outside a select arm the row layer rejects both (E0110, measured). Master e2fbc46c, re-run before any code was touched: check rc=0 in default and strict mode, `kryos run` prints TOPSECRET-CLOSURE-9f8e7d6c5b4a in both modes (executed). Cause (read from the `Lambda` arm of `resolve_closure_caps` and confirmed by the controls below): the CAPTURED-HOT-PARAMETER case looks for a captured parameter that the literal CALLS by name and takes the first one `HashSet::iter()` yields. A parameter the literal forwards to a hot helper is never found (`|| run(b)` accepted, `|| b()` rejected with E0507, measured) and with two captured parameters the other one's authority is dropped (`compose2(harmless, reader)` accepted, `compose2(reader, harmless)` rejected; with both called directly, `|| { b() + a() }`, the verdict differs from one run to the next on the same binary, measured). Closing root: record every captured parameter whose authority the literal's body consumes (the deferrals `deferred_own_param_caps` makes while the body is resolved are that set) and charge all of them at the call, which needs a result that holds a set of deferred parameters instead of one. Control that must stay accepted: the same programs with a pure `reader`.
+
+### 129. LIVE CAPABILITY ESCAPE -- the flat per-name map the shape layer reads is built once, in textual order: a binding that comes later in the text but runs earlier (a loop) is missing from every entry derived from another entry, and a lambda `let` replaces the entry of an earlier binding of the same name -- NOT FIXED
+
+Found by the item-77 wave while hunting the siblings of item 77, after the fix was written; present on master `e2fbc46c` and unchanged by the wave. Three probes, committed (escape_status.sh rows 129a-129c; the `deny!` block of each sits in a `select` arm, so the shape layer is the only judge): tests/security/attack_shape_loop_carried_rebound_callee.kry (`f = op(reader)` in a loop that rebinds `op = |r| { r }` after the call), attack_shape_loop_carried_alias.kry (`g = f` then `f = reader` in a loop; no call through a local closure, so independent of item 77) and attack_shape_lambda_let_replaces_earlier_binding.kry (`let h = reader` called in the block, a later `let h = || { "x" }` in another scope). Master e2fbc46c and this wave's head, re-run before the repros were written: check rc=0 in default and strict mode, `kryos run` prints TOPSECRET-CLOSURE-9f8e7d6c5b4a in both modes (executed). Cause (read from `build_local_closure_caps_block`, confirmed by the three probes): an entry derived from another one (`g = f`, `f = op(reader)`) is computed when its statement is reached and is not updated by a binding made later in the text, which is the order a loop runs them in; and the `Let` arm of a lambda inserts `Known(empty)` as a self-recursion placeholder with `locals.insert`, which REPLACES the entry an earlier binding of the same name left, instead of merging into it. Closing root: build the map to a fixed point (walk the body again with the map the first walk left, until it stops growing) and make the placeholder merge instead of replace; measure the verdict diff, because every entry then also sees the bindings that come after it. Control that must stay accepted: the same programs with a pure `reader`.
 
 ### 51. CLOSED 2026-10-08 (owned struct/enum field store; see the enum-ownership wave at the top). Original title: LEAK -- item 49 RESIDUAL: struct-field assignment holding an Enum/Struct (`h.v = Val.ListV(..)`) still leaks on container-slot OVERWRITE; only the array-index/map-index shapes were fixed (2026-08-28) -- NOT FIXED; 2nd attempt 2026-08-29 got HALF of it and was REVERTED, mechanism now identified, read the addendum first
 

@@ -2,7 +2,7 @@
 
 > **Measured status (2026-11-02) - read this before anything else on this page.**
 > `bash tools/loop/escape_status.sh` re-runs every committed capability-escape repro under both
-> enforcement modes and prints the real count: **28 still escape, 200 are rejected (228 repros)**
+> enforcement modes and prints the real count: **31 still escape, 200 are rejected (231 repros)**
 > (`tools/loop/check-docs-truth.sh` fails CI if the README or the LEDGER preamble drifts from that
 > number). Every escape still live is named in [tools/loop/LEDGER.md](../tools/loop/LEDGER.md) with its
 > measured routing in [tools/loop/ESCAPE-ROUTING.md](../tools/loop/ESCAPE-ROUTING.md). They fall in
@@ -13,7 +13,8 @@
 > (item 122); the `deny!` verdict missing a function declared above the callee it hands a closure to
 > or a store made by a callee declared below its caller (items 124, 125), or a `deny!` inside a `select`
 > arm, which the type checker never visits (item 126); and a closure returned by a top-level function
-> that uses a captured parameter through a helper or alongside another one (item 127). **A count of 0
+> that uses a captured parameter through a helper or alongside another one (item 127); and the order the shape layer builds its per-name map in, which a
+> loop-carried rebinding of an alias or of a local closure and a later lambda `let` of the same name get past (item 129). **A count of 0
 > would not mean there are no escapes.** The corpus is adversarial shapes found by directed search,
 > so a green count is a floor, not a soundness proof, and the shape nobody has thought of is the one
 > that matters. Today capabilities are a strong development-time discipline; they are not yet a

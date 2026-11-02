@@ -145,7 +145,8 @@ Upgrade notes:
   recursive nested `fn` that returns its parameter, and a closure that binds its parameter
   to a local before returning it, are charged `all` even when the argument is pure.
   Still open at this layer: a closure returned by a top-level function that uses a
-  captured parameter through a helper, or two of them (item 127); sixteen repros of the
+  captured parameter through a helper, or two of them (item 127); the order the per-name map is built in, which a
+  loop-carried rebinding or a later lambda `let` of the same name get past (item 129); sixteen repros of the
   `deny!` verdict (items 124, 125 and 126) were recorded and not fixed.
 
 ### Fixed - `kryos repl`

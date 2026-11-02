@@ -237,6 +237,9 @@ s77-16|attack_shape_local_alias_of_named_fn
 s77-17|attack_shape_local_two_bindings
 s77-18|attack_shape_named_getter_through_local
 s77-19|attack_shape_closure_in_closure_captured
+129a|attack_shape_loop_carried_rebound_callee
+129b|attack_shape_loop_carried_alias
+129c|attack_shape_lambda_let_replaces_earlier_binding
 "
 
 printf "%-6s %-52s %-10s %-10s %s\n" ITEM FILE CHECK STRICT RUN
