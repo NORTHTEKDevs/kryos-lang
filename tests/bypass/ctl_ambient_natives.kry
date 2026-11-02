@@ -1,0 +1,16 @@
+// CONTROL for B4: natives on the explicit AMBIENT list stay callable with no
+// declaration. These are the ones repo packages hand-declare (the @budget
+// counters, the clock). MUST stay accepted (default + strict) and print
+// CTL-B4-AMBIENT-OK.
+extern "C" {
+    fn kryos_budget_active() -> i64
+    fn kryos_time_now_millis() -> i64
+}
+
+fn main() {
+    let a = kryos_budget_active()
+    let t = kryos_time_now_millis()
+    if t > 0 {
+        println("CTL-B4-AMBIENT-OK " + to_string(a))
+    }
+}

@@ -1,0 +1,16 @@
+// BYPASS CLASS B3 -- a std::ffi call inside `deny!(ffi)`.
+//
+// `deny!(ffi)` removes `ffi` from the scope of its block. The std::ffi wrappers
+// carried no declaration, so nothing in the block asked for `ffi` and nothing
+// could be denied: the call ran under a block that exists to forbid it.
+//
+// MUST be rejected (E0505 or E0507) in default, strict and permissive.
+use std::ffi::{cstr, read_i8}
+
+@capabilities(ffi)
+fn main() {
+    deny!(ffi) {
+        let p = cstr("BYPASS-B3-DENY-OK")
+        println(to_string(read_i8(p)))
+    }
+}

@@ -333,6 +333,56 @@ pub fn with_raw_memory_gate<T>(f: impl FnOnce() -> T) -> T {
     out
 }
 
+thread_local! {
+    /// Extra names the raw-memory gate treats exactly like
+    /// [`RAW_MEMORY_BUILTINS`] for ONE scan: the names a user module imports
+    /// from `std::ffi` (bypass class B3). `std::ffi` is the one stdlib module
+    /// whose exports ARE the authority (`cstr`, `read_i8`, `dlopen` ...), not
+    /// a safe API built on it, so the stdlib's exemption from the gate must
+    /// not cover a user module that calls them.
+    static GATE_RAW_MEMORY_NAMES: std::cell::RefCell<HashSet<String>> =
+        std::cell::RefCell::new(HashSet::new());
+}
+
+/// [`with_raw_memory_gate`], additionally gating `extra_names` (see
+/// `GATE_RAW_MEMORY_NAMES`). Clears the names afterwards.
+pub fn with_raw_memory_gate_for<T>(extra_names: HashSet<String>, f: impl FnOnce() -> T) -> T {
+    GATE_RAW_MEMORY_NAMES.with(|n| *n.borrow_mut() = extra_names);
+    let out = with_raw_memory_gate(f);
+    GATE_RAW_MEMORY_NAMES.with(|n| n.borrow_mut().clear());
+    out
+}
+
+fn raw_memory_extra_gated(name: &str) -> bool {
+    GATE_RAW_MEMORY_NAMES.with(|n| n.borrow().contains(name))
+}
+
+/// Stdlib-INTERNAL helpers that dereference an address their caller supplies
+/// (`tensor::arr_data_ptr(header)` reads the word at `header + 32`,
+/// `crypto::_bytes_to_hex(data, n)` hex-dumps `n` bytes at `data`). They are
+/// not part of any module's API, but the flat namespace puts every helper an
+/// import pulls in within reach of the importing program (`_` hides a name
+/// from an explicit import list only), so in a user module a call to one is
+/// raw memory like `ptr_byte_at` and needs `ffi`. Inside the stdlib they stay
+/// ungated, as every other use of the primitives does.
+/// `tests/stdlib_raw_exports.rs` fails if another stdlib function starts
+/// dereferencing a parameter without being listed here or in
+/// [`STD_FFI_EXPORTS`].
+pub const STD_RAW_MEMORY_HELPERS: &[&str] = &["arr_data_ptr", "_bytes_to_hex"];
+
+/// Every function `compiler/stdlib/ffi.kry` exports. Each hands its caller
+/// raw memory or an arbitrary C call, and each is declared
+/// `@capabilities(ffi)` there; `tests/std_ffi_exports.rs` keeps this list and
+/// that file in step.
+pub const STD_FFI_EXPORTS: &[&str] = &[
+    "open", "sym", "close",
+    "call0", "call1", "call2", "call3", "call4", "call5", "call6",
+    "callv0", "callv1", "callv2", "callv3", "callv4", "callv_4f",
+    "cstr", "from_ptr", "alloc", "free",
+    "read_i8", "read_i16", "read_i32", "read_i64", "read_f32", "read_f64",
+    "write_i8", "write_i16", "write_i32", "write_i64", "write_f32", "write_f64",
+];
+
 pub fn raw_memory_gated() -> bool {
     GATE_RAW_MEMORY.with(|g| g.get())
 }
@@ -421,7 +471,7 @@ pub fn is_known_builtin_name(name: &str) -> bool {
 /// Returns `None` for functions that don't require any capability
 /// (e.g. `println`, `print`, `len`, `push`, `to_string`).
 pub fn required_capability_for_builtin(name: &str) -> Option<Capability> {
-    if raw_memory_gated() && RAW_MEMORY_BUILTINS.contains(&name) {
+    if raw_memory_gated() && (RAW_MEMORY_BUILTINS.contains(&name) || raw_memory_extra_gated(name)) {
         return Some(Capability::Ffi);
     }
     match name {
@@ -517,7 +567,36 @@ pub fn required_capability_for_builtin(name: &str) -> Option<Capability> {
 /// native ambient -- a full bypass of deny-by-default (arbitrary process
 /// exec / fs write / outbound HTTP from a zero-capability `main`). This maps
 /// the natives to the SAME authority as the builtin they back.
+///
+/// FAILS CLOSED (bypass class B4). The answer is, in order:
+/// 1. the explicit per-symbol classification in [`crate::native_symbols`]
+///    (every symbol the runtime exports is listed there, enforced by
+///    `tests/native_symbols.rs`): `Ambient` -> `None`, `Requires(c)` -> `Some(c)`;
+/// 2. the builtin-spelling derivation in [`spelled_native_symbol_capability`],
+///    for a name the table does not list (a hand-declared host import spelled
+///    like a builtin);
+/// 3. otherwise `Some(Ffi)`. A native nobody classified used to be ambient
+///    here (`_ => None`), which is how `kryos_ffi_cstr` + `kryos_ffi_read_i8`
+///    read arbitrary memory from a program that declared nothing.
 pub fn required_capability_for_native_symbol(sym: &str) -> Option<Capability> {
+    match crate::native_symbols::classify_native_symbol(sym) {
+        Some(crate::native_symbols::NativeClass::Ambient) => return None,
+        Some(crate::native_symbols::NativeClass::Requires(c)) => return Some(c),
+        None => {}
+    }
+    if let Some(c) = spelled_native_symbol_capability(sym) {
+        return Some(c);
+    }
+    Some(Capability::Ffi)
+}
+
+/// The capability a native symbol's SPELLING maps to through the builtin
+/// vocabulary, or `None` if the spelling maps to nothing. `None` is NOT
+/// "ambient": [`required_capability_for_native_symbol`] fails closed on it.
+/// Kept as a match so every gated spelling stays visible to
+/// `tests/authority_surface_gate.sh`, which reads the arms of this file.
+#[doc(hidden)]
+pub fn spelled_native_symbol_capability(sym: &str) -> Option<Capability> {
     // 1. Exact language-builtin spelling (file_read, create_dir, exec, ...).
     if let Some(c) = required_capability_for_builtin(sym) {
         return Some(c);

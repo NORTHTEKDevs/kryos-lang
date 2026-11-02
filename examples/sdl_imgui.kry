@@ -46,10 +46,12 @@ let mut g_rect: i64 = 0
 let mut g_set_color: i64 = 0
 let mut g_fill_rect: i64 = 0
 
+@capabilities(ffi)
 fn ui_set_color(r: i64, g: i64, b: i64, a: i64) {
     kryos_ffi_dlcall5(g_set_color, g_ren, r, g, b, a)
 }
 
+@capabilities(ffi)
 fn ui_fill(x: i64, y: i64, w: i64, h: i64) {
     kryos_ffi_write_i32(g_rect, x)
     kryos_ffi_write_i32(g_rect + 4, y)
@@ -59,6 +61,7 @@ fn ui_fill(x: i64, y: i64, w: i64, h: i64) {
 }
 
 // Title bar at the top of the window.
+@capabilities(ffi)
 fn ui_title_bar(x: i64, y: i64, w: i64) {
     ui_set_color(45, 55, 78, 255)
     ui_fill(x, y, w, 32)
@@ -70,6 +73,7 @@ fn ui_title_bar(x: i64, y: i64, w: i64) {
 
 // Button. Returns true if the mouse is "over" it (always false in this
 // scripted demo, but we keep the signature realistic).
+@capabilities(ffi)
 fn ui_button(x: i64, y: i64, w: i64, h: i64, hover: bool) -> bool {
     if hover {
         ui_set_color(100, 160, 255, 255)
@@ -87,6 +91,7 @@ fn ui_button(x: i64, y: i64, w: i64, h: i64, hover: bool) -> bool {
 }
 
 // Checkbox.
+@capabilities(ffi)
 fn ui_checkbox(x: i64, y: i64, size: i64, checked: bool) {
     // Background
     ui_set_color(30, 35, 50, 255)
@@ -106,6 +111,7 @@ fn ui_checkbox(x: i64, y: i64, size: i64, checked: bool) {
 }
 
 // Slider: filled portion is 0..value (0..100).
+@capabilities(ffi)
 fn ui_slider(x: i64, y: i64, w: i64, value: i64) {
     // Track
     ui_set_color(30, 35, 50, 255)
@@ -122,6 +128,7 @@ fn ui_slider(x: i64, y: i64, w: i64, value: i64) {
     ui_fill(x + fill_w - 4, y, 8, 22)
 }
 
+@capabilities(ffi)
 fn main() {
     println("--- Kryos SDL2 immediate-mode GUI demo ---")
 

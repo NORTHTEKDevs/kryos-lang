@@ -1,0 +1,13 @@
+// BYPASS CLASS B4 -- kryos_tls_connect: an outbound TLS connection, ambient.
+//
+// The builtin table had tls_accept/tls_send/tls_recv/tls_close but never
+// tls_connect, so the native that OPENS the connection was unclassified.
+// MUST be rejected with E0506 (`requires net:tcp`) in default and strict.
+extern "C" {
+    fn kryos_tls_connect(host_ptr: i64, host_len: i64, port: i64) -> i64
+}
+
+fn main() {
+    let h = kryos_tls_connect(0, 0, 443)
+    println("BYPASS-B4-TLS-OK " + to_string(h))
+}

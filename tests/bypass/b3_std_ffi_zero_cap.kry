@@ -1,0 +1,25 @@
+// BYPASS CLASS B3 -- std::ffi needs no capability.
+//
+// `compiler/stdlib/ffi.kry` exported 32 functions (dlopen/dlsym/dlcall0-6,
+// cstr, malloc, read_i8..i64, write_i8..i64, ...) with no @capabilities, and
+// the stdlib is exempt from the raw-memory gate, so a zero-authority `main`
+// read arbitrary process memory through the wrappers while `str_to_ptr` and
+// `ptr_byte_at` in the same `main` were rejected. On 2026-11-01 master:
+// `kryos check` rc 0 in default and --strict-capabilities, and `kryos run`
+// printed BYPASS-B3-OK.
+//
+// MUST be rejected: E0505 (user module importing std::ffi: the call needs
+// `ffi`) or E0507 (callee requires [ffi]), in default, --strict-capabilities
+// and --capabilities-mode=permissive.
+use std::ffi::{cstr, read_i8}
+
+fn main() {
+    let p = cstr("BYPASS-B3-OK")
+    let mut out = ""
+    let mut i = 0
+    while i < 12 {
+        out = out + char_from(read_i8(p + i))
+        i = i + 1
+    }
+    println(out)
+}

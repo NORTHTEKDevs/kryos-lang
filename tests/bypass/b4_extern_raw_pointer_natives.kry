@@ -1,0 +1,19 @@
+// BYPASS CLASS B4 -- the natives behind the raw-memory BUILTINS.
+//
+// `alloc`, `ptr_read_i64`, `ptr_write_i64` need `ffi`; the symbols they lower to
+// (kryos_alloc_bytes, kryos_ptr_read_i64, kryos_ptr_write_i64) mapped through
+// the builtin spelling, which only answers `ffi` inside the pre-merge
+// raw-memory pass. Declared by hand they were ambient everywhere else.
+//
+// MUST be rejected with E0506 (`requires ffi`) in default, strict and permissive.
+extern "C" {
+    fn kryos_alloc_bytes(n: i64) -> i64
+    fn kryos_ptr_write_i64(p: i64, i: i64, v: i64) -> i64
+    fn kryos_ptr_read_i64(p: i64, i: i64) -> i64
+}
+
+fn main() {
+    let p = kryos_alloc_bytes(16)
+    kryos_ptr_write_i64(p, 0, 7)
+    println(to_string(kryos_ptr_read_i64(p, 0)))
+}

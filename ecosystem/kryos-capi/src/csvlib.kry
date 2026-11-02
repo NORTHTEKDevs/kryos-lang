@@ -5,14 +5,19 @@
 // exported entry points each carry a `@capabilities(...)` annotation that the
 // Kryos compiler VERIFIES against the builtins the function actually calls:
 //
-//   csv_field_count   @capabilities()    -> compute-only (no authority)
-//   csv_row_count     @capabilities()    -> compute-only (no authority)
-//   csv_to_json_file  @capabilities(io)  -> touches the filesystem (file_write)
+//   csv_field_count   @capabilities(ffi)      -> reads the host's C string
+//   csv_row_count     @capabilities(ffi)      -> reads the host's C string
+//   csv_to_json_file  @capabilities(io, ffi)  -> reads the host's C strings, writes a file
 //
-// Because the compiler rejects an `@capabilities()` function that calls a
-// gated builtin (E0505), a clean build is proof the labels are honest. The
+// Rebuilding a string from the caller's `*const u8` with `from_ptr` is raw
+// memory access, so every export declares `ffi` (std::ffi requires it; before
+// LEDGER bypass class B3 was closed these labels read `[]` only because
+// std::ffi carried no declaration at all).
+//
+// Because the compiler rejects an export that calls a gated builtin its label
+// does not declare (E0505), a clean build is proof the labels are honest. The
 // build wrapper turns these verified labels into <lib>.caps.json so a C /
-// Python / Go host can read "this export is compute-only" BEFORE it dlopens.
+// Python / Go host can read what this export can touch BEFORE it dlopens.
 //
 // FFI is i64-marshalled (kryos stdlib/ffi.kry: max arity 6, i64/f64 only), so
 // the exports take C string pointers (i64) and return ints. Inside, from_ptr
@@ -25,8 +30,8 @@ use std::string::{split, split_lines, join, replace}
 // ---- exported C-ABI entry points (i64 in / i64 out) ----
 
 // Number of comma-separated fields in the CSV header (first line).
-// Pure string work: stays `compute`.
-@capabilities()
+// Pure string work after the pointer read: declares only `ffi`.
+@capabilities(ffi)
 fn csv_field_count(ptr: i64) -> i64 {
     let s: str = from_ptr(ptr, 0 - 1)
     let lines: [str] = split_lines(s)
@@ -36,8 +41,9 @@ fn csv_field_count(ptr: i64) -> i64 {
     return len(split(lines[0], ","))
 }
 
-// Number of data rows (lines after the header). Pure string work: `compute`.
-@capabilities()
+// Number of data rows (lines after the header). Pure string work after the
+// pointer read: declares only `ffi`.
+@capabilities(ffi)
 fn csv_row_count(ptr: i64) -> i64 {
     let s: str = from_ptr(ptr, 0 - 1)
     let lines: [str] = split_lines(s)
@@ -50,9 +56,9 @@ fn csv_row_count(ptr: i64) -> i64 {
 
 // Transform CSV (csv_ptr) into a JSON array of row objects and WRITE it to the
 // file named by path_ptr. file_write is gated behind `io`, so the compiler
-// forces this function to declare `@capabilities(io)` -- and the caps manifest
-// reflects that. Returns the number of JSON bytes written.
-@capabilities(io)
+// forces this function to declare `io` (and `ffi` for the pointer reads) -- and
+// the caps manifest reflects that. Returns the number of JSON bytes written.
+@capabilities(io, ffi)
 fn csv_to_json_file(csv_ptr: i64, path_ptr: i64) -> i64 {
     let csv: str = from_ptr(csv_ptr, 0 - 1)
     let path: str = from_ptr(path_ptr, 0 - 1)
@@ -118,7 +124,7 @@ fn _csv_to_json(csv: str) -> str {
 // of the exported C symbols (the build wrapper only dllexports the three above).
 fn main() {
     println("csvlib: a capability-typed C-ABI demo library")
-    println("  csv_field_count(ptr) -> i64        [compute]")
-    println("  csv_row_count(ptr) -> i64          [compute]")
-    println("  csv_to_json_file(ptr, ptr) -> i64  [io]")
+    println("  csv_field_count(ptr) -> i64        [ffi]")
+    println("  csv_row_count(ptr) -> i64          [ffi]")
+    println("  csv_to_json_file(ptr, ptr) -> i64  [io, ffi]")
 }

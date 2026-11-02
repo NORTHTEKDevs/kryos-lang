@@ -1,0 +1,28 @@
+// BYPASS CLASS B1 -- a builtin name shadowed by a METHOD.
+//
+// A zero-authority, unannotated `main` calls `env_get`, which needs `process`.
+// `collect_defined_fns` used to recurse into `impl` bodies, so ANY method named
+// `env_get` put that name in `defined_fns`, and every bare call to the builtin
+// `env_get` was then read as a call to a user function and never charged. The
+// method is never called. Codegen lowers a method to `Decoy__env_get` and still
+// ran the BUILTIN, so on 2026-11-01 master (dcf72e93) `kryos check` was rc 0 in
+// default AND --strict-capabilities and `kryos run` printed BYPASS-B1-OK.
+//
+// MUST be rejected with E0505 (`env_get` requires `process`). Pinned by
+// tests/bypass_gate.sh in default and --strict-capabilities.
+struct Decoy {
+    x: i64,
+}
+
+impl Decoy {
+    fn env_get(self, name: str) -> str {
+        return name
+    }
+}
+
+fn main() {
+    let p = env_get("PATH")
+    if len(p) > 0 {
+        println("BYPASS-B1-OK")
+    }
+}

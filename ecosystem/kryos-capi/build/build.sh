@@ -108,20 +108,20 @@ refute_grep() { # <label> <file> <pattern>
     else echo "      PASS  $1"; PASS=$((PASS+1)); fi
 }
 
-# scenario A: compute-only host -> io export refused, compute exports run
-"$KRYOS" run consumer.kry "dist/$LIBNAME.caps.json" "dist/$LIBNAME.dll" "compute" > dist/out_compute.txt
-echo "      --- allow-set=compute ---"; sed 's/^/        /' dist/out_compute.txt
-assert_grep "compute host binds csv_field_count" "ALLOW   csv_field_count" dist/out_compute.txt
+# scenario A: {ffi} host -> io export refused, the two string exports run
+"$KRYOS" run consumer.kry "dist/$LIBNAME.caps.json" "dist/$LIBNAME.dll" "ffi" > dist/out_compute.txt
+echo "      --- allow-set=ffi ---"; sed 's/^/        /' dist/out_compute.txt
+assert_grep "ffi host binds csv_field_count"     "ALLOW   csv_field_count" dist/out_compute.txt
 assert_grep "csv_field_count returns 3 fields"   "csv_field_count = 3"     dist/out_compute.txt
 assert_grep "csv_row_count returns 2 rows"       "csv_row_count = 2"       dist/out_compute.txt
-assert_grep "compute host REFUSES io export"     "REFUSE  csv_to_json_file" dist/out_compute.txt
+assert_grep "ffi host REFUSES io export"         "REFUSE  csv_to_json_file" dist/out_compute.txt
 assert_grep "refusal names the excess io"        "excess={io}"             dist/out_compute.txt
 refute_grep "io export never ran"                "csv_to_json_file wrote"  dist/out_compute.txt
 
-# scenario B: {compute,io} host -> all three run
+# scenario B: {ffi,io} host -> all three run
 rm -f dist/csvlib_out.json
-"$KRYOS" run consumer.kry "dist/$LIBNAME.caps.json" "dist/$LIBNAME.dll" "compute,io" > dist/out_io.txt
-echo "      --- allow-set=compute,io ---"; sed 's/^/        /' dist/out_io.txt
+"$KRYOS" run consumer.kry "dist/$LIBNAME.caps.json" "dist/$LIBNAME.dll" "ffi,io" > dist/out_io.txt
+echo "      --- allow-set=ffi,io ---"; sed 's/^/        /' dist/out_io.txt
 assert_grep "io host binds csv_to_json_file" "ALLOW   csv_to_json_file"   dist/out_io.txt
 assert_grep "io export wrote bytes"          "csv_to_json_file wrote"     dist/out_io.txt
 assert_grep "io export produced the file"    "Alice"                      dist/csvlib_out.json

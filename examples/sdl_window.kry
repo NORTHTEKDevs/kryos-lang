@@ -33,6 +33,7 @@ extern "C" {
     fn kryos_ffi_string_from_ptr(p: i64, len: i64) -> str
 }
 
+@capabilities(ffi)
 fn main() {
     let SDL_INIT_VIDEO = 32
     let SDL_WINDOWPOS_CENTERED = 805240832

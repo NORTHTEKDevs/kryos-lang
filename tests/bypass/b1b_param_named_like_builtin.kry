@@ -1,0 +1,25 @@
+// BYPASS CLASS B1b -- a fn-typed PARAMETER named like a builtin (`max`).
+//
+// `outer` receives a closure and calls it inside `deny!(fs:read)`. The callee
+// is the LOCAL parameter `max` (codegen runs the local: a local shadows every
+// global of the same name in call position), and a call through an fn value
+// inside a deny block must require `all` (E0507: `deny!` cannot be sidestepped
+// by handing the callee a closure that holds the authority). The checker asked
+// instead whether the NAME `max` is a known function / builtin / actor /
+// variant / extern, and a hit there skipped that check entirely: any same-named
+// global turned the E0507 into an accepted program. On 2026-11-01 master this
+// file passed `kryos check` in default and --strict-capabilities and
+// `kryos run` printed the secret from inside the deny block.
+//
+// MUST be rejected with E0507 in default and --strict-capabilities.
+
+fn outer(max: fn() -> str) -> str {
+    deny!(fs:read) {
+        return max()
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    println(outer(|| file_read("tests/bypass/secret.txt")))
+}

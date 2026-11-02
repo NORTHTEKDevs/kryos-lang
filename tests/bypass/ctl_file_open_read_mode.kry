@@ -1,0 +1,12 @@
+// CONTROL for B4: kryos_file_open with the LITERAL read mode 0 is a read-only
+// open and needs only fs:read. MUST stay accepted (default + strict) and print
+// CTL-B4-OPEN-READ-OK -1 (a null path is refused by the native, no file touched).
+extern "C" {
+    fn kryos_file_open(path_ptr: i64, path_len: i64, mode: i32) -> i64
+}
+
+@capabilities(fs:read)
+fn main() {
+    let fd = kryos_file_open(0, 0, 0)
+    println("CTL-B4-OPEN-READ-OK " + to_string(fd))
+}

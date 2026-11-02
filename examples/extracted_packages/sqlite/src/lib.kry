@@ -52,6 +52,7 @@ let mut SQLITE_CLOSE_FN: i64 = 0
 let mut SQLITE_ERRMSG_FN: i64 = 0
 let mut SQLITE_INITIALIZED: i64 = 0
 
+@capabilities(ffi)
 fn sqlite_init() -> i64 {
     if SQLITE_INITIALIZED == 1 {
         return 1
@@ -84,6 +85,7 @@ fn sqlite_init() -> i64 {
 // sqlite_open opens (or creates) a SQLite database at the given path.
 // Pass ":memory:" for an in-memory database.
 // Returns a non-zero opaque handle on success, 0 on failure.
+@capabilities(ffi)
 fn sqlite_open(path: str) -> i64 {
     if sqlite_init() == 0 {
         return 0
@@ -113,6 +115,7 @@ fn sqlite_open(path: str) -> i64 {
 
 // sqlite_exec executes one or more SQL statements (separated by ";") against
 // the database opened by sqlite_open. Returns 0 on success, -1 on error.
+@capabilities(ffi)
 fn sqlite_exec(h: i64, sql: str) -> i64 {
     if sqlite_init() == 0 {
         return -1
@@ -133,6 +136,7 @@ fn sqlite_exec(h: i64, sql: str) -> i64 {
 }
 
 // sqlite_close closes a database handle returned by sqlite_open.
+@capabilities(ffi)
 fn sqlite_close(h: i64) {
     if sqlite_init() == 0 {
         return
