@@ -1,62 +1,89 @@
 # Kryos Benchmarks
 
-Measured medians from [`benchmarks/measure.py`](./benchmarks/measure.py).
-Reproduce with `python benchmarks/measure.py` - the tables below are generated
-from `benchmarks/results.json`, never hand-edited. Mirror:
-[`benchmarks/results_table.md`](./benchmarks/results_table.md).
-Last refresh: **1.0.0-rc.2, 2026-07-10**, Windows 11 x64
-(rustc 1.95.0, clang/clang++ 21 -O2, go 1.25.7, CPython 3.14.2).
+Measured medians from [`benchmarks/measure.py`](./benchmarks/measure.py); every
+port's output is cross-checked by
+[`benchmarks/check_outputs.py`](./benchmarks/check_outputs.py). Reproduce with
+`python benchmarks/measure.py`, then `python benchmarks/check_outputs.py`. The
+results table is [`benchmarks/results_table.md`](./benchmarks/results_table.md),
+copied verbatim; it and the startup floors come from `benchmarks/results.json`,
+written by the same run, and are not hand-edited.
+
+Measured at commit: `cbd88996d1b11ae2172fe8e511bbce37fb1cf21b` (Kryos 1.3.0)
+
+- date: 2026-11-03, 19:19 to 19:36 UTC (the whole run took 16 min 40 s)
+- machine: AMD RYZEN AI MAX+ 395 w/ Radeon 8060S (16 cores, 32 threads), 31.6 GB RAM, Windows 11 Home 10.0.26200
+- toolchains: kryos 1.3.0 (the release build of this commit's compiler), rustc 1.95.0, clang and clang++ 21.1.8, go 1.25.7, CPython 3.14.2; no `mojo` on PATH
+- load: a working desktop, not an idle benchmark host. Total CPU use, sampled every 10 s during the run, had a median of 12.2% (6.1% to 20.3%); 4.1 GB of RAM was free at the start.
+- outputs: `check_outputs.py` PASS, every port of every benchmark printed the same output
 
 ## Headline
 
-**All 7 benchmarks are within 1.42x of Rust, and Kryos beats Rust and/or
-clang++ on several.** Kryos is in the systems-language performance tier —
-and these numbers were re-measured on rc.2 AFTER the memory-model overhaul
-(HeaderPool, share-retain let-bindings, independent-copy array rebinds):
-the correctness work cost nothing.
+On Kryos 1.3.0 the LLVM backend (`kryos build --release`) is within 1.04x of
+Rust on five of the seven benchmarks and faster than Rust on two of them. It
+is clearly behind on two.
 
-- **Beats Rust:** matmul (0.96x), hashmap (0.65x).
-- **Beats clang/clang++ -O2:** nbody (0.141 vs 0.149), matmul, hashmap
-  (0.082 vs `std::unordered_map` 0.370 = ~4.5x faster).
-- **Parity (<=1.03x of Rust):** fib, mandelbrot, fannkuch.
-- **Closer than before:** nbody 1.31x (was 1.90x pre-optimization),
-  binary_trees 1.42x (was 6.1x).
-
-Where each toolchain still wins: Rust edges nbody (stack `[f64;5]` +
-vectorization) and binary_trees (`Box` unique-ownership vs Kryos's Rc-like
-`Shared`); Go wins binary_trees outright (GC bump allocator). No benchmark is
-an embarrassing outlier anymore.
+- **Behind Rust:** binary_trees **1.88x** and nbody **1.34x**. On binary_trees,
+  C (0.691 s) and Go (0.492 s) are also faster than Kryos (1.455 s).
+- **binary_trees has regressed.** It was 1.42x at 1.0.0-rc.2 (2026-07-10).
+  Built by each release's own compiler and timed side by side on this machine
+  (interleaved, 7 runs each after a warmup): 0.9.0 1.251 s, 1.0.0 1.216 s,
+  1.1.0 1.410 s, 1.2.0 1.399 s, 1.3.0 1.423 s, against Rust's 0.740 s. The
+  slowdown shipped in 1.1.0, and 1.3.0 did not add to it. Its cause is not yet
+  known: [LEDGER item 137](./tools/loop/LEDGER.md).
+- **Level with Rust (within 1.04x):** fib 1.01x, mandelbrot 1.00x, fannkuch
+  1.04x.
+- **Faster than Rust:** hashmap 0.59x (and 5.7x faster than clang++ with
+  `std::unordered_map`), matmul 0.96x. Go is faster still on matmul (0.561 s
+  against 0.620 s).
+- **Against Python:** 1.6x faster on binary_trees, 7.8x on hashmap, and 32x to
+  307x on the other five.
 
 ## Results (medians of 5, seconds)
 
-| Benchmark | kryos LLVM | kryos Cranelift | rust -O | clang -O2 | clang++ -O2 | mojo | go | python | kryos/rust |
+| Benchmark | kryos-llvm | kryos-cranelift | rust -O | clang -O2 | clang++ -O2 | mojo | go | python | kryos-llvm / rust |
 |---|---|---|---|---|---|---|---|---|---|
-| fib(40) | 0.351 | 4.832 | 0.340 | 0.342 | 0.340 | n/a | 0.706 | 16.899 | **1.03x** |
-| mandelbrot 1000^2 x1000 | 0.369 | 0.416 | 0.368 | 0.365 | 0.364 | n/a | 0.376 | 20.373 | **1.00x** |
-| nbody 2M steps | 0.141 | 0.938 | 0.107 | 0.149 | 0.149 | n/a | 0.246 | 46.264 | **1.31x** (beats C/C++) |
-| binary_trees d16 | 1.097 | 3.621 | 0.773 | 0.716 | 0.733 | n/a | 0.491 | 2.244 | **1.42x** (was 6.1x) |
-| fannkuch-redux(10) | 0.202 | 0.900 | 0.198 | 0.189 | 0.189 | n/a | 0.198 | 6.349 | **1.02x** |
-| matmul 512^2 | 0.620 | 0.650 | 0.648 | 0.659 | 0.645 | n/a | 0.564 | 34.808 | **0.96x** (beats Rust+C+C++) |
-| hashmap 1M+1M | 0.082 | 0.086 | 0.127 | n/a | 0.370 | n/a | 0.128 | 0.535 | **0.65x** (beats Rust+C++) |
+| fib | 0.362s | 4.955s | 0.358s | 0.356s | 0.357s | n/a | 0.722s | 17.758s | 1.01x |
+| mandelbrot | 0.383s | 0.431s | 0.381s | 0.381s | 0.373s | n/a | 0.391s | 20.466s | 1.00x |
+| nbody | 0.150s | 0.969s | 0.112s | 0.154s | 0.158s | n/a | 0.258s | 46.104s | 1.34x |
+| binary_trees | 1.455s | 3.291s | 0.772s | 0.691s | 0.732s | n/a | 0.492s | 2.389s | 1.88x |
+| fannkuch | 0.204s | 0.918s | 0.196s | 0.192s | 0.187s | n/a | 0.197s | 6.542s | 1.04x |
+| matmul | 0.620s | 0.614s | 0.645s | 0.645s | 0.643s | n/a | 0.561s | 34.818s | 0.96x |
+| hashmap | 0.086s | 0.091s | 0.147s | n/a | 0.487s | n/a | 0.159s | 0.671s | 0.59x |
 
-All rows verified output-identical across languages before timing. hashmap has
-no C port (n/a); the clang++ port uses idiomatic `std::unordered_map`.
+| Benchmark | Workload |
+|---|---|
+| fib | fib(40), recursive |
+| mandelbrot | 1000x1000 points, up to 1000 iterations each |
+| nbody | 5 bodies, 2,000,000 steps |
+| binary_trees | trees of depth 16 |
+| fannkuch | fannkuch-redux, n = 10 |
+| matmul | 512x512 integer matrices |
+| hashmap | 1,000,000 inserts, then 1,000,000 lookups |
+
+Each cell is the median of 5 timed runs after one warmup run; the min..max of
+every cell is in `results.json`. 34 of the 48 cells vary by 10% or less
+between their fastest and slowest run; most of the other 14 have one slow run
+(clang++ fannkuch 0.182..0.338, clang nbody 0.148..0.263). Differences of a few
+percent between toolchains are inside that spread: treat them as ties.
+
+hashmap has no C port (n/a); the clang++ port uses `std::unordered_map`. The
+outputs `check_outputs.py` compared: fib(40) = 102334155, mandelbrot checksum
+172812923, nbody checksum -188027, binary_trees checksum 14723759, fannkuch
+73196 / Pfannkuchen(10) = 38, matmul checksum 2013258329, hashmap
+999999000000.
 
 ### On Mojo (not measured here)
 
-Mojo is shown as `n/a`: no Modular toolchain is installed on this host (Windows,
-no WSL distro), and we do not fabricate numbers. Reference ports + harness
-support are in [`benchmarks/mojo/`](./benchmarks/mojo/) - `measure.py` builds
-and times them automatically when a `mojo` binary is on PATH. Published
-positioning: Mojo lowers MLIR -> LLVM (same backend as clang/rustc), so on tight
-numeric kernels (mandelbrot/nbody/matmul/fib) optimized Mojo lands in the same
-~1.0-1.7x-of-Rust band these benchmarks already occupy; one cited numeric
-benchmark put Mojo ~1.6x of Rust. There is no broad, independent public
-shootout, and allocation/pointer-chasing (binary_trees-style) is undocumented
-for Mojo. Net: Kryos's numeric-kernel results are in Mojo's league; a true
-head-to-head requires running the ports on a Mojo host.
+Mojo is shown as `n/a`: there is no `mojo` binary on PATH on this host, and we
+do not fabricate numbers. Reference ports of fib, mandelbrot and matmul and
+harness support are in [`benchmarks/mojo/`](./benchmarks/mojo/); `measure.py`
+builds and times them automatically when a `mojo` binary is on PATH. Published
+positioning: Mojo lowers MLIR -> LLVM (same backend as clang/rustc), so on
+tight numeric kernels optimized Mojo is expected in the same band as the other
+LLVM languages here. Whether Kryos and Mojo are level on these kernels is not
+measured; a head-to-head needs the ports run on a Mojo host.
 
-### binary_trees: from 6.1x to 1.45x (leak-free)
+### binary_trees: from 6.1x to 1.45x (the 2026-06 rewrite)
 
 The original port stored each child as a single-element `[Tree]` array =
 **three** heap allocations per child (array header + data buffer + boxed
@@ -64,24 +91,43 @@ struct). It is now `Tree { left: Option<Shared<Tree>>, right: Option<Shared<Tree
 = **one** arc allocation per node (the new, completed `Shared<T>` heap pointer).
 Recursive refcounted teardown is wired (each node's arc block carries a
 `__kryos_arc_drop_<T>` drop function, so releasing a tree's root cascades), so
-the run is **leak-free: 24 MB peak** (was 1.1 GB while the teardown was missing)
-- an apples-to-apples comparison against the freeing C/Rust/Go ports. The
-residual 1.45x vs Rust is mostly Rc refcount traffic vs Rust's `Box`
-unique-ownership; Go (0.488s) wins via its GC bump allocator. checksum 14723759,
-identical on both backends.
+the run is **leak-free: 24 MB peak** (was 1.1 GB while the teardown was
+missing), an apples-to-apples comparison against the freeing C/Rust/Go ports.
+The residual 1.45x vs Rust is mostly Rc refcount traffic vs Rust's `Box`
+unique-ownership; Go (0.488s) wins via its GC bump allocator. checksum
+14723759, identical on both backends. (Measured 2026-06. On 1.3.0 binary_trees
+is 1.88x: see the headline and LEDGER item 137.)
 
 ## Methodology
 
-1. **Workloads sized** so the fastest competitor needs >= ~0.3s (fib(40),
-   1000x1000x1000-iter mandelbrot, 2M-step nbody, 512x512 matmul, depth-16
-   binary_trees, 1M-entry hashmap).
+1. **Workloads sized** (table above) so that the LLVM, Rust, C, C++ and Go
+   ports run for 0.09 s to 1.5 s, many times the ~10 ms process-start floor.
 2. **Median of 5 runs** after a warmup; min..max spread in `results.json`.
-3. **Startup floor measured separately** (not subtracted, so numbers are honest
-   wall-clock): kryos native exe ~5.2ms, rust ~5.7ms, python ~40ms.
-4. **Same answer required** - every port prints an identical checksum,
-   cross-checked before timings count (fannkuch `73196 / Pfannkuchen(10) = 38`,
-   binary_trees 14723759, hashmap 999999000000).
+3. **Startup floor measured separately** and not subtracted, so the numbers
+   are honest wall-clock; see the table at the end.
+4. **Same answer required**: `check_outputs.py` runs every measured port once
+   and fails unless all ports of a benchmark print identical output.
 5. **Broken/absent ports are labeled n/a, not buried, and never fabricated.**
+
+## What changed (2026-11-03, 1.3.0 re-measure)
+
+The first full re-run since rc.2; 1.0.0, 1.1.0 and 1.2.0 shipped with the rc.2
+table.
+
+- Kryos/Rust ratios, rc.2 table -> 1.3.0: fib 1.03x -> 1.01x, mandelbrot
+  1.00x -> 1.00x, nbody 1.31x -> 1.34x, binary_trees 1.42x -> 1.88x, fannkuch
+  1.02x -> 1.04x, matmul 0.96x -> 0.96x, hashmap 0.65x -> 0.59x.
+- Apart from binary_trees (1.097 s -> 1.455 s), every Kryos time is within 7%
+  of the rc.2 table, and so is every Rust time except hashmap (0.127 s ->
+  0.147 s), which is why hashmap's ratio moved.
+- binary_trees: the slowdown entered between 1.0.0 and 1.1.0 (side-by-side
+  numbers in the headline). The rc.2 binary was not part of that comparison,
+  so whether 0.9.0 was already slower than rc.2's 1.097 s is not established.
+- New: `benchmarks/check_outputs.py`. `measure.py` never compared outputs, so
+  the "same answer required" step had been a manual one.
+- The README's comparison table now shows this run. It had shown figures from
+  an older harness (best of 10 runs in a sandbox VM with a ~30 ms launch
+  floor).
 
 ## What changed (2026-07-10, rc.2 re-measure)
 
@@ -89,7 +135,7 @@ Full re-run on the rc.2 binary after the memory-model overhaul (type-stable
 `HeaderPool` header recycling, retain-on-read borrow fixes), the
 value-semantics fixes (share-retain container let-bindings, independent-copy
 array rebinds via `kryos_array_dup`), and the ~8,000-program differential
-fuzz campaign. Every number is within run-to-run noise of the June sweep —
+fuzz campaign. Every number is within run-to-run noise of the June sweep:
 **the correctness work did not cost performance**: nbody 1.34x -> 1.31x,
 binary_trees 1.45x -> 1.42x, matmul still beats Rust (0.96x), hashmap still
 beats everything (0.65x of Rust). Same checksum cross-validation; all rows
@@ -122,11 +168,11 @@ bootstrap (stage-2 == stage-3 == stage-4, fixed point held):
 
 ## Still planned
 
+- binary_trees: find what slowed it down in 1.1.0 (LEDGER item 137). Beyond
+  that, a unique-ownership `Box` (no refcount) or an arena would close most of
+  the remaining gap to Rust; Rc-like `Shared` is the idiomatic, safe default.
 - nbody's residual 1.34x: fair loop unroll/vectorize hints (the trip count is a
   runtime `let n = 5`, blocking full unroll).
-- binary_trees's residual 1.45x: a unique-ownership `Box` (no refcount) or an
-  arena would close most of the gap to Rust, but Rc-like `Shared` is the
-  idiomatic, safe default and is already competitive.
 - A liveness-gated consuming string-append intrinsic (the sound version of the
   reverted fast path).
 - The Cranelift column exists for honesty about `kryos run` (the dev backend);
@@ -136,11 +182,11 @@ bootstrap (stage-2 == stage-3 == stage-4, fixed point held):
 
 | Runtime | Floor |
 |---|---|
-| kryos native exe | 6.0ms |
-| rust native exe | 5.5ms |
-| python interpreter | 364.7ms |
+| kryos native exe | 9.6ms |
+| rust native exe | 9.1ms |
+| python interpreter | 561.5ms |
 
-The python floor measured 40ms in the June sweep and 365ms here — cold-start
-interpreter launch on Windows is dominated by environment effects (antivirus
-scanning, filesystem cache state), so treat the python floor as indicative
-only. The kryos and rust floors are stable across sweeps (5-6ms).
+Process start on Windows depends on antivirus scanning and file-cache state:
+the rc.2 sweep (July) measured these floors at 6.0, 5.5 and 364.7 ms. Treat
+them as indicative. The kryos and rust floors stay level with each other
+across sweeps.

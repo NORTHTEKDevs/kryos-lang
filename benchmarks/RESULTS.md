@@ -1,29 +1,28 @@
 # Kryos benchmark results
 
-> **Canonical source:** [`../BENCHMARKS.md`](../BENCHMARKS.md). That file is
-> generated from `benchmarks/results.json` and is never hand-edited. The table
-> below is a copy of its headline numbers; if the two ever disagree,
-> `../BENCHMARKS.md` wins.
+> **Canonical source:** [`../BENCHMARKS.md`](../BENCHMARKS.md), which records
+> the commit, machine and toolchains of the run, and whose tables come from
+> `benchmarks/results.json`. The table below is a copy of its numbers; if the
+> two ever disagree, `../BENCHMARKS.md` wins.
 
-Medians of 5 runs, seconds (lower is better). Last refresh: **1.0.0-rc.2,
-2026-07-10**, Windows 11 x64 (rustc 1.95.0, clang/clang++ 21 -O2, go 1.25.7,
-CPython 3.14.2).
+Medians of 5 runs, seconds (lower is better). Last refresh: **1.3.0,
+2026-11-03**, at commit `cbd88996`, Windows 11 x64 (rustc 1.95.0, clang/clang++
+21.1.8 -O2, go 1.25.7, CPython 3.14.2).
 
 | Benchmark | Kryos LLVM | Rust -O | ratio vs Rust |
 | --- | --- | --- | --- |
-| hashmap 1M+1M | 0.082 | 0.127 | 0.65x (beats Rust) |
-| matmul 512² | 0.620 | 0.648 | 0.96x (beats Rust) |
-| mandelbrot 1000²×1000 | 0.369 | 0.368 | 1.00x |
-| fannkuch-redux(10) | 0.202 | 0.198 | 1.02x |
-| fib(40) | 0.351 | 0.340 | 1.03x |
-| nbody 2M steps | 0.141 | 0.107 | 1.31x (beats clang/clang++ -O2) |
-| binary_trees d16 | 1.097 | 0.773 | 1.42x |
+| hashmap 1M+1M | 0.086 | 0.147 | 0.59x (beats Rust) |
+| matmul 512^2 | 0.620 | 0.645 | 0.96x (beats Rust) |
+| mandelbrot 1000^2 x1000 | 0.383 | 0.381 | 1.00x |
+| fib(40) | 0.362 | 0.358 | 1.01x |
+| fannkuch-redux(10) | 0.204 | 0.196 | 1.04x |
+| nbody 2M steps | 0.150 | 0.112 | 1.34x |
+| binary_trees d16 | 1.455 | 0.772 | 1.88x |
 
-All 7 benchmarks land within 1.42x of Rust, and Kryos beats Rust outright on
-matmul (0.96x) and hashmap (0.65x). The honest worst case is binary_trees at
-1.42x; nbody (1.31x) still beats clang/clang++ -O2. These numbers were
-re-measured on rc.2 after the memory-model overhaul — the correctness work
-did not cost performance.
+Five of the 7 benchmarks are within 1.04x of Rust, and Kryos beats Rust
+outright on hashmap and matmul. It trails on nbody (1.34x) and binary_trees
+(1.88x). binary_trees was 1.42x at 1.0.0-rc.2: the slowdown shipped in 1.1.0
+and is not explained yet (LEDGER item 137).
 
 See [`../BENCHMARKS.md`](../BENCHMARKS.md) for full methodology, per-benchmark
 analysis, spreads, the Cranelift column, and startup floors.

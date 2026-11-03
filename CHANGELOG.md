@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [1.3.0] - 2026-11-02
+## [1.3.0] - 2026-11-03
 
 Capability-boundary release. It closes the ways a program or a shipped binary
 got more authority than it declared that were found since 1.2.0: the REPL, one
@@ -241,6 +241,13 @@ is pinned by the new `tests/bypass_gate.sh` (programs in `tests/bypass/`).
   mode each) that `tools/loop/check-threat-model-claims.sh` re-executes, and
   `tools/loop/check-escapes-documented.sh` fails unless the table of accepted
   escapes equals what `tools/loop/escape_status.sh` measures.
+- **Benchmarks re-measured on 1.3.0.** [BENCHMARKS.md](BENCHMARKS.md) records
+  the commit (`cbd88996`), machine and toolchains of the run, the first full
+  re-run since 1.0.0-rc.2. Five of the seven benchmarks are within 1.04x of
+  Rust, two of them faster than Rust (hashmap 0.59x, matmul 0.96x), and
+  nbody is 1.34x. The README's comparison table now shows this run instead of
+  an older harness's figures. `benchmarks/check_outputs.py` checks that every
+  port of a benchmark prints the same output; `measure.py` never did.
 
 ### Known limitations shipped with 1.3.0
 
@@ -266,6 +273,10 @@ is pinned by the new `tests/bypass_gate.sh` (programs in `tests/bypass/`).
 - `str_data_ptr`, `mem_read_byte`, `mem_write_byte` and the other self-host
   memory intrinsics are accepted with no capability; on this build a program
   that calls them fails to link (section 4.4).
+- **binary_trees runs at 1.88x of Rust's time** (1.42x at 1.0.0-rc.2). Timed
+  side by side, the release builds of 1.0.0 and 1.1.0 differ by about 16%,
+  so the slowdown shipped in 1.1.0; 1.3.0 does not add to it. Its cause is
+  not known yet (LEDGER item 137).
 
 ## [1.2.0] - 2026-10-31
 

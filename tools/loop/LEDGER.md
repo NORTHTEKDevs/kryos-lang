@@ -8599,6 +8599,17 @@ printed by `kryos build --help`) predates the fix of bypass B8: the cache is con
 the program in that build's mode, and its key covers the mode and every module file read (docs/STDLIB.md, `KRYOS_CACHE=1`). The
 help text understates the checking, it does not overstate it. Not changed in 1.3.0 because the release changes no compiler source. Closing: rewrite the doc comment.
 
+### 137. PERF -- binary_trees (`kryos build --release`) is 1.88x of Rust on 1.3.0; it was 1.42x at 1.0.0-rc.2, and the slowdown shipped in 1.1.0 -- NOT FIXED
+
+Found by the 1.3.0 benchmark run (2026-11-03, BENCHMARKS.md, measured at `cbd88996`): binary_trees (depth 16) takes 1.455 s, median
+of 5, against Rust's 0.772 s; the rc.2 table (2026-07-10) had 1.097 s against 0.773 s. The other six benchmarks keep their rc.2
+ratios to within a few percent. Timed side by side in one session (interleaved, 7 runs each after a warmup), `benchmarks/kryos/binary_trees.kry`
+built by each release's own Windows compiler (`kryos build --release --backend llvm`): 0.9.0 1.251 s, 1.0.0 1.216 s, 1.1.0 1.410 s,
+1.2.0 1.399 s, 1.3.0 1.423 s; the Rust build in `benchmarks/bin/` 0.740 s. Every build printed the same checksum (14723759). So a
+step of about 16% entered between v1.0.0 and v1.1.0, and 1.3.0 did not add to it. The rc.2 binary was not part of the comparison, so
+whether 0.9.0 was already slower than rc.2's 1.097 s is not established. No correctness effect. Closing: bisect `v1.0.0..v1.1.0`
+with this benchmark, then fix the cause or document what it buys.
+
 ---
 
 ## AUDIT GAPS - unverified surfaces, not reproduced live defects (completeness-critic pass, final launch synthesis, 2026-08-05)
