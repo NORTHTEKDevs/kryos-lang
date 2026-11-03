@@ -6438,7 +6438,7 @@ capability-escape item and every other OPEN item below remain untouched.
 > this section and the README were BOTH wrong in both directions at once: item
 > 10 was ranked the highest-priority OPEN escape but had actually been fixed,
 > while twelve others were open and the README claimed a single residual. As of
-> 2026-11-02 the true count is **31 escaping, 200 rejected**.
+> 2026-11-02 the true count is **33 escaping, 220 rejected**.
 >
 > **It happened again, and worse (2026-10-15).** The corpus was the 19 named
 > repros, and "0 escaping" was true OF THOSE 19 while eighteen other shapes
@@ -6492,7 +6492,7 @@ capability-escape item and every other OPEN item below remain untouched.
 >   catches it; `security_gate.sh` check 66 pins it.
 
 
-### Items 119, 121, 122, 123, 124-127 and 129: what is still open of the capability-escape waves of 2026-10-15, 2026-10-31 and 2026-11-01, and the findings recorded first by the item-77 wave
+### Items 119, 121, 122, 123, 124-127, 129 and 131: what is still open of the capability-escape waves of 2026-10-15, 2026-10-31 and 2026-11-01, and the findings recorded by the item-77 wave and its revise round
 
 Items 55-72 are all closed (59 and 65-71 by the R2 wave of 2026-11-01; 64 and 72 by the R3 wave of
 2026-11-02, the first entry at the top of this file, which also closed items 77, 114, 115, 116 and
@@ -6506,7 +6506,10 @@ root F) and 126 (a `deny!` in a `select` arm, root R4), found by the independent
 items 127 (a closure returned by a top-level function that uses a captured parameter through a helper, or two of
 them) and 129 (the build order of the flat map: a loop-carried rebinding, a lambda `let` that replaces an earlier
 binding), found by the wave itself. (The wave also found item 128, a chained call of a function that returns a closure,
-and closed it with item 77.) `escape_status.sh` counts them (28) and `ESCAPE-ROUTING.md` carries a routing row for each.
+and closed it with item 77.) The revise round of that wave (the independent verifier of PR 41) added item 131 (a fn-typed field of the
+result of a call through a local closure, invoked in place), found as a variant present on master, and closed item 130 (a `return` the
+return flow could not see) and the seven programs of item 132 (a container read handed through a local closure, which leaks on master).
+`escape_status.sh` counts the open ones (33) and `ESCAPE-ROUTING.md` carries a routing row for each.
 
 ### 119. LIVE CAPABILITY ESCAPE -- item 112 where the container the callee was handed sits inside a Tuple, Option, Result or Enum parameter: `storage_rows_in` does not walk them, so the callee's store is not input storage -- NOT FIXED
 
@@ -6543,6 +6546,10 @@ Found by the item-77 wave while hunting the siblings of item 77 (the return flow
 ### 129. LIVE CAPABILITY ESCAPE -- the flat per-name map the shape layer reads is built once, in textual order: a binding that comes later in the text but runs earlier (a loop) is missing from every entry derived from another entry, and a lambda `let` replaces the entry of an earlier binding of the same name -- NOT FIXED
 
 Found by the item-77 wave while hunting the siblings of item 77, after the fix was written; present on master `e2fbc46c` and unchanged by the wave. Three probes, committed (escape_status.sh rows 129a-129c; the `deny!` block of each sits in a `select` arm, so the shape layer is the only judge): tests/security/attack_shape_loop_carried_rebound_callee.kry (`f = op(reader)` in a loop that rebinds `op = |r| { r }` after the call), attack_shape_loop_carried_alias.kry (`g = f` then `f = reader` in a loop; no call through a local closure, so independent of item 77) and attack_shape_lambda_let_replaces_earlier_binding.kry (`let h = reader` called in the block, a later `let h = || { "x" }` in another scope). Master e2fbc46c and this wave's head, re-run before the repros were written: check rc=0 in default and strict mode, `kryos run` prints TOPSECRET-CLOSURE-9f8e7d6c5b4a in both modes (executed). Cause (read from `build_local_closure_caps_block`, confirmed by the three probes): an entry derived from another one (`g = f`, `f = op(reader)`) is computed when its statement is reached and is not updated by a binding made later in the text, which is the order a loop runs them in; and the `Let` arm of a lambda inserts `Known(empty)` as a self-recursion placeholder with `locals.insert`, which REPLACES the entry an earlier binding of the same name left, instead of merging into it. Closing root: build the map to a fixed point (walk the body again with the map the first walk left, until it stops growing) and make the placeholder merge instead of replace; measure the verdict diff, because every entry then also sees the bindings that come after it. Control that must stay accepted: the same programs with a pure `reader`.
+
+### 131. LIVE CAPABILITY ESCAPE -- a fn-typed FIELD of the CALL RESULT of a local closure, invoked in place (`mkh(reader).run()`, `idh(Holder { run: reader }).run()`): the shape layer does not follow a field read of a call result and holds no type to say the field is a function -- NOT FIXED
+
+Found by the independent verifier of PR 41 as variants of the item-77 family that are present on master `7cab5799` and on that PR's first head; recorded by the revise round of the item-77 wave. Two probes, committed (escape_status.sh rows 131a and 131b): tests/security/attack_shape_local_returns_struct_field_in_place.kry (`let mkh = |r: fn() -> str| { Holder { run: r } }`, `println("OUT: " + mkh(reader).run())`) and attack_shape_local_struct_passthrough_in_place.kry (`let idh = |h: Holder| { h }`, `idh(Holder { run: reader }).run()`); the `deny!(fs:read)` block of each sits in a `select` arm (item 126), so the row layer does not judge it. Master 7cab5799, PR 41's first head 364d2e44 and the revise round's head, re-run before any code was touched and again on the final binary: check rc=0 in default and strict mode, `kryos run` prints TOPSECRET-CLOSURE-9f8e7d6c5b4a (executed). With the block in ordinary position the row layer rejects both (E0110, measured by the verifier), and binding the result first (`let h = mkh(reader)` then `h.run()`) is rejected by the shape layer as well. Cause (read from `resolve_method_field_invoke_caps`, confirmed by the probes): `obj.method(...)` is charged only when the receiver decomposes to a container path (`decompose_container_path`); a call is not one, so a method call on a call result is "an ordinary method" and charged nothing, and the shape layer holds no type for what a call through a local closure returns, so it cannot tell that `run` is a fn-typed field. Not closed by the revise round because it does not share the root of the return flow (it is a field read of the call result, not a return the flow missed) and no small, precision-neutral fix exists: a blanket `all` for every method call on a call result is the fail-open / over-reject trade that `resolve_method_field_invoke_caps` records as tried and reverted. Closing root: give the shape layer the return type of a call through a local closure, or close item 126 so the row layer judges the block (it already rejects both programs wherever it judges them). Control that must stay accepted: the same programs with a pure `Holder`.
 
 ### 51. CLOSED 2026-10-08 (owned struct/enum field store; see the enum-ownership wave at the top). Original title: LEAK -- item 49 RESIDUAL: struct-field assignment holding an Enum/Struct (`h.v = Val.ListV(..)`) still leaks on container-slot OVERWRITE; only the array-index/map-index shapes were fixed (2026-08-28) -- NOT FIXED; 2nd attempt 2026-08-29 got HALF of it and was REVERTED, mechanism now identified, read the addendum first
 

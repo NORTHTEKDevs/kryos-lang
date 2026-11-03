@@ -25,7 +25,7 @@
 >
 > **2. Current measured status** (re-run on demand; `tools/loop/check-docs-truth.sh`
 > fails CI if this prose drifts from the measurement):
-> - `tools/loop/escape_status.sh` - at the time of this update **0 escaping, 17 rejected**; re-measured 2026-11-02 on 231 repros: **31 escaping, 200 rejected** (the corpus grew by directed search, which is the point of this document's caveat).
+> - `tools/loop/escape_status.sh` - at the time of this update **0 escaping, 17 rejected**; re-measured 2026-11-02 on 253 repros: **33 escaping, 220 rejected** (the corpus grew by directed search, which is the point of this document's caveat).
 > - `tests/security_gate.sh` - PASS, ~94 checks, each with a no-cascade complement.
 > - `tests/capability_matrix_gate.sh` - **NEW, bounded EXHAUSTIVE search.** All 17 shapes
 >   in `escape_status.sh` were found BY HAND, so that corpus's weakness is exactly "the

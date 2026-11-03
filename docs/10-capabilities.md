@@ -2,11 +2,11 @@
 
 > **Measured status (2026-11-02) - read this before anything else on this page.**
 > `bash tools/loop/escape_status.sh` re-runs every committed capability-escape repro under both
-> enforcement modes and prints the real count: **31 still escape, 200 are rejected (231 repros)**
+> enforcement modes and prints the real count: **33 still escape, 220 are rejected (253 repros)**
 > (`tools/loop/check-docs-truth.sh` fails CI if the README or the LEDGER preamble drifts from that
 > number). Every escape still live is named in [tools/loop/LEDGER.md](../tools/loop/LEDGER.md) with its
 > measured routing in [tools/loop/ESCAPE-ROUTING.md](../tools/loop/ESCAPE-ROUTING.md). They fall in
-> five groups: a closure stored into a container the callee was handed, where the container sits in a
+> six groups: a closure stored into a container the callee was handed, where the container sits in a
 > tuple, `Option`, `Result` or enum (item 119) or the store is reached through a factory result, a
 > generic bound or a `dyn` (item 123); `deny!(fs)`, `deny!(io)` and `deny!(all)`, which the row layer
 > does not match (item 121); the body of a trait default method, which the type checker never checks
@@ -14,7 +14,8 @@
 > or a store made by a callee declared below its caller (items 124, 125), or a `deny!` inside a `select`
 > arm, which the type checker never visits (item 126); and a closure returned by a top-level function
 > that uses a captured parameter through a helper or alongside another one (item 127); and the order the shape layer builds its per-name map in, which a
-> loop-carried rebinding of an alias or of a local closure and a later lambda `let` of the same name get past (item 129). **A count of 0
+> loop-carried rebinding of an alias or of a local closure and a later lambda `let` of the same name get past (item 129); and a fn-typed field of the result of a call
+> through a local closure, invoked in place, which the shape layer holds no type for (item 131; the row layer rejects it wherever it judges the `deny!`). **A count of 0
 > would not mean there are no escapes.** The corpus is adversarial shapes found by directed search,
 > so a green count is a floor, not a soundness proof, and the shape nobody has thought of is the one
 > that matters. Today capabilities are a strong development-time discipline; they are not yet a
@@ -522,6 +523,27 @@ every argument is pure. Rejected: the `tests/security/attack_shape_*.kry` progra
 `tests/security/attack_generic_nested_function_type_param.kry` (a generic `wrap<T>` applied to its own
 result). Still open at this layer: a closure returned by a top-level function that uses a captured
 parameter through a helper, or two captured parameters (item 127).
+
+**Every return of a closure counts (2026-11-02, LEDGER item 130), and a container read through a local
+closure is traced only for a container nothing changes or aliases (item 132).** The first version of the
+change above charged a call through a local closure what its visible `return`s carried: a `return r` inside
+a non-final `match`, a `select` arm, a `deny!` block, a bare or `unsafe` block, an `if` or `match` bound by
+`let`, or a call argument was never listed, so such a closure was charged nothing (the independent verifier
+of that change ran five programs that printed the secret, and master refused each of them only by charging
+the closure's own authority). Every `return` outside a nested lambda is listed now, for local closures, top-level
+functions, transparent accessors and factory literals alike. A value read out of a container
+(`id(reg.items[0])`, or a lookup closure `|i| { items[i] }`) and handed through a local closure is charged what
+invoking the same read directly is charged when the container is a local the program never changes or
+aliases: bound once by a plain `let`, read only through field and index reads whose values are named
+functions, builtins, lambdas, data literals or stable function-valued locals (`let r = make_reader("literal")`),
+plus `len` and `for`. Any other read stays `all`, which is also what a named function that returns such a read
+is charged and what a container PARAMETER's element is charged at the call (the pure call and the leaking call
+of the same function get one answer: `fn pick(items, i) { let id = |g| { g }  return id(items[i]) }`). Rejected:
+`tests/security/attack_shape_*hidden_return*.kry`, `attack_named_fn_hidden_return_direct.kry`,
+`attack_select_arm_return_plain_deny.kry`, `attack_accessor_hidden_return.kry` and
+`attack_shape_container_*.kry` (E0507). Accepted: the `ctl_shape_container_*.kry` controls and the
+`ctl_shape_*hidden_return*_pure.kry` twins. Still open at this layer: a fn-typed field of the result of a call
+through a local closure, invoked in place (item 131).
 
 See `tests/security/cap_escape_closure_launder_local_struct_field.kry`,
 `..._local_registry_index_field.kry` (the array-of-struct-field flagship
