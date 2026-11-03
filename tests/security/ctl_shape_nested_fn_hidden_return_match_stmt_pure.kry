@@ -1,0 +1,33 @@
+// Control for tests/security/attack_shape_nested_fn_hidden_return_match_stmt.kry: the same nested fn handed the PURE closure `harmless`.
+// ACCEPTED in default and strict mode (no over-rejection).
+fn harmless() -> str {
+    return "not a secret"
+}
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let mut f: fn() -> str = harmless
+    fn sel(c: i64, r: fn() -> str) -> fn() -> str {
+        let cfg = file_read("tests/security/secret_for_closure_launder.txt")
+        match c {
+            1 => { return r }
+            _ => { }
+        }
+        return harmless
+    }
+    f = sel(1, harmless)
+    let ch = chan()
+    send(ch, 1)
+    select {
+        v ch => {
+            deny!(fs:read) {
+                println("OUT: " + f())
+            }
+        }
+    }
+}

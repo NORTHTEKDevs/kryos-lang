@@ -1,0 +1,24 @@
+// Control, from the independent verifier of PR 41 (its program L3e): a registry that holds a PRIVILEGED closure (`r`, an fs:read reader built by `make_reader(literal)`) is read through a local identity closure
+// inside a block that denies a capability the closure does not use (`deny!(net)`): legitimate, the declared fs:read is not denied.
+// Master 7cab5799 accepted it (by the same accident that made it accept the fs:read-denying twin, attack_shape_container_registry_holds_privileged.kry); PR 41 head rejected it (E0507 [all]).
+// A registry nothing changes or aliases is read like the direct invocation of the same read: charged what it holds ({fs:read}), so this is ACCEPTED in default and strict mode while the fs:read-denying twin is rejected.
+fn harmless() -> str {
+    return "ok"
+}
+@capabilities(fs:read)
+fn make_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+struct Registry {
+    items: [fn() -> str],
+}
+@capabilities(fs:read)
+fn main() {
+    let r = make_reader("tests/security/ctl_shape_container_privileged_registry_other_deny.kry")
+    let reg = Registry { items: [harmless, r] }
+    let id = |g: fn() -> str| { g }
+    deny!(net) {
+        let h = id(reg.items[1])
+        println("item length: " + to_string(len(h())))
+    }
+}

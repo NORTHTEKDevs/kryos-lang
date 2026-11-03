@@ -1,0 +1,34 @@
+// LEDGER item 132, shape layer (found by the revise round of PR 41; a sibling of item 77).
+// A registry that holds the privileged closure (a local, not a named function) is read through a local identity closure: `f = id(reg.items[1])`.
+// Master 7cab5799: check rc=0 in default and strict mode, `kryos run` prints TOPSECRET-CLOSURE-9f8e7d6c5b4a (executed); PR 41 head 364d2e44 rejects it (E0507, the read was Unknown).
+// The deny! block sits in a `select` arm, which the row layer does not judge (LEDGER item 126, root R4), so the SHAPE layer is the only judge here.
+// Must stay REJECTED with E0507 in default and strict mode (the precision work of the revise round must not reopen it), and `kryos run` must not print the secret.
+fn harmless() -> str {
+    return "not a secret"
+}
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+struct Registry {
+    items: [fn() -> str],
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let mut f: fn() -> str = harmless
+    let reg = Registry { items: [harmless, reader] }
+    let id = |g: fn() -> str| { g }
+    f = id(reg.items[1])
+    let ch = chan()
+    send(ch, 1)
+    select {
+        v ch => {
+            deny!(fs:read) {
+                println("OUT: " + f())
+            }
+        }
+    }
+}

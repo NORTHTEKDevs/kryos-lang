@@ -1,0 +1,20 @@
+// Control, from the independent verifier of PR 41 (its program P1): a PURE registry of named functions read through a local identity closure, inside deny!(fs:read).
+// Master 7cab5799 accepted it and it runs ('item: hello'); PR 41 head rejected it (E0507 `requires capabilities [all]`: `reg.items[0]` resolved to Unknown, which a local closure's argument is charged).
+// A container local that nothing changes or aliases (`pristine_container_roots`) is read like the direct invocation of the same read: ACCEPTED in default and strict mode.
+fn hello() -> str {
+    return "hello"
+}
+fn world() -> str {
+    return "world"
+}
+struct Registry {
+    items: [fn() -> str],
+}
+fn main() {
+    let reg = Registry { items: [hello, world] }
+    let id = |g: fn() -> str| { g }
+    deny!(fs:read) {
+        let h = id(reg.items[0])
+        println("item: " + h())
+    }
+}

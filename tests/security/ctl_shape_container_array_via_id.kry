@@ -1,0 +1,16 @@
+// Control, from the independent verifier of PR 41 (its program P3): a PURE array of named functions read through a local identity closure, inside deny!(fs:read).
+// Master 7cab5799 accepted it ('item: world'); PR 41 head rejected it (E0507 [all]). ACCEPTED again in default and strict mode (the array is a pristine container local).
+fn hello() -> str {
+    return "hello"
+}
+fn world() -> str {
+    return "world"
+}
+fn main() {
+    let items = [hello, world]
+    let id = |g: fn() -> str| { g }
+    deny!(fs:read) {
+        let h = id(items[1])
+        println("item: " + h())
+    }
+}
