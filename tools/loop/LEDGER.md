@@ -16,13 +16,15 @@ Record-only change on branch `fin/v1.3-finish` off master `7cab5799` (PR #40). N
 build of `7cab5799` (`cargo build --release` in place, `kryos 1.2.0`).
 
 - Why record-only. PR 41 (branch `wave/item77-local-closure-return`) closes the shape-layer half of item 77 and several siblings,
-  but an independent verifier refuted its second head `0b8c4dfc` (2026-11-02): 12 programs that master rejects are accepted by that
-  head and print the secret, because its return flow looks a call up by bare name, so a call to a top-level function resolves
-  through a same-named local closure, or a `for` / `match` binder, from another scope (the padded twins of item 133). It also newly
-  rejects a legitimate program it did not disclose (a closure that returns a named inner closure which returns its parameter). That
-  fails criteria (C) and (E) of the landing rule. The verifier of its first head had refuted it for the same two criteria. Item 77's
-  shape layer has now had three attempts (the R3 wave, PR 41's first head, its revise round), so under the GRAPH.md failure policy it
-  is a documented limitation of 1.3.0 (docs/THREAT-MODEL.md section 4.1). PR 41 stays open as the base of a later fix.
+  but an independent verifier refuted its second head `0b8c4dfc` (2026-11-02). By the verifier's report (its programs are not
+  committed): 12 programs that master rejects are accepted by that head and print the secret, because its return flow looks a call
+  up by bare name, so a call to a top-level function resolves through a same-named local closure, or a `for` / `match` binder, from
+  another scope (the padded twins of item 133), and it newly rejects a legitimate program it did not disclose (a closure that returns
+  a named inner closure which returns its parameter). That fails criteria (C) and (E) of the landing rule. The verifier of its first
+  head had refuted it for the same two criteria. Item 77 has had three attempts: the R3 wave closed its row layer, and both heads of
+  PR 41 at the shape layer were refuted. The escape nodes of GRAPH.md (`stage2-rows`, `escape-root`) were converted to
+  documented-limitation nodes under its failure policy on 2026-11-01, so the shape layer of item 77 is a documented limitation of
+  1.3.0 (docs/THREAT-MODEL.md section 4.1), not chased further in this release. PR 41 stays open as the base of a later fix.
 - What was recorded: every repro PR 41 committed that escapes on master, and the pre-existing variants its second verifier reported.
   54 files come from PR 41: rows 124a-124g, 125a-125f, 126a-126c, 127a-127b, 128, 129a-129c, 130f-130h, 130m, 131a-131b, 132a-132g,
   and 134a-134s, which were PR 41's rows s77-01 to s77-19. 16 come from the verifier: rows 131c-131f and 133a-133l. Nine of PR 41's
@@ -31,7 +33,8 @@ build of `7cab5799` (`cargo build --release` in place, `kryos 1.2.0`).
   section are not ported either, because the section asserts the fix. The headers of the ported files now describe master: the
   item numbers above, `NOT FIXED on 1.3.0`, and a `WANTED` line in place of `Must be REJECTED`.
 - Measured with the logic of `escape_status.sh` on each of the 79 candidate files: 70 are accepted by `kryos check` in default and
-  `--strict-capabilities` mode and `kryos run` prints TOPSECRET-CLOSURE-9f8e7d6c5b4a for each; 9 are rejected (the nine above).
+  `--strict-capabilities` mode and `kryos run` prints the secret for each (TOPSECRET-CLOSURE-9f8e7d6c5b4a for 69 of them;
+  124e reads the secret file of the program it reorders and prints TOPSECRET-ALIAS-FORWARD-4d5e6f7a); 9 are rejected (the nine above).
   `escape_status.sh`: 10 escaping / 180 rejected (190 repros) -> 80 escaping / 180 rejected (260 repros).
 - The select-arm placement, measured. 56 of the 70 put the `deny!` block inside a `select` arm (126c in a `timeout` arm), which the
   row layer does not judge (item 126). For the 55 with one `v ch =>` arm, a twin with the arm's body in place of the `select` was
@@ -48,6 +51,30 @@ build of `7cab5799` (`cargo build --release` in place, `kryos 1.2.0`).
   PASS (items 119 and 121-134); `check-threat-model.sh` PASS; `check-threat-model-claims.sh` PASS (73 claims, 0 failed).
   `tests/security/` holds 587 programs, and `kryos check` in the default mode accepts 225 of them: the 80 corpus escapes, the 4
   `bypass_*` repros and the same 141 controls and probes as before.
+- Revise round (2026-11-03), after four independent verifiers of the release PR (#42; lenses: the corpus, the documents, the release
+  mechanics, the checks). Confirmed and fixed: STABILITY.md section 5 and docs/capability-roadmap.md (Part 1 and Part 2) still said
+  capability enforcement is sound in every mode, and book chapter 11 called the fail-closed default sound; all three now say checked,
+  not proven sound, and point to the 80 rows of docs/THREAT-MODEL.md section 4.1. The threat model said `git diff 7cab5799 --
+  compiler` is empty, which the version bump made false (the claim is now about `compiler/crates` and `compiler/stdlib`). Row 124e
+  prints TOPSECRET-ALIAS-FORWARD-4d5e6f7a, not the CLOSURE marker (this entry, item 124, ESCAPE-ROUTING and the file's header).
+  Checks tightened, each shown to fail on a mutated input and pass on the real one: `check-escapes-documented.sh` fails when a
+  documented row is rejected under `--strict-capabilities` (section 4.1 states both modes; only the default verdict was read);
+  `check-docs-truth.sh` also pins the README capabilities bullet (`80 of the 260 ... 180 are rejected`, which had drifted once while
+  the check passed) and the rejected and total counts of the Status paragraph and of the preamble below, and fails when the OPEN
+  range yields no item (an ASCII scrub had reduced its "either dash" class to a hyphen); `fixtures_tracked_gate.sh` resolves every
+  `escape_status.sh` row id (the `slotNN` and `r3-NN` rows were skipped: 174 -> 260 stems) and also scans `claims.tsv`, the two
+  threat-model checks and docs/THREAT-MODEL.md (324 fixtures, all tracked). Stale numbers: README parity badge 77/77 -> 110/110
+  (CI of PR #42: total=110 both_pass=110), the roadmap's strict examples 91/91 -> 102/102 (same CI run), STABILITY's conformance
+  sentence (68/68 was the 1.0.0 count, and `docs_status_gate.sh` is a tier-1 gate, not a CI job). Wording: item 134 and this entry
+  (three attempts at item 77, two at the shape layer; the second verifier's numbers are its report, not committed programs),
+  ESCAPE-ROUTING rows 133 and 134 (checker.rs line 2156, the `FnCall` arm), the getting-started REPL transcript, the README tag note,
+  the CHANGELOG on item 77. Two papercuts the verifiers found are items 135 and 136. Not changed: the leak pattern of
+  `escape_status.sh` (`leak|TOPSECRET|ESCAPE`) stays loose on purpose, because a stricter one would miss a regressed older repro
+  that prints a different marker. Gates after the round, on the `kryos 1.3.0` build (2026-11-03): `check-escapes-documented.sh`
+  PASS with the strict assertion (STILL ESCAPING: 80 now-rejected: 180 missing: 0; 80 documented, 80 accepted, 0 undocumented,
+  0 stale; 4 bypasses verified; 1216 s); `check-docs-truth.sh` PASS (bullet, Status and preamble pinned; 23 OPEN items checked;
+  874 s); `check-routing-complete.sh` PASS; `check-threat-model.sh` PASS; `check-threat-model-claims.sh` PASS (73 claims, 0
+  failed); `tests/docs_status_gate.sh` PASS; `tests/fixtures_tracked_gate.sh` PASS (324 fixtures, all tracked).
 
 ## Wave: R3 deny! verdict timing -- the verdict was taken on a row whose vars were still unbound (items 64, 72, 114, 115, 116 and 120 closed; 77 and four repros of 118 closed with them; 119, 121, 122 and three repros of 118 open) (2026-11-02)
 
@@ -6484,7 +6511,7 @@ What is left of the seven repros the verifier of the R2 wave reported as item 11
 
 ### 124. LIVE CAPABILITY ESCAPE -- a function declared ABOVE the callee it hands its parameter on to (or `main` declared above its helpers) leaves the `deny!` verdict without the argument's row: the copy var the first function hands on is never mapped by `main`'s instantiation -- NOT FIXED
 
-Found by the independent verifier of the R3 wave (PR 39); recorded first by the item-77 wave, root F (forward references: the family of items 114, 115 and 120, which the R3 wave closed for the placements it knew). Seven probes, committed (escape_status.sh rows 124a-124g): tests/security/attack_fwd_param_chain_invoke_in_deny.kry (`tool(reader)` copies its parameter into `g` and hands `g` to `invoke`, which is declared BELOW it; `main` calls `tool(r)` inside deny!(fs:read) with `r` an fs:read closure), `attack_fwd_param_chain_container_in_deny` (the same chain for an array: `tool(fns)` -> `run_first`), `attack_fwd_param_chain_method_in_deny` (an impl method, then a free function), `attack_fwd_param_chain_actor_in_deny` (an actor handler, then a free function) and three that reverse the declaration order of programs already pinned: `attack_fwd_rev_hotparam_forward_via_local_alias`, `attack_fwd_rev_slot_param_helper_chain`, `attack_fwd_mainfirst_verify_actor_to_actor_message`. Master e2fbc46c, re-run before any code was touched, and master 7cab5799: check rc=0 in default and strict mode and `kryos run` prints TOPSECRET-CLOSURE-9f8e7d6c5b4a in both modes (executed, all seven). Measured with `KRYOS_ROW_TRACE=1` on the invoke form: `fn tool = {?C7}`, `fn invoke = {?C6}`, `fn main = {?C6}`; with the two helpers swapped `fn main = {fs:read}` and E0110. The swapped twin of each of the first four is rejected (measured). The verifier's reading, not re-traced here: the PR's own-row copy and `complete_references` handle a reference that precedes its declaration, but a function declared above its callee hands its row on through a copy var that `main`'s later instantiation never maps. Closing root (R3, `kryos-types`): map the copy var through the chain, or judge the obligation of the first function at its own references; then measure the verdict diff over the corpus. Control that must stay accepted: the same program with a pure `r`.
+Found by the independent verifier of the R3 wave (PR 39); recorded first by the item-77 wave, root F (forward references: the family of items 114, 115 and 120, which the R3 wave closed for the placements it knew). Seven probes, committed (escape_status.sh rows 124a-124g): tests/security/attack_fwd_param_chain_invoke_in_deny.kry (`tool(reader)` copies its parameter into `g` and hands `g` to `invoke`, which is declared BELOW it; `main` calls `tool(r)` inside deny!(fs:read) with `r` an fs:read closure), `attack_fwd_param_chain_container_in_deny` (the same chain for an array: `tool(fns)` -> `run_first`), `attack_fwd_param_chain_method_in_deny` (an impl method, then a free function), `attack_fwd_param_chain_actor_in_deny` (an actor handler, then a free function) and three that reverse the declaration order of programs already pinned: `attack_fwd_rev_hotparam_forward_via_local_alias`, `attack_fwd_rev_slot_param_helper_chain`, `attack_fwd_mainfirst_verify_actor_to_actor_message`. Master e2fbc46c, re-run before any code was touched, and master 7cab5799: check rc=0 in default and strict mode and `kryos run` prints the secret in both modes (executed, all seven: TOPSECRET-CLOSURE-9f8e7d6c5b4a, except 124e, which reads the secret file of the program it reorders and prints TOPSECRET-ALIAS-FORWARD-4d5e6f7a). Measured with `KRYOS_ROW_TRACE=1` on the invoke form: `fn tool = {?C7}`, `fn invoke = {?C6}`, `fn main = {?C6}`; with the two helpers swapped `fn main = {fs:read}` and E0110. The swapped twin of each of the first four is rejected (measured). The verifier's reading, not re-traced here: the PR's own-row copy and `complete_references` handle a reference that precedes its declaration, but a function declared above its callee hands its row on through a copy var that `main`'s later instantiation never maps. Closing root (R3, `kryos-types`): map the copy var through the chain, or judge the obligation of the first function at its own references; then measure the verdict diff over the corpus. Control that must stay accepted: the same program with a pure `r`.
 
 ### 125. LIVE CAPABILITY ESCAPE -- a store made by a callee that is itself declared BELOW its caller is never recorded in the first callee's store list: in the relay `h1` -> `h2` (h1 declared above h2) the slot of the argument never learns the closure `h2` stores into it -- NOT FIXED
 
@@ -6524,7 +6551,7 @@ Found by the second independent verifier of PR 41: these are the pre-existing tw
 
 ### 134. LIVE CAPABILITY ESCAPE -- item 77 at the shape layer: a call through a closure bound to a local is charged what INVOKING the closure needs, not what the call returns (`f = setter(reader)` with `let setter = |r| { r }`) -- NOT FIXED
 
-Found by the item-77 wave (2026-11-02). Item 77's own repros (rows 77a and 77b) are rejected on master by the row layer since the R3 wave (E0110); the shape layer's half is open, and it shows wherever the row layer does not judge the block (a `deny!` in a `select` arm, item 126). Nineteen probes (escape_status.sh rows 134a-134s, which were PR 41's rows s77-01 to s77-19), each with the block in a `select` arm: tests/security/attack_shape_local_returns_param.kry (`f = setter(reader)`, the shape of 77a), attack_shape_nested_fn_returns_second_param.kry (a nested `fn`, the shape of 77b), and the `attack_shape_` programs `local_returns_captured` (`let getter = || { cap }`), `local_returns_captured_rebound`, `local_returns_one_of_params` (`choose(false, harmless, reader)`), `local_two_levels`, `local_two_levels_chain` (`mk(harmless)(reader)`), `local_result_invoked_in_place` (`setter(reader)()`), `local_result_let_init`, `local_result_in_struct_field`, `local_calls_other_local`, `nested_fn_recursive`, `local_block_alias` (`let q = r` then `return q`), `local_result_as_hot_arg` (`run_it(setter(reader))`), `local_alias_of_local`, `local_alias_of_named_fn` (`let g = pick_second`), `local_two_bindings`, `named_getter_through_local` and `closure_in_closure_captured`. Master e2fbc46c and 7cab5799: check rc=0 in default and strict mode, `kryos run` prints TOPSECRET-CLOSURE-9f8e7d6c5b4a (executed, all nineteen); with the block moved out of the select arm the row layer rejects each (E0110, both modes, measured on 7cab5799). Cause (ESCAPE-ROUTING.md): the `FnCall` arm of `resolve_closure_caps`, with an `Identifier` callee that is a local, answers `local_caps.get(name)`: the authority of invoking the closure (flat, unioned over its bindings), not of the value it returns. A top-level function does not have the problem (`fn_return_closure_caps` records what it returns). Attempts: the R3 wave closed the row-layer half. PR 41 (branch `wave/item77-local-closure-return`) keeps a return flow per binding and closes all nineteen, but independent verifiers refuted both of its heads: the first introduced five escapes and newly rejected three legitimate programs, and the revise round introduced twelve more (the padded twins of item 133) and newly rejected at least one legitimate program it did not disclose (2026-11-02). That is the third attempt, so under the GRAPH.md failure policy this is a documented limitation of 1.3.0 (docs/THREAT-MODEL.md section 4.1). Closing root: a return flow per binding that is resolved by scope (item 133), at the precision of PR 41's revise round. Control that must stay accepted: the same programs with a pure `reader`.
+Found by the item-77 wave (2026-11-02). Item 77's own repros (rows 77a and 77b) are rejected on master by the row layer since the R3 wave (E0110); the shape layer's half is open, and it shows wherever the row layer does not judge the block (a `deny!` in a `select` arm, item 126). Nineteen probes (escape_status.sh rows 134a-134s, which were PR 41's rows s77-01 to s77-19), each with the block in a `select` arm: tests/security/attack_shape_local_returns_param.kry (`f = setter(reader)`, the shape of 77a), attack_shape_nested_fn_returns_second_param.kry (a nested `fn`, the shape of 77b), and the `attack_shape_` programs `local_returns_captured` (`let getter = || { cap }`), `local_returns_captured_rebound`, `local_returns_one_of_params` (`choose(false, harmless, reader)`), `local_two_levels`, `local_two_levels_chain` (`mk(harmless)(reader)`), `local_result_invoked_in_place` (`setter(reader)()`), `local_result_let_init`, `local_result_in_struct_field`, `local_calls_other_local`, `nested_fn_recursive`, `local_block_alias` (`let q = r` then `return q`), `local_result_as_hot_arg` (`run_it(setter(reader))`), `local_alias_of_local`, `local_alias_of_named_fn` (`let g = pick_second`), `local_two_bindings`, `named_getter_through_local` and `closure_in_closure_captured`. Master e2fbc46c and 7cab5799: check rc=0 in default and strict mode, `kryos run` prints TOPSECRET-CLOSURE-9f8e7d6c5b4a (executed, all nineteen); with the block moved out of the select arm the row layer rejects each (E0110, both modes, measured on 7cab5799). Cause (ESCAPE-ROUTING.md): the `FnCall` arm of `resolve_closure_caps`, with an `Identifier` callee that is a local, answers `local_caps.get(name)`: the authority of invoking the closure (flat, unioned over its bindings), not of the value it returns. A top-level function does not have the problem (`fn_return_closure_caps` records what it returns). Attempts: the R3 wave closed the row-layer half. PR 41 (branch `wave/item77-local-closure-return`) keeps a return flow per binding and closes all nineteen, but independent verifiers refuted both of its heads. The verifier of the first head reported five introduced escapes and three legitimate programs newly rejected (PR 41's LEDGER; that PR committed nine repros of the family, its rows 130a-130e and 130i-130l, which master rejects); by the report of the second verifier (its programs are not committed), the revise round introduced twelve more (the padded twins of item 133) and newly rejected at least one legitimate program it did not disclose (2026-11-02). With the R3 wave's row-layer closure that makes three attempts at item 77, two of them at the shape layer; the escape nodes of GRAPH.md were already documented-limitation nodes (2026-11-01), so this is a documented limitation of 1.3.0 (docs/THREAT-MODEL.md section 4.1). Closing root: a return flow per binding that is resolved by scope (item 133), at the precision of PR 41's revise round. Control that must stay accepted: the same programs with a pure `reader`.
 
 ### 51. CLOSED 2026-10-08 (owned struct/enum field store; see the enum-ownership wave at the top). Original title: LEAK -- item 49 RESIDUAL: struct-field assignment holding an Enum/Struct (`h.v = Val.ListV(..)`) still leaks on container-slot OVERWRITE; only the array-index/map-index shapes were fixed (2026-08-28) -- NOT FIXED; 2nd attempt 2026-08-29 got HALF of it and was REVERTED, mechanism now identified, read the addendum first
 
@@ -8548,6 +8575,23 @@ a `push`-triggered reallocation (only the internal data buffer moves), so
 this specific pattern is safe as used; the DIFFERENT documented footgun
 (`let b = push(a, v)` then reading the ORIGINAL variable `a`) remains real
 and unrelated.
+
+### 135. PAPERCUT -- the builtin `exit` taken as a function value (`let f = exit`) is an internal Cranelift verifier error, not a diagnostic -- NOT FIXED
+
+Found by the release verification of 1.3.0 (2026-11-03) on the 1.3.0 build, whose compiler equals master `7cab5799`. `kryos run` of
+`fn main() { let f = exit  println("after") }` (one statement per line) prints `error: codegen (cranelift) failed: module error:
+Compilation error: Verifier errors` and exits 1; in `kryos repl`, typing `exit` (not `:quit`) prints `JIT error: internal error: env
+thunk exit_env: Compilation(Verifier(... mismatched argument count ...))` and the session goes on. A bare `exit` statement in a
+program compiles and does nothing. No wrong answer and no capability effect (`exit` is ambient); the program is refused, with an
+internal error instead of a diagnostic. Closing: give `exit` a function-value thunk with its real signature, or reject a builtin with
+no value form at check time with a normal diagnostic. docs/01-getting-started.md now tells REPL users to type `:quit`.
+
+### 136. PAPERCUT -- `kryos build --help` describes `--cache` as reusing a binary "without rerunning the pipeline" -- NOT FIXED
+
+Found by the release verification of 1.3.0 (2026-11-03). The doc comment of the `--cache` flag (`compiler/crates/kryos-cli/src/main.rs`,
+printed by `kryos build --help`) predates the fix of bypass B8: the cache is consulted only after the capability check has accepted
+the program in that build's mode, and its key covers the mode and every module file read (docs/STDLIB.md, `KRYOS_CACHE=1`). The
+help text understates the checking, it does not overstate it. Not changed in 1.3.0 because the release changes no compiler source. Closing: rewrite the doc comment.
 
 ---
 

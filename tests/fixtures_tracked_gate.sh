@@ -34,7 +34,12 @@ for root, _, files in os.walk('tests'):
     for f in files:
         if f.endswith('.sh'):
             scripts.append(os.path.join(root, f))
-for extra in ('tools/loop/escape_status.sh', 'tools/loop/check-docs-truth.sh'):
+# The escape and threat-model checks read their fixtures from these files too:
+# the claims table, and the repro columns of docs/THREAT-MODEL.md's tables.
+for extra in ('tools/loop/escape_status.sh', 'tools/loop/check-docs-truth.sh',
+              'tools/loop/check-escapes-documented.sh',
+              'tools/loop/check-threat-model-claims.sh',
+              'tests/threat_model/claims.tsv', 'docs/THREAT-MODEL.md'):
     if os.path.exists(extra):
         scripts.append(extra)
 
@@ -53,10 +58,11 @@ for s in scripts:
         refs.add(m.replace('\\', '/'))
 
 # escape_status.sh names its corpus as bare stems in a table; resolve those too.
+# Row ids are not all numeric (`slot01`, `r3-01`), so any id is accepted.
 esc = 'tools/loop/escape_status.sh'
 if os.path.exists(esc):
     txt = open(esc, encoding='utf-8', errors='replace').read()
-    for stem in re.findall(r'^\s*[0-9]+[a-z]?\|([A-Za-z0-9_]+)\s*$', txt, re.M):
+    for stem in re.findall(r'^\s*[A-Za-z0-9-]+\|([A-Za-z0-9_]+)\s*$', txt, re.M):
         refs.add('tests/security/%s.kry' % stem)
 
 if not refs:

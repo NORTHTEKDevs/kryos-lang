@@ -336,11 +336,16 @@ call site through a container, only 34 compile without complaint. The other
 though the closure carries no real authority at all. This is the deliberate
 cost of the fail-closed design in the sections above: when the checker
 cannot statically prove a closure's provenance, it charges the caller the
-maximum rather than guessing at the minimum. Sound, but inconvenient --
-expect to hit this if you build a large plugin registry or router table.
+maximum rather than guessing at the minimum. Safe in the direction it errs,
+but inconvenient -- expect to hit this if you build a large plugin registry or
+router table.
 
 **This is a development-time discipline, not a sandbox for adversarial
-code.** From [`docs/capability-soundness.md`](../../capability-soundness.md):
+code.** The checker also errs the other way: on Kryos 1.3.0, 80 known
+capability-escape programs are still accepted in the default mode and under
+`--strict-capabilities`, and
+[`docs/THREAT-MODEL.md`](../../THREAT-MODEL.md) section 4.1 lists them one per
+row. From [`docs/capability-soundness.md`](../../capability-soundness.md):
 
 > Zero known escapes is not zero escapes. The corpus is finite and
 > human-authored; the shape nobody has thought of is exactly the one that

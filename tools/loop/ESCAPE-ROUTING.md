@@ -1,4 +1,4 @@
-# Escape routing — measured, not reasoned
+# Escape routing - measured, not reasoned
 
 Where each open capability escape's call **actually reaches** the checker, and
 which line hands back the fail-open answer.
@@ -13,23 +13,23 @@ Two fixes on 2026-08-10 were written from reading the code and both failed:
 
 | Attempt | Predicted | Measured |
 | --- | --- | --- |
-| `Borrow`/`Deref` passthrough in `decompose_container_path` | closes item 37 | **still escaping** — that shape never reaches the decomposer |
-| `TupleLiteral` in `literal_field_exists` | closes items 32, 38 | **still escaping** — blocked earlier than the literal resolver |
+| `Borrow`/`Deref` passthrough in `decompose_container_path` | closes item 37 | **still escaping** - that shape never reaches the decomposer |
+| `TupleLiteral` in `literal_field_exists` | closes items 32, 38 | **still escaping** - blocked earlier than the literal resolver |
 
 Both were plausible. Both cost a build-measure-revert cycle. The lesson is not
 "try harder", it is **measure where the call goes before editing**.
 
 ## Known fail-open sites (read from source 2026-08-10, not yet per-item attributed)
 
-- `kryos-capabilities/src/checker.rs` `decompose_container_path` (~971) — understands
+- `kryos-capabilities/src/checker.rs` `decompose_container_path` (~971) - understands
   only `Identifier` / `FieldAccess` / `IndexAccess`; everything else returns `None`,
   and every caller reads `None` as "requires no authority".
-- `check_callee_capabilities` (~5271) — *has* a fail-closed direct-invoke path, but it
+- `check_callee_capabilities` (~5271) - *has* a fail-closed direct-invoke path, but it
   is gated on `segments.len() <= 1`. `resolve_path` returns `["pair","1"]` for a field
   chain, so the fail-closed path is **skipped for every field/index chain**. The
   guard's comment asserts a multi-segment path is "always a qualified stdlib call";
   that assumption is false.
-- `resolve_method_field_invoke_caps` (~3647) — returns `CapabilitySet::empty()`
+- `resolve_method_field_invoke_caps` (~3647) - returns `CapabilitySet::empty()`
   (ungated) when the object does not decompose, and again when `literal_field_exists`
   says no.
 
@@ -50,7 +50,7 @@ instrumentation removed after the run).
 
 | item | repro | reaches | fail-open line | notes |
 | --- | --- | --- | --- | --- |
-| 32 | `attack_verify_tuple_call_general` | `check_callee_capabilities`, `callee=FieldAccess segments=["pair","1"]` | the `segments.len() <= 1` guard on the fail-closed direct-invoke block | `named=false seglen=2` so `failclosed_entered=false`. The guard's comment claims a multi-segment path "is always a qualified stdlib call" — false for any field chain. |
+| 32 | `attack_verify_tuple_call_general` | `check_callee_capabilities`, `callee=FieldAccess segments=["pair","1"]` | the `segments.len() <= 1` guard on the fail-closed direct-invoke block | `named=false seglen=2` so `failclosed_entered=false`. The guard's comment claims a multi-segment path "is always a qualified stdlib call" - false for any field chain. |
 | 38 | `attack_r2_tuple_forloop_index_call` | `check_callee_capabilities`, `callee=FieldAccess segments=["x","0"]` | same `segments.len() <= 1` guard | Identical mechanism to item 32; the `for`-binding is irrelevant. |
 | 30 | `attack_container_via_accessor_fn_call` / `_method_call` / `attack_ifexpr_receiver_field_call` / `attack_matchexpr_receiver_field_call` | `resolve_method_field_invoke_caps` | `decompose_container_path` returns `None` | Measured receivers: `object=FnCall`, `object=MethodCall`, `object=IfExpr`, `object=MatchExpr`. The `_method_call` shape ALSO hits `literal_field_exists(false) lit=StructLiteral` on a second path. |
 | 33 | `attack_verify_actor_to_actor_message` | `resolve_method_field_invoke_caps`, `root=target method=receive` | non-literal fallback with `has_lit=false` returns empty | Root is an actor/param, not a tracked container literal, so the literal branch is skipped and the type-based fallback yields nothing. |
@@ -58,7 +58,7 @@ instrumentation removed after the run).
 | 37 | `attack_deref_borrow_param_defeats_field_resolver` | `check_expr` MethodCall arm, `method=f object=Deref`; `resolve_method_field_invoke_caps root=b method=f` | non-literal fallback with `has_lit=false` returns empty | **This is why the `Borrow`/`Deref` passthrough failed to fix it**: decomposition is not the blocker, the missing non-literal provenance is. |
 | 35 | `attack_static_method_hotparam_offset` | `check_expr` **StaticMethodCall** arm, `method=run` | never reaches `resolve_method_field_invoke_caps` at all | The StaticMethodCall arm has no fn-value/hot-param resolution for a fn-typed argument at index 0. Distinct site from every other item. |
 
-## Conclusion — four sites, one conflation
+## Conclusion - four sites, one conflation
 
 1. **`segments.len() <= 1`** disables the existing fail-closed path for every field/index chain → items 32, 38.
 2. **`decompose_container_path` → `None`** for non-path receivers (`FnCall`, `MethodCall`, `IfExpr`, `MatchExpr`) → item 30 family.
@@ -75,7 +75,7 @@ the decomposer more shapes.
 (it caught `5 |> padd(10)` demanding `all`), and `strict_caps` + `examples` cover
 the 91-example surface.
 
-## Site 3 — attempt log (item 37), so the next attempt does not repeat it
+## Site 3 - attempt log (item 37), so the next attempt does not repeat it
 
 Site 3's Case 2 in `resolve_method_field_invoke_caps` ALREADY fails closed
 correctly: if `local_container_types.get(root)` yields a type and
@@ -88,7 +88,7 @@ The gap is that the root has no type entry. Two halves were tried:
 | seed function PARAMS into `current_local_container_types` | item 37's root `b` is a param, so Case 2 had no type to consult | **still escapes with both applied** |
 
 So decomposition reaching Case 2 and a param type entry are BOTH present and item 37
-is still ungated. The remaining blocker is inside Case 2 itself — either
+is still ungated. The remaining blocker is inside Case 2 itself - either
 `resolve_type_path` does not walk the param's declared type to the fn-typed field,
 or the param's `ty` is not the shape Case 2 expects. **Measure that specific call
 before editing again**: probe `resolve_type_path`'s input and return in Case 2 for
@@ -350,8 +350,8 @@ reference the trait's signature, so a block there that depends on a parameter ro
 
 PR 41 (the item-77 wave, branch `wave/item77-local-closure-return`) is deferred past 1.3.0 (LEDGER: the release-freeze wave and item 134).
 Its repros that escape on master are recorded with the pre-existing variants its second verifier reported, and every row below was
-measured on the build of master `7cab5799`: `kryos check` rc=0 in default and strict mode and `kryos run` prints
-`TOPSECRET-CLOSURE-9f8e7d6c5b4a`. Items 124 to 127, 129 and 131 keep the routing PR 41 measured on master `e2fbc46c`; 128, 130 and 132,
+measured on the build of master `7cab5799`: `kryos check` rc=0 in default and strict mode and `kryos run` prints the secret
+(`TOPSECRET-CLOSURE-9f8e7d6c5b4a`; 124e prints `TOPSECRET-ALIAS-FORWARD-4d5e6f7a`, the secret of the program it reorders). Items 124 to 127, 129 and 131 keep the routing PR 41 measured on master `e2fbc46c`; 128, 130 and 132,
 which that PR closed on its branch, are routed here as master has them, and 133 and 134 are new. For the shape-layer rows the `deny!`
 sits in a `select` arm (item 126), except 130h; a twin with the arm's body in place of the `select` is rejected by the row layer
 (E0110, both modes) for every one of them that has a single `v ch =>` arm (53 programs, measured).
@@ -367,5 +367,5 @@ sits in a `select` arm (item 126), except 130h; a twin with the arm's body in pl
 | 130 | tests/security/attack_shape_local_hidden_return_match_stmt.kry, attack_named_fn_hidden_return_direct.kry, attack_select_arm_return_plain_deny.kry, attack_accessor_hidden_return.kry (rows 130f, 130g, 130h, 130m) | shape layer: the readers of `collect_return_exprs`: the return record of a top-level function (`fn_return_closure_caps`, 130g) and the transparent-accessor registry (`collect_transparent_accessor_paths`, 130m); 130f and 130h call a LOCAL closure, which also goes through item 134's line | checker.rs `collect_return_exprs` lists the explicit returns of `if` / `for` / `while` / `try` bodies and the tail of a block; a `return r` in a non-final `match` arm or in a `select` arm is never listed, so the function or accessor is charged what its visible returns carry | OPEN on 1.3.0 (found by the verifier of PR 41's first head and by its revise round; PR 41's `collect_explicit_returns_block` lists every return outside a nested lambda, deferred). PR 41's rows 130a-130e and 130i-130l are rejected by master (E0507, measured) and not recorded. 130h has an ordinary `deny!`: its `return` is the part in a select arm |
 | 131 | tests/security/attack_shape_local_returns_struct_field_in_place.kry, `attack_shape_local_struct_passthrough_in_place`, `attack_shape_local_result_bound_then_field`, `attack_shape_local_result_method_in_place`, `attack_shape_local_result_nested_field_in_place`, `attack_shape_local_result_via_two_closures` (rows 131a-131f; 131c-131f reported by the second verifier of PR 41) | shape layer: `mkh(reader).run()` with `let mkh = |r| { Holder { run: r } }`, and `idh(Holder { run: reader }).run()` with `let idh = |h| { h }` - a fn-typed FIELD of the CALL RESULT of a local closure, invoked in place, with the `deny!` in a select arm | `resolve_method_field_invoke_caps` returns the empty set when the receiver is not a root it can decompose (`decompose_container_path` of a call is `None`), and the shape layer has no type to say that `run` is a fn-typed field of what the call returns; binding the result first (`let h = mkh(reader)` then `h.run()`, row 131c) leaks on master as well (PR 41's revise round reported it rejected; its second verifier measured it leaking on that PR's head too) | OPEN, recorded by the revise round (the verifier found it as a pre-existing variant, present on master and on the head). The row layer rejects both when the `deny!` is judged by it (E0110, measured), so this is the shape layer's blind spot and the select-arm hole (item 126) is what exposes it. Closing root: give the shape layer the return TYPE of a local closure call, or make the row layer judge select arms (item 126); a name-based answer for every method call on a call result is the fail-open/over-reject trade that `resolve_method_field_invoke_caps` documents as tried and reverted |
 | 132 | tests/security/attack_shape_container_param_shadows_array.kry, `_inner_let_shadows_array`, `_registry_holds_privileged`, `_lookup_over_privileged`, `_param_element_via_id`, `_grown_by_callee`, `_alias_grown` (rows 132a-132g) | shape layer: a value read out of a container local (`id(reg.items[1])`, `get = \|i\| { items[i] }`) and handed through a local closure, with the `deny!` in a select arm | the same line as item 134: a call through a local closure is charged what invoking the closure needs, so the element it hands back is never charged | OPEN on 1.3.0 (found by PR 41's revise round; its `pristine_container_roots` and `resolve_flow_value`, deferred). Moved out of the select arm, each block is rejected by the row layer (E0110, measured on 7cab5799) |
-| 133 | tests/security/attack_shape_name_collision_dead_if_block.kry, `_live_if_block`, `_for_body`, `_while_false`, `_dead_closure_body`, `_reader_factory`, `_nested_fn_dead_block`, `_hidden_return_fn`, `_generic_fn`, `_bound_result`, `_for_binder`, `_match_binder` (rows 133a-133l) | shape layer: `build_local_closure_caps_block` keeps one entry per bare name for the whole function body, and the `FnCall` arm of `resolve_closure_caps` consults it for a call to the top-level function of the same name, with the `deny!` in a select arm | checker.rs `if let Some(r) = local_caps.get(name) { return r.clone(); }` in the `FnCall` arm (line 2099 on 7cab5799): the call to the top-level `id` is answered with the entry of a same-named pure local closure bound in another scope (an `if` / `for` / `while` body, a closure body) or of a `for` / `match` binder, which needs nothing | OPEN on 1.3.0 (found by the second verifier of PR 41 as the pre-existing twins of the twelve escapes that PR introduced). Closing root: resolve a call by scope. Moved out of the select arm, each block is rejected by the row layer (E0110, measured on 7cab5799) |
-| 134 | tests/security/attack_shape_local_returns_param.kry, `attack_shape_nested_fn_returns_second_param` and the seventeen other `attack_shape_local_*`, `attack_shape_named_getter_through_local`, `attack_shape_closure_in_closure_captured` programs (rows 134a-134s, PR 41's s77-01 to s77-19) | shape layer: `resolve_closure_caps` `FnCall` arm with an `Identifier` callee that is a LOCAL (`setter(reader)`), and the chained-call arm (`mk(harmless)(reader)`), with the `deny!` in a select arm | checker.rs `if let Some(r) = local_caps.get(name) { return r.clone(); }` (line 2099 on 7cab5799): the authority of INVOKING the local closure (flat, unioned over its bindings) is returned as the authority of the VALUE the call returns | OPEN on 1.3.0: the shape-layer half of item 77 (the row layer has rejected 77a and 77b since the R3 wave). PR 41 keeps a return flow per binding and closes all nineteen; both of its heads were refuted by independent verifiers (introduced escapes, newly rejected legitimate programs), so it is deferred and this is a documented limitation (docs/THREAT-MODEL.md section 4.1). Moved out of the select arm, each block is rejected by the row layer (E0110, measured on 7cab5799) |
+| 133 | tests/security/attack_shape_name_collision_dead_if_block.kry, `_live_if_block`, `_for_body`, `_while_false`, `_dead_closure_body`, `_reader_factory`, `_nested_fn_dead_block`, `_hidden_return_fn`, `_generic_fn`, `_bound_result`, `_for_binder`, `_match_binder` (rows 133a-133l) | shape layer: `build_local_closure_caps_block` keeps one entry per bare name for the whole function body, and the `FnCall` arm of `resolve_closure_caps` consults it for a call to the top-level function of the same name, with the `deny!` in a select arm | checker.rs `if let Some(r) = local_caps.get(name) { return r.clone(); }` in the `FnCall` arm (line 2156 on 7cab5799; line 2099 is the same lookup in the `Identifier` arm): the call to the top-level `id` is answered with the entry of a same-named pure local closure bound in another scope (an `if` / `for` / `while` body, a closure body) or of a `for` / `match` binder, which needs nothing | OPEN on 1.3.0 (found by the second verifier of PR 41 as the pre-existing twins of the twelve escapes that PR introduced). Closing root: resolve a call by scope. Moved out of the select arm, each block is rejected by the row layer (E0110, measured on 7cab5799) |
+| 134 | tests/security/attack_shape_local_returns_param.kry, `attack_shape_nested_fn_returns_second_param` and seventeen other `attack_shape_` programs: fourteen `attack_shape_local_*`, `attack_shape_nested_fn_recursive`, `attack_shape_named_getter_through_local` and `attack_shape_closure_in_closure_captured` (rows 134a-134s, PR 41's s77-01 to s77-19; LEDGER item 134 names each) | shape layer: `resolve_closure_caps` `FnCall` arm with an `Identifier` callee that is a LOCAL (`setter(reader)`), and the chained-call arm (`mk(harmless)(reader)`), with the `deny!` in a select arm | checker.rs `if let Some(r) = local_caps.get(name) { return r.clone(); }` (line 2156 on 7cab5799, the `FnCall` arm): the authority of INVOKING the local closure (flat, unioned over its bindings) is returned as the authority of the VALUE the call returns | OPEN on 1.3.0: the shape-layer half of item 77 (the row layer has rejected 77a and 77b since the R3 wave). PR 41 keeps a return flow per binding and closes all nineteen; both of its heads were refuted by independent verifiers (introduced escapes, newly rejected legitimate programs), so it is deferred and this is a documented limitation (docs/THREAT-MODEL.md section 4.1). Moved out of the select arm, each block is rejected by the row layer (E0110, measured on 7cab5799) |

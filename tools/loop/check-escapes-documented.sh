@@ -162,11 +162,12 @@ if [ "$s_mis" -ne 0 ]; then
 fi
 
 # Rows: "<id> <name> rc=<check> rc=<strict> <LEAK|no> <ESCAPES|fixed>"
-# Emits: id<TAB>name<TAB>check_rc<TAB>leak<TAB>verdict
+# Emits: id<TAB>name<TAB>check_rc<TAB>strict_rc<TAB>leak<TAB>verdict
 awk '
   NF >= 6 && $3 ~ /^rc=/ && $4 ~ /^rc=/ {
     c = $3; sub(/^rc=/, "", c)
-    print $1 "\t" $2 "\t" c "\t" $5 "\t" $NF
+    s = $4; sub(/^rc=/, "", s)
+    print $1 "\t" $2 "\t" c "\t" s "\t" $5 "\t" $NF
   }
 ' "$ES" > "$TMP/rows.tsv"
 
@@ -187,7 +188,7 @@ set +u
 declare -A ROW_NAME ROW_C1 ROW_VERDICT ACCEPTED
 n_esc_rows=0
 dup_rows=""
-while IFS=$'\t' read -r id name c1 leak verdict; do
+while IFS=$'\t' read -r id name c1 c2 leak verdict; do
   if [ -n "${ROW_NAME[$id]:-}" ]; then dup_rows="$dup_rows $id"; fi
   ROW_NAME[$id]="$name"; ROW_C1[$id]="$c1"; ROW_VERDICT[$id]="$verdict"
   case "$c1" in
@@ -196,8 +197,13 @@ while IFS=$'\t' read -r id name c1 leak verdict; do
          fail "row $id ($name) is accepted by \`kryos check\` but the leak did not reproduce (leak=$leak verdict=$verdict): the run probably failed; investigate"
        else
          n_esc_rows=$((n_esc_rows + 1))
+       fi
+       # Section 4.1 says every row is accepted in the default mode AND under
+       # --strict-capabilities, so the strict verdict is checked, not assumed.
+       if [ "$c2" != "0" ]; then
+         fail "row $id ($name) is accepted in the default mode but \`kryos check --strict-capabilities\` exited $c2: the known-escapes table states both modes; fix the row or the table"
        fi ;;
-    1) if [ "$verdict" = "ESCAPES" ]; then fail "row $id verdict ESCAPES but check rc=1 (inconsistent output)"; fi ;;
+    1) if [ "$verdict" = "ESCAPES" ]; then fail "row $id ($name) escapes only under --strict-capabilities (default check rc=1, strict rc=$c2): the known-escapes table states both modes; document it separately"; fi ;;
     *) fail "row $id ($name): \`kryos check\` exited $c1 (not 0 or 1): a timeout or crash is not a rejection" ;;
   esac
 done < "$TMP/rows.tsv"

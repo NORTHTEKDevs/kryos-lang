@@ -7,23 +7,23 @@ propagated through the call graph. This page states honestly where enforcement
 is **on by default**, where it is **opt-in**, and the plan for closing that gap.
 
 This page has two parts. **Part 1** (below) is the design for the SOUND
-long-term model — capability-typed fn values — and an honest account of why
+long-term model - capability-typed fn values - and an honest account of why
 three successive rounds of enumerating dangerous syntactic shapes could not
 converge, which is the reason this design exists. **Part 2** (further down)
 is the pre-existing deny-by-default rollout tracker (examples, self-host,
 ecosystem, the global default), unrelated to the fn-value-laundering
 problem and still accurate as written.
 
-## Part 1 — Why three enumeration rounds failed, and the fix
+## Part 1 - Why three enumeration rounds failed, and the fix
 
 ### The failure, stated precisely
 
 The capability checker's job, for any given call site, is: does the callee
 require authority the caller does not hold? For a call to a NAMED function
-this is easy — look up the function's own declared/inferred capability set.
-The hard case is a call through a first-class **fn-value** — a closure, or a
+this is easy - look up the function's own declared/inferred capability set.
+The hard case is a call through a first-class **fn-value** - a closure, or a
 function reference, stored in a parameter, a local, a container, a message
-payload — because the callee's IDENTITY isn't known just from its name; it
+payload - because the callee's IDENTITY isn't known just from its name; it
 has to be traced back to whatever closure was actually constructed.
 
 Three rounds of this project attacked that tracing problem the same way:
@@ -33,13 +33,13 @@ generic instantiation → `dyn Trait` → struct field → array element → map
 value → nested combinations → mutation after construction → a HOF whose
 callback forwards a caller-supplied fn-value), and add a rule that traces
 that specific shape. Each round closed everything it found. Each round, new
-shapes were found immediately after — because a **whitelist of known-
+shapes were found immediately after - because a **whitelist of known-
 dangerous shapes can never be complete when the attacker chooses the
 shape**. This is not a claim in the abstract: the concrete history is
 
 - Round 1 closed fn-value laundering via parameter, local, return,
   passthrough, actor, spawn, generic, dyn.
-- Round 2 closed LITERAL-constructed containers, and — audited honestly —
+- Round 2 closed LITERAL-constructed containers, and - audited honestly -
   found that the previous round's claim about container mutation ("fails
   closed") was FALSE: a container built empty then populated via `push`/
   index-assign kept a STALE snapshot and silently asserted "no authority
@@ -47,18 +47,18 @@ shape**. This is not a claim in the abstract: the concrete history is
 - Round 3 closed push/map-insert mutation and a HOF whose callback is a
   NAMED function forwarding a caller-supplied fn-value. Two NEW bypasses
   were found and confirmed live within the same session: an INLINE lambda
-  invoking its own bound parameter through a HOF (`map(tools, |f| f())` —
+  invoking its own bound parameter through a HOF (`map(tools, |f| f())` -
   the named-function case doesn't cover an anonymous one), and a closure
   read out of a container into an INTERMEDIATE LOCAL before being called
-  (`let arr = m["k"]; arr[0]()` — chaining directly was traced, the extra
+  (`let arr = m["k"]; arr[0]()` - chaining directly was traced, the extra
   level of local-variable indirection broke the trace).
 - A fourth pass (this one), auditing the checker's ENFORCEMENT layer rather
   than trusting the "closed" list, found the enumeration's actual root
   architecture: every rule up to this point fired only when a call's
   callee could be looked up BY NAME in a table keyed on named functions
   (`hot_params`). A call whose callee was a bare local variable, with
-  **zero** indirection — no parameter, no container, not even a second
-  function call in between (`let r = make_secret_reader(path); r()`) — was
+  **zero** indirection - no parameter, no container, not even a second
+  function call in between (`let r = make_secret_reader(path); r()`) - was
   never evaluated by anything, at any point across all three rounds,
   because nothing ever inspected the callee of a call unless it resolved
   to a name already known to be "hot". The same gap applied to a struct
@@ -77,9 +77,13 @@ Rather than adding a fifth shape, the default was inverted: a call through a
 first-class fn-value whose capability set cannot be **statically proven** to
 be a subset of the caller's grant is now **rejected** (requires
 `Capability::All`), not silently treated as requiring nothing. Unknown means
-deny. This is sound regardless of which syntactic shapes exist or which
-ones get found next, because soundness stopped depending on the enumeration
-being complete.
+deny. The intent was that this holds regardless of which syntactic shapes
+exist or which ones get found next, because the default stopped depending on
+the enumeration being complete. It does not fully hold: on 1.3.0, 80 of the
+260 capability-escape repros under `tests/security/` are still accepted,
+because the checker resolves some shapes to an authority set that is too
+small, or does not walk them at all, instead of failing closed
+([docs/THREAT-MODEL.md](THREAT-MODEL.md) section 4.1 lists them).
 
 Concretely (`kryos-capabilities/src/checker.rs`):
 
@@ -87,7 +91,7 @@ Concretely (`kryos-capabilities/src/checker.rs`):
   every call site whose callee is NOT a resolvable named function, builtin,
   extern, actor constructor, or enum variant constructor, resolve what
   fn-value is actually being invoked (a local, a parameter, a container
-  read) and require its authority directly — `Known` → exact set,
+  read) and require its authority directly - `Known` → exact set,
   `DependsOnParam` → deferred to the enclosing function's own call sites
   (unchanged, sound forwarding), `Unknown` → `Capability::All`.
 - This runs at BOTH the enforcement layer (`check_callee_capabilities`,
@@ -102,10 +106,10 @@ Concretely (`kryos-capabilities/src/checker.rs`):
 ### The relief: precise resolution where possible, transparency for HOFs
 
 A blanket `Unknown → all` for every unresolved fn-value call would make the
-language unusable — `std::iter::map`/`filter`/`fold`/`reduce`/`find` and
+language unusable - `std::iter::map`/`filter`/`fold`/`reduce`/`find` and
 any user-written HOF take a callback parameter, and an inline lambda
 invoking its own bound parameter (`|f| f()`) is exactly what's needed to
-map over an array of pure closures (a real, tested pattern —
+map over an array of pure closures (a real, tested pattern -
 `conf_generics.kry`'s `map(fns, |f| f(10))`). Measured before deciding how
 to relieve it: reverting to a strict `Unknown → all` broke the full example
 corpus from 91/91 to 74/91 on first pass; each failure was traced to a
@@ -119,7 +123,7 @@ specific, principled, general fix rather than a name-based carve-out:
    `Unknown`. A curried/chained call (`f(a)(b)(c)`) resolves by recursing
    through each application. A nested named function (`fn adder(y) {..}`
    declared inside another function, which the parser desugars to
-   `let adder = fn(y) {..}`) — including a SELF-RECURSIVE one — resolves
+   `let adder = fn(y) {..}`) - including a SELF-RECURSIVE one - resolves
    instead of tripping the fail-closed default on its own name.
 2. **A NAME-collision fix that the fail-closed default exposed.** Three
    different stdlib functions are all named `find`
@@ -139,21 +143,21 @@ specific, principled, general fix rather than a name-based carve-out:
    references to first-class functions; both are now tracked and excluded
    from the fail-closed treatment (they were never enumerated as "callable
    things" before because nothing needed to know).
-4. **Transparent-forwarding lambdas — ROUND 4's shape-based version, now
+4. **Transparent-forwarding lambdas - ROUND 4's shape-based version, now
    REMOVED, see "Round 5" below.** Round 4 originally resolved an inline
    lambda whose ONLY capability-relevant behavior is invoking its own bound
    parameter (`|f| f()`) against "whichever OTHER argument at the SAME call
    site the HOF iterates", identified by matching the callback's declared
    element type against another parameter's declared container type at the
-   SAME declaration, first match wins. **This was unsound** — the exact
+   SAME declaration, first match wins. **This was unsound** - the exact
    same class of bug as rounds 1-3 (inferring authority from a SHAPE rather
-   than proven data flow), just relocated to a new shape — and was deleted,
+   than proven data flow), just relocated to a new shape - and was deleted,
    not patched, once found. See "Round 5" below for what replaced it.
 
 With these four in place, the example corpus is back to 91/91 (matching
 the pre-fix baseline exactly), the full conformance suite (58/58),
 `tests/security_gate.sh` (51 checks, including the two round-3 residuals
-and 9 additional shapes found while hardening this session — direct local
+and 9 additional shapes found while hardening this session - direct local
 invocation with zero indirection, struct-field method-call-shaped direct
 invocation, chained and intermediate-local container reads,
 `std::collections` Deque/Dict wrapper methods, `Option`/`Result` payloads,
@@ -164,16 +168,16 @@ exact commits.
 
 ### The honest residual
 
-A container built from a genuinely NON-LITERAL source — returned from
+A container built from a genuinely NON-LITERAL source - returned from
 another function, mutated inside a callee, or read out of ANOTHER
 container in a way even the intermediate-local extension above cannot
-follow — still resolves to `Unknown` and requires `all`. This is, and
+follow - still resolves to `Unknown` and requires `all`. This is, and
 always was, the documented conservative fallback: it fails CLOSED
 (over-strict, safe), not open. It is a precision limit of a checker with no
-real type-flow analysis, not a soundness hole — closing it precisely is
+real type-flow analysis, not a soundness hole - closing it precisely is
 exactly what Part 2 below (capability-typed fn values) is for.
 
-### Round 5 — the shape heuristic failed too, plus an unrelated scope hole
+### Round 5 - the shape heuristic failed too, plus an unrelated scope hole
 
 Round 4's "honest residual" section above turned out not to be the only
 gap. Two more were found and fixed in round 5, both in
@@ -184,13 +188,13 @@ write-up and the live repros.
 shape-based, and shape-based inference has now failed on this exact axis
 TWICE.** `find_companion_container_arg` matched a callback's declared
 element type against another parameter's declared container type,
-first-match-wins — an attacker passing a REAL privileged container as one
+first-match-wins - an attacker passing a REAL privileged container as one
 argument and an EMPTY DECOY of the identical declared shape as another made
 the decoy win the match and the real container go uncharged. Deleted
 outright, with no shape-based successor. The replacement,
 `hot_param_companions`, is grounded in DATA FLOW instead of shape: for a
-function's own directly-invoked hot callback parameter, it records — from
-that function's OWN fixed source, not from anything a caller supplies —
+function's own directly-invoked hot callback parameter, it records - from
+that function's OWN fixed source, not from anything a caller supplies -
 which other parameter's element the function's body actually passes into
 the callback at its internal call site (`map`'s `f(arr[i])` proves the
 callback runs on `arr`'s elements, regardless of what type any OTHER
@@ -198,22 +202,22 @@ parameter happens to declare). A decoy argument at a call site cannot
 change a fact about the callee's own, already-compiled body. Where no
 single companion can be proven (disagreeing internal call sites, or an
 argument that isn't traceable to another own-parameter), the position falls
-back to `Capability::All` — the same policy as every other unresolvable
+back to `Capability::All` - the same policy as every other unresolvable
 case in this checker, no exceptions carved out for convenience.
 
-**5b. The "defer to my own caller" rule — present since round 1 — was
+**5b. The "defer to my own caller" rule - present since round 1 - was
 unsound whenever the deferring function narrows its OWN scope with `deny!`
 between receiving the value and invoking it.** `fn outer(reader:
 fn()->str) -> str { deny!(fs:read) { return zero_cap_tool(reader) } }`,
 called from an `@capabilities(fs:read)` caller, leaked the secret with no
-decoy, no generic, and no container involved — the plainest possible
+decoy, no generic, and no container involved - the plainest possible
 forward. The deferral assumes the eventual outer call site is checked
 against a scope at least as narrow as the one the deferred value is
 actually used under; a `deny!` inside the SAME function breaks that
 assumption, because the outer call is checked against the function's
 wider ENTRY scope. Reproduced identically through a free function, an
 `impl` method, and an actor message handler receiving the closure as a
-message argument — this is not method- or actor-specific. Fixed with
+message argument - this is not method- or actor-specific. Fixed with
 `current_fn_entry_scope_depth`: every deferred-charge decision now checks
 whether the live scope stack is DEEPER than it was when the checker
 entered the current function/actor boundary; if so, a `deny!` (or any
@@ -222,7 +226,7 @@ the deferral cannot be trusted, and `Capability::All` is required instead.
 This scope check deliberately does NOT apply to the unrelated, purely
 STRUCTURAL self-classification `resolve_closure_caps` runs on a fresh
 lambda literal's own body (to decide whether it needs anything beyond
-transparently forwarding its own parameter) — that classification is a
+transparently forwarding its own parameter) - that classification is a
 property of the literal alone and must stay scope-independent, or every
 `map`/`filter` call over providably pure closures would spuriously require
 `all` merely for running inside ANY `deny!` block, even one narrowing a
@@ -236,13 +240,13 @@ MAP companion, a decoy read out of another container rather than a fresh
 literal, three-or-more containers at once, the same decoy shape against
 `any`/`all`/`partition`/`flat_map`-style siblings, a method receiver with
 more than two array parameters, and the "defer" hole reached through an
-actor message handler, a `spawn` capture, and a `dyn Trait` method — all
+actor message handler, a `spawn` capture, and a `dyn Trait` method - all
 now REJECTED, gated in `tests/security_gate.sh`.
 
-## Part 1b — The sound long-term model: capability-typed fn values
+## Part 1b - The sound long-term model: capability-typed fn values
 
 > The sketch below is now expanded into a full, implementable specification
-> at [docs/capability-effects-spec.md](capability-effects-spec.md) —
+> at [docs/capability-effects-spec.md](capability-effects-spec.md) -
 > representation, inference, subtyping, row-polymorphism for HOFs, every
 > language-feature interaction, a walk of the five named historical attacks
 > through the new design, migration staging, cost, and explicit scope
@@ -253,7 +257,7 @@ recover, after the fact, information a real type system would have
 carried with the value in the first place. The structurally sound fix is
 to make a function's capability requirement part of its **type**, so
 authority travels WITH the value through any container, alias, HOF, or
-payload automatically — the same way Rust's `Send`/`Sync` or an effect
+payload automatically - the same way Rust's `Send`/`Sync` or an effect
 system's effect row travels through generic code without the compiler
 having to special-case every container shape a `Send` value might sit in.
 
@@ -290,7 +294,7 @@ not written by hand, mirroring how `let` locals infer their type today:
 - A named function's declared return type `fn(...) -> T @ {...}` is
   filled in by the compiler from the function's own inferred/declared set
   UNLESS the programmer writes it explicitly (in which case it is checked,
-  not just trusted — a function whose body needs more than its written
+  not just trusted - a function whose body needs more than its written
   `@{...}` claims is a compile error, the same relationship `@capabilities`
   has to a function's own body today).
 - Only a PUBLIC API surface needs the annotation written by hand, and only
@@ -302,14 +306,14 @@ The generic-type-parameter substitution mechanism Kryos already has
 (monomorphization in `kryos-mir`) is the SAME mechanism that already
 substitutes `T` for a concrete type at each instantiation; the capability
 set becomes one more piece of substituted metadata, unified the same way a
-type variable unifies today — no new inference ALGORITHM, an extension of
+type variable unifies today - no new inference ALGORITHM, an extension of
 the existing one.
 
 ### Subtyping: fewer capabilities is a subtype of more
 
 A `fn(...) -> T @ {fs:read}` is usable anywhere a `fn(...) -> T @ {fs:read,
 fs:write}` is expected (a function needing LESS is safely substitutable
-for one permitted to need MORE) — the standard contravariant-in-
+for one permitted to need MORE) - the standard contravariant-in-
 requirements subtyping rule, mechanically identical to how `net` already
 satisfies a required `net:http` in the existing coarse/sub-capability
 model (`Capability::satisfies`). Concretely:
@@ -326,14 +330,14 @@ apply(pure_fn)  // OK: pure_fn is @{} <: @{fs:read} (needs less than the param a
 ```
 
 A caller passing a fn-value whose OWN capability set exceeds what the
-parameter's type declares is a compile error at the CALL SITE — the same
+parameter's type declares is a compile error at the CALL SITE - the same
 `E0507` shape used today, just checked against the value's real TYPE
 instead of a best-effort trace.
 
 ### Interaction with generics, `dyn`, `spawn`, and the stdlib
 
 - **Generics.** `fn map<T, U, C: CapSet>(arr: [T], f: fn(T) -> U @ C) ->
-  [U] @ C` — the callback's capability set becomes a genuine generic
+  [U] @ C` - the callback's capability set becomes a genuine generic
   parameter, unified from the ACTUAL closure argument at each call site,
   exactly like `T`/`U` are today. `map`'s own declared/inferred set stays
   whatever it already is (typically empty); the RETURN type's `@ C`
@@ -357,7 +361,7 @@ instead of a best-effort trace.
   becomes a plain subtyping check on the captured closure's TYPE rather
   than a separate `check_spawn_expr` code path.
 - **The stdlib.** `std::iter`'s HOFs need NO signature change to stay
-  capability-free for pure callers — `fn map<T, U>(arr: [T], f: fn(T) ->
+  capability-free for pure callers - `fn map<T, U>(arr: [T], f: fn(T) ->
   U) -> [U]` (no `@{...}` written) continues to mean "requires nothing OF
   ITS OWN, and infers/propagates whatever `f`'s actual type carries",
   which is exactly today's inferred-empty behavior, now backed by the
@@ -372,10 +376,10 @@ instead of a best-effort trace.
 
 1. Add `@{...}` as an OPTIONAL suffix to `TypeExpr::Function` in the parser
    and AST (backward compatible: absent means "infer", not "requires
-   nothing" — critical so existing `.kry` source needs zero changes).
+   nothing" - critical so existing `.kry` source needs zero changes).
 2. Extend `kryos-types`' function-type unification to carry and unify the
    capability set alongside parameter/return types (the type-checker
-   crate, not `kryos-capabilities` — this is why the fix belongs in the
+   crate, not `kryos-capabilities` - this is why the fix belongs in the
    TYPE system, not the capability checker bolted on afterward).
 3. Extend monomorphization (`kryos-mir`) to substitute the capability set
    the same way it substitutes `T`/`U` today.
@@ -384,7 +388,7 @@ instead of a best-effort trace.
    (`resolve_closure_caps`, `resolve_container_path_caps`,
    `build_local_closure_caps`, `build_local_container_lits`, `hot_params`,
    `hot_param_companions`, `accumulate_hot_extra_caps`, and
-   `resolve_direct_invoke_caps`) becomes REDUNDANT — replaced by an ordinary
+   `resolve_direct_invoke_caps`) becomes REDUNDANT - replaced by an ordinary
    subtyping check against the
    already-resolved type at each call site. This is a large NET DELETION
    of checker complexity, not just an addition.
@@ -402,22 +406,22 @@ rushed alongside a security fix (per this task's own instruction). Rough
 sizing based on the surfaces actually touched: `kryos-ast` (1 new field on
 `TypeExpr::Function`, ~1 day), `kryos-parser` (parse the `@{...}` suffix,
 ~1 day), `kryos-types` (thread capability sets through unification,
-generic substitution, and trait/dyn signature matching — the bulk of the
+generic substitution, and trait/dyn signature matching - the bulk of the
 work, ~2-3 weeks including the interaction with the existing generic
 monomorphization pipeline), `kryos-mir`/codegen (no runtime representation
-needed — capabilities are compile-time-only, erased before codegen exactly
+needed - capabilities are compile-time-only, erased before codegen exactly
 like today, ~2-3 days to verify erasure doesn't leak), `kryos-capabilities`
 (delete the now-redundant heuristic machinery once the type system covers
 its cases, incremental, net negative LOC), stdlib annotation pass (mostly
 automatic via inference; hand-annotating genuinely public trait-object
 surfaces, ~1 week), and a full regression sweep against the security gate
 + conformance + bootstrap suites (~1 week). Total: **6-8 weeks** for a
-careful, TDD, both-backends-verified rollout — not a task to fold into a
+careful, TDD, both-backends-verified rollout - not a task to fold into a
 security-fix wave.
 
 
 
-## Part 2 — Deny-by-default rollout tracker
+## Part 2 - Deny-by-default rollout tracker
 
 ## What is enforced today
 
@@ -428,7 +432,7 @@ security-fix wave.
   you use is a compile error (`E0505`); a caller that does not declare what a
   callee needs is a compile error (`E0507`).
 - **Self-scoped operations are ambient, by design.** `exit`/`abort` (terminate
-  your own process) and clock reads / `sleep` are *not* gated — they cannot
+  your own process) and clock reads / `sleep` are *not* gated - they cannot
   read your data, reach another system, or take unauthorized action. Gating
   them would be noise, not safety. (An agent that stalls or exits is bounded by
   `@budget`, a separate mechanism.) This mirrors how Rust's `process::exit` and
@@ -436,7 +440,7 @@ security-fix wave.
 - **Under `--strict-capabilities`, enforcement is complete and load-bearing.**
   Every public example and showcase program (81/81) carries least-privilege
   `@capabilities` declarations and passes strict checking in CI. Stripping a
-  program's annotations produces violations — the checker genuinely enforces,
+  program's annotations produces violations - the checker genuinely enforces,
   it is not decorative.
 
 ## Deny-by-default is here for new projects
@@ -444,7 +448,7 @@ security-fix wave.
 There are now three enforcement modes (`permissive` < `inferred` < `strict`),
 selectable with `--capabilities-mode` or `[capabilities] mode` in `kryos.toml`.
 **`kryos new` scaffolds `mode = "inferred"`, so a fresh project is
-deny-by-default from the first line of code** — both `kryos check` and
+deny-by-default from the first line of code** - both `kryos check` and
 `kryos build` reject an unannotated `main` that (directly or transitively) uses
 a gated builtin.
 
@@ -453,27 +457,31 @@ once at the boundary (`main`, or a `pub` API function), and the compiler infers
 every interior helper's capability set from its call graph. A ~15k-line program
 needs one annotation on `main`, not one per function (the self-host compiler
 itself is inferred-clean with a single `@capabilities(fs:read, fs:write,
-process)` on `main`). Enforcement is sound for every DIRECT path authority can
-take (direct builtin calls, method/static dispatch, a gated builtin passed BY
-NAME as a first-class value) **and for closure/fn-value indirection**
-through a parameter, a `let`-bound local, a return value, a chain of
-passthrough calls, an actor message send, `spawn`, a generic instantiation,
-`dyn Trait` dispatch, OR a CONTAINER (a struct field, an array element, or a
-map value that holds a closure, including nested combinations like a struct
-field holding an array of closures) — the checker resolves the SPECIFIC
-closure argument at each call site (tracing through a container's
-field/index structure when applicable) and requires its authority there, so
-it is no longer invisible just because it flows through a value instead of a
-name. See [docs/10-capabilities.md § Closure indirection, including
+process)` on `main`). Enforcement is checked, not proven sound, for every
+DIRECT path authority can take (direct builtin calls, method/static dispatch,
+a gated builtin passed BY NAME as a first-class value) **and for
+closure/fn-value indirection** through a parameter, a `let`-bound local, a
+return value, a chain of passthrough calls, an actor message send, `spawn`, a
+generic instantiation, `dyn Trait` dispatch, OR a CONTAINER (a struct field,
+an array element, or a map value that holds a closure, including nested
+combinations like a struct field holding an array of closures): the checker
+resolves the SPECIFIC closure argument at each call site (tracing through a
+container's field/index structure when applicable) and requires its authority
+there, so it is no longer invisible just because it flows through a value
+instead of a name. The known exceptions are listed one per row in
+[docs/THREAT-MODEL.md](THREAT-MODEL.md) section 4.1 (80 of the 260 escape
+repros are accepted on 1.3.0, in the default mode and under
+`--strict-capabilities`). See [docs/10-capabilities.md § Closure indirection, including
 containers](10-capabilities.md#closure-indirection-including-containers-is-checked-read-this-if-you-are-trusting-it-with-secrets)
 for the full checked surface and the documented residuals (a container
 populated from a non-literal source requires `all`, the same conservative
 fallback used for every other unresolvable closure provenance).
 
-The `strict` mode (`--strict-capabilities`) remains for maximum scrutiny —
+The `strict` mode (`--strict-capabilities`) remains for maximum scrutiny -
 every function auditable in isolation for authority it invokes by name OR by
-a resolvable fn-value argument (direct or via a container). 91/91 examples
-pass it in CI (live count via `bash tests/strict_caps_examples.sh`), and
+a resolvable fn-value argument (direct or via a container). Every example
+`tests/strict_caps_examples.sh` selects passes it in CI (102/102 for 1.3.0;
+the script prints the live count), and
 `tests/security_gate.sh` gates the closure-laundering fix directly (reject /
 no-over-reject / no-cascade, plus a positive "still gated when privileged"
 check, for both the direct and container shapes) rather than relying on the
@@ -490,12 +498,12 @@ or reads the environment from an unannotated `main` is rejected at compile time.
 
 Staged plan, done in order:
 
-1. **Examples exemplary** — done. 81/81 strict; 106/106 `inferred`.
-2. **New projects deny-by-default** — done. `kryos new` → `mode = "inferred"`.
-3. **Self-host + stdlib capability-clean** — done. The self-host compiler is
+1. **Examples exemplary** - done. 81/81 strict; 106/106 `inferred`.
+2. **New projects deny-by-default** - done. `kryos new` → `mode = "inferred"`.
+3. **Self-host + stdlib capability-clean** - done. The self-host compiler is
    inferred-clean with a single boundary annotation on `main`; the stdlib
    authority wrappers are annotated so their capabilities propagate.
-4. **Flip the global default to `inferred`** — done (beta.3).
+4. **Flip the global default to `inferred`** - done (beta.3).
 
 ### Nothing is checked permissively anymore
 
@@ -517,7 +525,7 @@ kryos check --strict-capabilities src/main.kry          # every fn must declare
 ```
 
 Each error names the builtin and the capability it needs. In `inferred` mode you
-usually only annotate `main` — the error names the exact (transitive) set, e.g.
+usually only annotate `main` - the error names the exact (transitive) set, e.g.
 `call to `do_install` requires capabilities [fs:read, fs:write]`. Add
 `@capabilities(fs:read, fs:write)` to `main` and re-check; interior helpers need
 nothing. In `strict` mode, annotate each function that calls a gated builtin.

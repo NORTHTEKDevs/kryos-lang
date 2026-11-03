@@ -75,9 +75,12 @@ Upgrade notes:
   lambda. One
   conservative cost: a lambda that reassigns an outer function-typed local
   (which never changes the outer one, since closures capture by value) is
-  rejected when the outer one is called inside `deny!`. Still open: a local
-  reassigned from the result of calling a local closure or nested `fn` that
-  returns its parameter; the README lists it with the other live shapes.
+  rejected when the outer one is called inside `deny!`. A local reassigned from
+  the result of calling a local closure or nested `fn` that returns its
+  parameter (item 77) is rejected by the row layer since the `deny!` verdict
+  change below; it is still accepted when the `deny!` block sits in a `select`
+  arm, where only the shape layer judges it (items 126 and 134, listed in
+  docs/THREAT-MODEL.md section 4.1).
 - **A zero-grant `kryos repl` session read raw process memory.**
   `ptr_byte_at(str_to_ptr("TOP"), 0)` printed `84` at the prompt while the same
   expression in a file or `kryos eval` was rejected with E0505.
@@ -126,8 +129,9 @@ Upgrade notes:
   again at every reference to the function that holds the block, with that reference's
   argument (a relay, a recursion, a method chain and a function value included): the
   plugin platform of LEDGER item 72 is rejected in its shipped declaration order, and
-  `outer(pure)` is still accepted. It also closes a fn-typed local reassigned from the
-  result of a local closure that returns its parameter (item 77), a registration
+  `outer(pure)` is still accepted. It also closes, at the row layer, a fn-typed local
+  reassigned from the result of a local closure that returns its parameter (item 77;
+  the shape-layer half is item 134, still open), a registration
   helper declared after the function that calls it (item 114), and four of the seven
   repros of item 118 (a store helper reached through a function-typed parameter, a
   struct field, a map of operations or a lambda).
@@ -233,8 +237,8 @@ is pinned by the new `tests/bypass_gate.sh` (programs in `tests/bypass/`).
 - **[docs/THREAT-MODEL.md](docs/THREAT-MODEL.md)**: the attacker model, the
   guarantees (each with its exceptions), what capabilities do not guarantee,
   and the known limitations. Its statements are tagged by how they were
-  established; 73 of them are re-executed by
-  `tools/loop/check-threat-model-claims.sh`, and
+  established; the pinned ones are backed by 73 verdicts (one program in one
+  mode each) that `tools/loop/check-threat-model-claims.sh` re-executes, and
   `tools/loop/check-escapes-documented.sh` fails unless the table of accepted
   escapes equals what `tools/loop/escape_status.sh` measures.
 

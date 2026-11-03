@@ -4,12 +4,9 @@
 // Shape: tests/security/attack_slot_param_helper_chain.kry with its two helpers in the reverse order (the caller above its callee). The original is rejected.
 // master e2fbc46c, measured before any checker edit of the wave that recorded this: `kryos check` rc=0 in default and strict mode, `kryos run` prints TOPSECRET-CLOSURE-9f8e7d6c5b4a in both modes (executed).
 // WANTED (when closed): rejected with E0110 in both modes, and `kryos run` must not print the secret.
-// LEDGER root R2, revise round of PR 38 (found by the author while closing the verifier's finding).
-// Two helpers: the outer one hands its OWN array parameter to the inner one that stores into it. The store must compose through both calls.
-// Master dcf72e93: accepted in every mode (check rc=0, default and strict) and `kryos run` prints the secret (executed).
-// First R2 build (PR head dbfb989d): accepted in every mode (check rc=0, default and strict) and `kryos run` prints the secret (executed).
-// Must be REJECTED with E0110 ("capability `fs:read` is denied in this block") under inferred and strict,
-// and `kryos run` must not print the secret.
+// The original program (LEDGER root R2, revise round of PR 38): two helpers, the outer one hands its OWN array parameter to the
+// inner one that stores into it, so the store must compose through both calls. Master rejects the original with E0110; this
+// reversed-order variant is the one that is still accepted.
 use std::iter::{for_each, map}
 
 fn outer_put(reg2: [fn() -> str], h: fn() -> str) {

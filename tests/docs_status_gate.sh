@@ -91,7 +91,7 @@ for f in README.md docs/BUGS.md STABILITY.md; do
         fail=1
     fi
 done
-[ -z "$count_out" ] && echo "  ok: no stale conformance-count claims found in README.md / docs/BUGS.md"
+[ -z "$count_out" ] && echo "  ok: no stale conformance-count claims found in README.md / docs/BUGS.md / STABILITY.md"
 
 if [ "$fail" -eq 0 ]; then
     echo "docs_status_gate: PASS -- docs/BUGS.md matches live test state"

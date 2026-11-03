@@ -7,10 +7,13 @@ holes are still open. Read this before treating `@capabilities`, `deny!` or
 Measured 2026-11-02 on `kryos 1.2.0`, a full-workspace `cargo build --release`
 made in place from commit `a9c4680b` (branch `fin/v1.3-finish`, clean tree).
 Its compiler and stdlib are identical to master `7cab5799` (PR #40, the
-bypass-classes wave): the branch adds only documents, check scripts and tests
-(`git diff 7cab5799 -- compiler` is empty); later commits on the branch revise only
-this document, the scripts and the tests, and a `cargo build --release -j 8` at the
-head was a no-op that left `kryos.exe` unchanged. The first version of this document
+bypass-classes wave): `git diff 7cab5799 -- compiler/crates compiler/stdlib` is
+empty on this branch, which adds documents, check scripts and tests, and whose
+release commit changes only the version strings (`compiler/Cargo.toml`,
+`compiler/Cargo.lock`), so the 1.3.0 build prints `kryos 1.3.0`.
+`tools/loop/check-escapes-documented.sh` and `tools/loop/check-docs-truth.sh`
+were re-run on that 1.3.0 build on 2026-11-03 and measured the same counts
+(80 escaping, 180 rejected). The first version of this document
 was measured 2026-11-01 at `dbfb989d` (the R2 slot-rows wave head); since then
 PR #38 (R2, merged as `732714ab`), PR #39 (R3, the `deny!` verdict is taken
 after the whole module is checked, merged as `e2fbc46c`) and PR #40 (merged as
@@ -80,7 +83,7 @@ Consequences, stated plainly:
 | The compiler and capability checker (`kryos-capabilities`, `kryos-types`, `kryos-driver`) | They are the enforcement | Every guarantee below is void; section 4 is the known part of this |
 | The runtime and native stdlib (`kryos-rt`, `kryos-stdlib-native`) | Compiled programs call into them; `grep -rE 'unsafe\s*\{' compiler/crates --include=*.rs` finds 467 `unsafe {` blocks on 2026-11-02 (executed; a count, not pinned, because it drifts with every edit; `docs/17-unsafe-audit.md` still says about 310, dated May 2026) | A memory-safety bug reachable from safe program text defeats compile-time checks at run time |
 | The Kryos stdlib source (`compiler/stdlib/*.kry`) | It is built on raw-memory primitives, so the raw-memory gate exempts it (section 2, G6). Its public API is therefore part of the attack surface: B9 | A malicious stdlib file has unrestricted raw memory access; a stdlib API that hands out a raw address is a pointer source (B9) |
-| The directory the toolchain resolves the stdlib from | Which directory counts as "the stdlib" decides what is exempt. The trusted search is, in order: `<exe_dir>/stdlib`, `<exe_dir>/../stdlib`, the `stdlib/` of the build tree (compile-time `CARGO_MANIFEST_DIR` ancestors), a `stdlib/` directory in any ancestor of the importing file, then `KRYOS_STDLIB_DIR` (`resolve.rs`, `find_trusted_stdlib_dir` and `find_stdlib_dir_impl`, source). While one of the first three exists, `KRYOS_STDLIB_DIR` changes where `use std::..` is read from but does not make that directory trusted (gate: `tests/security_gate.sh`, run for this revision with the binary in its build tree: "KRYOS_STDLIB_DIR does not make user modules trusted (still requires `ffi`)" and "control: the real stdlib named by KRYOS_STDLIB_DIR is still trusted" are both `ok`). **When none of the first three exists (a binary run outside its distribution layout and outside its build tree, as CI does), a `stdlib/` directory above the importing file, or the `KRYOS_STDLIB_DIR` directory, is the trusted one** (source; not executed, because the first three steps could not be made to miss on the build used here) | Anyone who can write the toolchain's own stdlib directory, or, on such a layout, place a `stdlib/` directory above a project's files, can grant raw memory to any code |
+| The directory the toolchain resolves the stdlib from | Which directory counts as "the stdlib" decides what is exempt. The trusted search is, in order: `<exe_dir>/stdlib`, `<exe_dir>/../stdlib`, the `stdlib/` of the build tree (compile-time `CARGO_MANIFEST_DIR` ancestors), a `stdlib/` directory in any ancestor of the importing file, then `KRYOS_STDLIB_DIR` (`resolve.rs`, `find_trusted_stdlib_dir` and `find_stdlib_dir_impl`, source). While one of the first three exists, `KRYOS_STDLIB_DIR` changes where `use std::..` is read from but does not make that directory trusted (gate: `tests/security_gate.sh`, run for this revision with the binary in its build tree: "KRYOS_STDLIB_DIR does not make user modules trusted (still requires `ffi`)" and "control: the real stdlib named by KRYOS_STDLIB_DIR is still trusted" are both `ok`). **When none of the first three exists (a binary run outside its distribution layout and outside its build tree), a `stdlib/` directory above the importing file, or the `KRYOS_STDLIB_DIR` directory, is the trusted one** (source; not executed, because the first three steps could not be made to miss on the build used here) | Anyone who can write the toolchain's own stdlib directory, or, on such a layout, place a `stdlib/` directory above a project's files, can grant raw memory to any code |
 | The person or host that invokes the compiler and chooses its flags | The mode (`--capabilities-mode`, `--strict-capabilities`, `[capabilities] mode` in the root `kryos.toml`) is chosen outside the program text | `permissive` turns most of the checking off (section 3, N2) |
 | A host that embeds a compiled module or links `kryos-rt` | It supplies the process environment, the WASM imports, the filesystem | Capabilities do not describe or limit the host |
 | The package registry index (`NORTHTEKDevs/kryos-registry`) and any explicit `git =` source, on first fetch | Checksums come from the same place as the code (section 3, N8) | A compromised index yields code with a matching checksum |
@@ -104,7 +107,7 @@ stdlib directory, the registry, or the host.
 
 Each guarantee is for source accepted by `kryos check` with the stated mode.
 **None of them is unconditional.** Each holds except for the 80 accepted
-escapes in section 4.1 (they defeat `deny!` and a callee's narrowing) and the
+escapes in section 4.1 (each defeats the narrowing of a `deny!` block) and the
 four zero-authority shapes in section 4.5 (B5, B6, B7, B9), of which B9 defeats
 G6 for the stdlib's API surface and B5 defeats G1 and G2 for library entry points;
 the exceptions are repeated under each guarantee. "Default" is `inferred`: no
@@ -457,17 +460,19 @@ header: "DELEGATION, not an escape").
 Measured 2026-11-02 with `bash tools/loop/escape_status.sh` on the in-place build
 (12 minutes): **`STILL ESCAPING: 80    now-rejected: 180    missing: 0`**, 260
 repros. Each row below is a program that `kryos check` accepts in default **and**
-`--strict-capabilities` mode and whose `kryos run` printed the secret (executed,
-and re-executed by `tools/loop/check-escapes-documented.sh`, which fails if this
+`--strict-capabilities` mode and whose `kryos run` printed the secret (executed;
+`tools/loop/check-escapes-documented.sh` re-runs every row and fails if one is no
+longer accepted in either mode, if its run prints no leak marker, or if this
 table and the measurement disagree in either direction). The six rows of the
 first version (64, 72, 77a, 77b, 112, 114) are closed: PR #39 closed 64, 72, 77a,
 77b and 114, and 112 is rejected on this build. Items 119, 121, 122 and 123 (ten
-rows) were open on master before this revision. The other 70 rows (items 124 to
-134) were found by the item-77 wave (PR #41) and its two independent verifiers,
-and this revision records them on master. That PR closes 31 of them on its own
-branch (items 128, 130, 132 and 134), but both of its heads were refuted: each
-accepted programs that master rejects, and each newly rejected legitimate
-programs. It is deferred past 1.3.0, so the rows stay open here (LEDGER: the
+rows) were open on master before this revision. This revision records the other
+70 rows (items 124 to 134) on master: items 124 to 126 were found by the
+independent verifier of the R3 wave (PR #39), the rest by the item-77 wave
+(PR #41) and its two independent verifiers. That PR closes 31 of them on its own
+branch (items 128, 130, 132 and 134), but both of its heads were refuted: by its
+verifiers' reports, each accepted programs that master rejects, and each newly
+rejected legitimate programs. It is deferred past 1.3.0, so the rows stay open here (LEDGER: the
 release-freeze wave, and item 134).
 
 <!-- known-escapes:begin -->
@@ -725,7 +730,8 @@ means `kryos check` rc 0 in default **and** `--strict-capabilities`, and `kryos
 run` printed `BYPASS-<id>-OK`; `inferred-only` means rc 0 in default and rc 1 in
 strict, not run; `cache` meant the build sequence of the B8 repro, which was
 deleted when PR #40 closed B8 (no row uses it any more). Binary: `kryos 1.2.0`, the 2026-11-02 build of `a9c4680b`;
-executed 2026-11-02 for every row (B9 added by this revision).
+executed 2026-11-02 for every row (B9 added by this revision), and re-run 2026-11-03
+by `check-escapes-documented.sh` on the `kryos 1.3.0` build (same compiler and stdlib).
 
 <!-- known-bypasses:begin -->
 | id | repro | shape | verified by |
@@ -804,7 +810,8 @@ canary, then runs `tools/loop/escape_status.sh` and fails unless the set of
 accepted repros equals the set in the table between the `known-escapes` markers,
 id for id and path for path. A stale entry (fixed but still listed), an
 undocumented escape (accepted but not listed), a duplicate id, a mismatched repro
-path, an accepted repro whose leak did not reproduce, or fewer than 260 measured
+path, an accepted repro whose leak did not reproduce (no leak marker in its run
+output), a row that `kryos check --strict-capabilities` rejects, or fewer than 260 measured
 rows (`MIN_ROWS`: rows are only ever added, so a lower count means one was
 deleted) each fail the check. It then re-runs every row of the `known-bypasses`
 table (4.5) with the same binary and fails when a row no longer behaves as
@@ -845,7 +852,7 @@ and generated lists inside `security_gate.sh`, which were not checked), so for t
 the only thing pinning them. It is not "there are no escapes". Not done: a sweep
 that requires every `tests/security/*.kry` accepted by `kryos check` to be
 classified as a control, a corpus row or a bypass row; on 2026-11-02
-`tests/security/` held 587 files, 225 of them accepted by `kryos check` in the
+`tests/security/` held 587 `.kry` programs, 225 of them accepted by `kryos check` in the
 default mode; 80 are corpus escapes, 4 are the `bypass_*` repros of 4.5, and 141
 are in neither (mostly must-accept controls and delegation probes, not
 individually classified).
@@ -878,7 +885,16 @@ documented bypasses, 4 verified, 0 problems; 16 minutes);
 `tools/loop/check-threat-model.sh` PASS. They ran on the tree with the rows, the
 table and the counts in place; the edits made after them change wording only. The
 gates of the first step were not re-run for the second, because none of them
-reads the added programs. Not run for this revision: `tests/ir_signature_gate.sh` (part of the
+reads the added programs. Third, after the revise round of the release PR, on the
+`kryos 1.3.0` build (2026-11-03; same compiler and stdlib):
+`tools/loop/check-escapes-documented.sh` PASS, which now also requires the
+`--strict-capabilities` verdict of every documented row (canaries ok; `STILL
+ESCAPING: 80  now-rejected: 180  missing: 0`; 80 documented escapes, 80 accepted,
+0 undocumented, 0 stale; 4 documented bypasses, 4 verified, 0 problems; 20
+minutes); `tools/loop/check-docs-truth.sh` PASS (it now also pins the README
+capabilities bullet and the rejected counts); `tools/loop/check-routing-complete.sh`
+PASS; `tools/loop/check-threat-model-claims.sh` PASS (73 claims, 0 failed);
+`tools/loop/check-threat-model.sh` PASS. Not run for this revision: `tests/ir_signature_gate.sh` (part of the
 `escape-root` accept), `tests/inferred_soundness.sh`, `tests/repl_capability_gate.sh`,
 `tests/backend_divergence_pins.sh` and `tools/loop/graph-run.sh`, so the graph node
 `escape-root` is not recorded green as a whole by this document.

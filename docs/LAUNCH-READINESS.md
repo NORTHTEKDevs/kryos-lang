@@ -9,7 +9,9 @@
 > repros at PR #38, 190 at master 7cab5799, 260 once the findings of the item-77
 > wave and its verifiers were recorded). Measured 2026-11-02 with
 > `bash tools/loop/escape_status.sh` on a kryos 1.2.0 build whose compiler equals
-> master 7cab5799: **`STILL ESCAPING: 80    now-rejected: 180    missing: 0`**. The
+> master 7cab5799: **`STILL ESCAPING: 80    now-rejected: 180    missing: 0`**
+> (re-run 2026-11-03 on the kryos 1.3.0 build, which changes only the version
+> strings: the same counts). The
 > 80 accepted repros are listed, each with a committed repro and its root, in
 > [docs/THREAT-MODEL.md](THREAT-MODEL.md) section 4.1. Do not read any "zero"
 > below as current. Only this banner and a short pointer beside the

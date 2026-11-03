@@ -2,7 +2,19 @@
 
 All notable changes to the **Kryos for VS Code** extension are documented here.
 
-## 1.0.0 — 2026-08-31
+## 1.3.0 - 2026-11-03
+
+- Version realigned with the Kryos 1.3.0 toolchain release. No functional
+  change to the extension since 1.2.0.
+
+## 1.2.0 - 2026-10-31
+
+- Version realigned with the Kryos 1.2.0 toolchain release (there was no
+  1.1.0 of the extension).
+- Packaging: `minimatch`, `brace-expansion` and `balanced-match` are no longer
+  excluded from the packaged extension by `.vscodeignore` (2026-10-06).
+
+## 1.0.0 - 2026-08-31
 
 - Version realigned onto the toolchain's 1.0 line so `publish-vscode.yml`
   ships the extension alongside the `v1.0.0` toolchain release. No
@@ -11,19 +23,19 @@ All notable changes to the **Kryos for VS Code** extension are documented here.
   named in the 0.4.0 entry below are from the abandoned pre-recalibration
   scheme -- see VERSIONING.md).
 
-## 0.4.0 — 2026-05
+## 0.4.0 - 2026-05
 
 - Marketplace-ready packaging: license, icon, categories, keywords
 - Bundled LSP client wiring stable on `kryos lsp` stdio transport
 - Compatible with Kryos toolchain **v2.3.0+**
 
-## 0.3.0 — 2026-04
+## 0.3.0 - 2026-04
 
 - Initial LSP client (diagnostics, hover, completion, goto-definition)
 - TextMate grammar for `.kry` files
 - Snippet pack: `fn`, `let`, `if`, `for`, `while`, `match`, `actor`, `async`
 - `kryos.serverPath` / `kryos.serverArgs` configuration
 
-## 0.1.0 — 2026-02
+## 0.1.0 - 2026-02
 
 - Syntax highlighting only (no LSP)
