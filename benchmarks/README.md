@@ -21,6 +21,10 @@ benchmarks/
   results_table.md   The table measure.py generates from results.json
   RESULTS.md         Short summary of ../BENCHMARKS.md
   run.sh             Deprecated runner, kept for reference
+  fib.* mandelbrot.* Older single-file copies of two benchmarks; measure.py
+                     does not use them
+  ai-codeability/    A separate benchmark of how well an AI model writes
+                     Kryos; see its README.md
   bin/               Build artifacts (gitignored)
 ```
 

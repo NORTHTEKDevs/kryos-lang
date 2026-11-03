@@ -29,7 +29,7 @@ escalation, unattributed outputs, and unbounded spend are compile errors or
 runtime throws -- not postmortem discoveries.*
 
 Why this is defensible (and not another benchmark race): raw speed is table
-stakes (on 1.3.0 Kryos is within 1.04x of Rust on five of seven benchmarks and beats it on two). This wedge
+stakes (on 1.3.0 Kryos is level with Rust on four of seven benchmarks and beats it on one). This wedge
 is a *capability* no other general-purpose language has assembled in one place,
 and it is exactly timed to the moment the industry is scrambling to make
 AI-written and agent-executed code safe to run.

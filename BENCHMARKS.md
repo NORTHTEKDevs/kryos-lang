@@ -13,28 +13,30 @@ Measured at commit: `cbd88996d1b11ae2172fe8e511bbce37fb1cf21b` (Kryos 1.3.0)
 - date: 2026-11-03, 19:19 to 19:36 UTC (the whole run took 16 min 40 s)
 - machine: AMD RYZEN AI MAX+ 395 w/ Radeon 8060S (16 cores, 32 threads), 31.6 GB RAM, Windows 11 Home 10.0.26200
 - toolchains: kryos 1.3.0 (the release build of this commit's compiler), rustc 1.95.0, clang and clang++ 21.1.8, go 1.25.7, CPython 3.14.2; no `mojo` on PATH
-- load: a working desktop, not an idle benchmark host. Total CPU use, sampled every 10 s during the run, had a median of 12.2% (6.1% to 20.3%); 4.1 GB of RAM was free at the start.
+- load: a working desktop, not an idle benchmark host. Total CPU use, sampled every 10 s during the run, had a median of about 12% (6.1% to 20.3%); 4.1 GB of RAM was free at the start.
 - outputs: `check_outputs.py` PASS, every port of every benchmark printed the same output
 
 ## Headline
 
-On Kryos 1.3.0 the LLVM backend (`kryos build --release`) is within 1.04x of
-Rust on five of the seven benchmarks and faster than Rust on two of them. It
-is clearly behind on two.
+On Kryos 1.3.0 the LLVM backend (`kryos build --release`) is level with Rust
+on four of the seven benchmarks, faster than Rust on one, and clearly behind
+on two.
 
 - **Behind Rust:** binary_trees **1.88x** and nbody **1.34x**. On binary_trees,
   C (0.691 s) and Go (0.492 s) are also faster than Kryos (1.455 s).
 - **binary_trees has regressed.** It was 1.42x at 1.0.0-rc.2 (2026-07-10).
   Built by each release's own compiler and timed side by side on this machine
-  (interleaved, 7 runs each after a warmup): 0.9.0 1.251 s, 1.0.0 1.216 s,
-  1.1.0 1.410 s, 1.2.0 1.399 s, 1.3.0 1.423 s, against Rust's 0.740 s. The
-  slowdown shipped in 1.1.0, and 1.3.0 did not add to it. Its cause is not yet
-  known: [LEDGER item 137](./tools/loop/LEDGER.md).
-- **Level with Rust (within 1.04x):** fib 1.01x, mandelbrot 1.00x, fannkuch
-  1.04x.
+  (interleaved, 7 runs each after a warmup): rc.2 1.065 s, 0.9.0 1.223 s,
+  1.0.0 1.250 s, 1.0.1 1.217 s, 1.1.0 1.387 s, 1.2.0 1.392 s, 1.3.0 1.436 s,
+  against Rust's 0.742 s. It slowed in two steps of about 15% each: between
+  rc.2 and 0.9.0, and between 1.0.1 and 1.1.0. 1.3.0 is within 4% of 1.1.0 and
+  1.2.0, inside run-to-run spread. The causes are not yet known:
+  [LEDGER item 137](./tools/loop/LEDGER.md).
+- **Level with Rust (0.96x to 1.04x, inside run-to-run spread):** fib 1.01x,
+  mandelbrot 1.00x, fannkuch 1.04x, matmul 0.96x. On matmul Go is faster than
+  all of them (0.561 s against Kryos's 0.620 s).
 - **Faster than Rust:** hashmap 0.59x (and 5.7x faster than clang++ with
-  `std::unordered_map`), matmul 0.96x. Go is faster still on matmul (0.561 s
-  against 0.620 s).
+  `std::unordered_map`).
 - **Against Python:** 1.6x faster on binary_trees, 7.8x on hashmap, and 32x to
   307x on the other five.
 
@@ -111,18 +113,19 @@ is 1.88x: see the headline and LEDGER item 137.)
 
 ## What changed (2026-11-03, 1.3.0 re-measure)
 
-The first full re-run since rc.2; 1.0.0, 1.1.0 and 1.2.0 shipped with the rc.2
-table.
+The first full re-run since rc.2; 0.9.0, 1.0.0, 1.0.1, 1.1.0 and 1.2.0 shipped
+with the rc.2 table.
 
 - Kryos/Rust ratios, rc.2 table -> 1.3.0: fib 1.03x -> 1.01x, mandelbrot
   1.00x -> 1.00x, nbody 1.31x -> 1.34x, binary_trees 1.42x -> 1.88x, fannkuch
   1.02x -> 1.04x, matmul 0.96x -> 0.96x, hashmap 0.65x -> 0.59x.
-- Apart from binary_trees (1.097 s -> 1.455 s), every Kryos time is within 7%
-  of the rc.2 table, and so is every Rust time except hashmap (0.127 s ->
-  0.147 s), which is why hashmap's ratio moved.
-- binary_trees: the slowdown entered between 1.0.0 and 1.1.0 (side-by-side
-  numbers in the headline). The rc.2 binary was not part of that comparison,
-  so whether 0.9.0 was already slower than rc.2's 1.097 s is not established.
+- Apart from binary_trees (1.097 s -> 1.455 s), every Kryos LLVM time is
+  within 7% of the rc.2 table, and so is every Rust time except hashmap
+  (0.127 s -> 0.147 s), which is why hashmap's ratio moved.
+- binary_trees slowed in two steps of about 15% each, between rc.2 and 0.9.0
+  and between 1.0.1 and 1.1.0 (side-by-side numbers in the headline). The rc.2
+  build measured 1.065 s in that comparison, close to the 1.097 s of the rc.2
+  table, so the comparison and the July sweep agree.
 - New: `benchmarks/check_outputs.py`. `measure.py` never compared outputs, so
   the "same answer required" step had been a manual one.
 - The README's comparison table now shows this run. It had shown figures from
@@ -168,9 +171,10 @@ bootstrap (stage-2 == stage-3 == stage-4, fixed point held):
 
 ## Still planned
 
-- binary_trees: find what slowed it down in 1.1.0 (LEDGER item 137). Beyond
-  that, a unique-ownership `Box` (no refcount) or an arena would close most of
-  the remaining gap to Rust; Rc-like `Shared` is the idiomatic, safe default.
+- binary_trees: find what slowed it down between rc.2 and 0.9.0 and between
+  1.0.1 and 1.1.0 (LEDGER item 137). Beyond that, a unique-ownership `Box` (no
+  refcount) or an arena would close most of the remaining gap to Rust; Rc-like
+  `Shared` is the idiomatic, safe default.
 - nbody's residual 1.34x: fair loop unroll/vectorize hints (the trip count is a
   runtime `let n = 5`, blocking full unroll).
 - A liveness-gated consuming string-append intrinsic (the sound version of the

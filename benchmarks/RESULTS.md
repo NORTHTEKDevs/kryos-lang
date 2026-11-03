@@ -12,17 +12,17 @@ Medians of 5 runs, seconds (lower is better). Last refresh: **1.3.0,
 | Benchmark | Kryos LLVM | Rust -O | ratio vs Rust |
 | --- | --- | --- | --- |
 | hashmap 1M+1M | 0.086 | 0.147 | 0.59x (beats Rust) |
-| matmul 512^2 | 0.620 | 0.645 | 0.96x (beats Rust) |
+| matmul 512^2 | 0.620 | 0.645 | 0.96x |
 | mandelbrot 1000^2 x1000 | 0.383 | 0.381 | 1.00x |
 | fib(40) | 0.362 | 0.358 | 1.01x |
 | fannkuch-redux(10) | 0.204 | 0.196 | 1.04x |
 | nbody 2M steps | 0.150 | 0.112 | 1.34x |
 | binary_trees d16 | 1.455 | 0.772 | 1.88x |
 
-Five of the 7 benchmarks are within 1.04x of Rust, and Kryos beats Rust
-outright on hashmap and matmul. It trails on nbody (1.34x) and binary_trees
-(1.88x). binary_trees was 1.42x at 1.0.0-rc.2: the slowdown shipped in 1.1.0
-and is not explained yet (LEDGER item 137).
+Kryos is level with Rust (within 4%) on four of the 7 benchmarks and beats it
+outright on hashmap. It trails on nbody (1.34x) and binary_trees (1.88x).
+binary_trees was 1.42x at 1.0.0-rc.2: it slowed in two steps, in 0.9.0 and in
+1.1.0, for reasons not yet found (LEDGER item 137).
 
 See [`../BENCHMARKS.md`](../BENCHMARKS.md) for full methodology, per-benchmark
 analysis, spreads, the Cranelift column, and startup floors.
