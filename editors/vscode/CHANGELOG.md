@@ -2,7 +2,7 @@
 
 All notable changes to the **Kryos for VS Code** extension are documented here.
 
-## 1.3.0 - 2026-11-03
+## 1.3.0 - 2026-11-02
 
 - Version realigned with the Kryos 1.3.0 toolchain release. No functional
   change to the extension since 1.2.0.

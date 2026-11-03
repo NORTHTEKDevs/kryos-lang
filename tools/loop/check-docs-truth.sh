@@ -38,6 +38,8 @@ echo "  measured: $actual capability escape(s) still live, $rejected rejected ($
 if [ "$actual" -eq 0 ]; then
   if grep -qiE "known,? reproducible capability escapes" README.md; then
     echo "  FAIL: escapes are at 0 but README still advertises live escapes"; fail=1
+  elif grep -qE "\*\*[1-9][0-9]* of the [0-9]+ known capability-escape repros" README.md; then
+    echo "  FAIL: escapes are at 0 but the README capabilities bullet still states live escapes"; fail=1
   else
     echo "  ok   README carries no live-escape claim (count is 0)"
   fi

@@ -74,7 +74,13 @@ build of `7cab5799` (`cargo build --release` in place, `kryos 1.2.0`).
   PASS with the strict assertion (STILL ESCAPING: 80 now-rejected: 180 missing: 0; 80 documented, 80 accepted, 0 undocumented,
   0 stale; 4 bypasses verified; 1216 s); `check-docs-truth.sh` PASS (bullet, Status and preamble pinned; 23 OPEN items checked;
   874 s); `check-routing-complete.sh` PASS; `check-threat-model.sh` PASS; `check-threat-model-claims.sh` PASS (73 claims, 0
-  failed); `tests/docs_status_gate.sh` PASS; `tests/fixtures_tracked_gate.sh` PASS (324 fixtures, all tracked).
+  failed); `tests/docs_status_gate.sh` PASS; `tests/fixtures_tracked_gate.sh` PASS (324 fixtures, all tracked). A focused
+  re-verification of that commit (two lenses, the checks and every changed sentence) confirmed the checks (no vacuous pass found)
+  and found more of the same wording: docs/10-capabilities.md still said capabilities make these violations impossible, and book
+  chapters 11 and 20 presented `deny!` as a sandbox with no pointer to the escapes; both now carry the caveat. Also fixed: the
+  dated "remains true today" of docs/LAUNCH-READINESS.md section 10 (covered by its banner now), STABILITY section 4 relabelled as
+  the v1.0.0 snapshot, the extension changelog's date, the escapes == 0 branch of `check-docs-truth.sh` (it now also fails on a
+  stale capabilities bullet), and the header of `check-escapes-documented.sh` (it names the strict assertion).
 
 ## Wave: R3 deny! verdict timing -- the verdict was taken on a row whose vars were still unbound (items 64, 72, 114, 115, 116 and 120 closed; 77 and four repros of 118 closed with them; 119, 121, 122 and three repros of 118 open) (2026-11-02)
 

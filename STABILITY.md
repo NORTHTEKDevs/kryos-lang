@@ -7,7 +7,8 @@ from `CHANGELOG.md` and tooling.
 
 Last updated: 2026-08-29 (v1.0.0). Check counts sync to README/CI, which
 `tests/docs_status_gate.sh` gate-checks; this file is refreshed after them.
-The capability claims in section 5 were revised for 1.3.0 on 2026-11-03.
+The capability claims in section 5 were revised for 1.3.0 on 2026-11-03;
+section 4 is the v1.0.0 snapshot (the README carries current counts).
 
 ---
 
@@ -67,7 +68,7 @@ A release tag is cut when **all** of the following hold:
 
 ---
 
-## 4. Current pass rates (v1.0.0)
+## 4. Pass rates at v1.0.0
 
 - Cranelift JIT (`kryos run`): **100%** on the native runner suite.
 - LLVM release (`kryos build --release`): **100%** on the

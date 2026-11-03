@@ -18,7 +18,9 @@
 #      program that calls file_read inside deny!(fs:read) must be rejected by
 #      `kryos check`; either failing means the measurement would be vacuous;
 #   3. run escape_status.sh and parse it (the STILL ESCAPING line must exist,
-#      missing must be 0, every accepted row must show the leak);
+#      missing must be 0, every accepted row must show the leak and must be
+#      accepted under --strict-capabilities too, and no row may escape only
+#      under --strict-capabilities, because section 4.1 states both modes);
 #   4. compare the accepted rows with the table between the known-escapes
 #      markers in docs/THREAT-MODEL.md, id for id and path for path;
 #   5. verify the second table (known-bypasses, section 4.5): zero-authority

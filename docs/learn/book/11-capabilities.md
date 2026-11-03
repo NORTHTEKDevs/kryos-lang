@@ -1,12 +1,12 @@
 # 11 · Capabilities
 
 After this chapter you will be able to read any Kryos program's
-`@capabilities(...)` declarations and know exactly what it can touch on the
-system -- files, the network, the environment, a subprocess -- without
+`@capabilities(...)` declarations and know what the checker holds it to on
+the system -- files, the network, the environment, a subprocess -- without
 reading a single line of its implementation. You will be able to write a
-least-privilege program yourself, sandbox an untrusted code path inside a
-trusted one with `deny!`, and know precisely where this security model's
-proven guarantees end.
+least-privilege program yourself, narrow a code path you trust less with
+`deny!`, and know where this security model's guarantees end (including the
+known escapes it still accepts).
 
 This is Kryos's headline feature -- the reason the language exists rather
 than being "a systems language with ARC." Everything else in this book is a
@@ -272,6 +272,13 @@ applied *within* a function, not just between functions: grant broadly at
 the boundary where you must, then narrow again around the specific span of
 code you trust the least.
 
+The narrowing holds for the call shapes the checker covers, not for every
+program: on Kryos 1.3.0, 80 known programs still reach a denied capability
+inside a `deny!` block (for example when the block sits in a `select` arm),
+and [`docs/THREAT-MODEL.md`](../../THREAT-MODEL.md) section 4.1 lists them.
+Treat `deny!` as a strong review aid, not as a sandbox for code that is
+trying to escape it.
+
 ## Capabilities through closures and containers
 
 A closure is a value, and Kryos tracks the authority a closure *carries*
@@ -408,8 +415,9 @@ coarse only at a genuinely trusted entry point.
 - Sub-capabilities (`fs:read`/`fs:write`, `net:http`/`net:tcp`) are
   independent; the coarse capability grants both, never the reverse.
 - `deny!(...)` narrows authority for a lexical block, even inside a
-  function that holds more -- the tool for sandboxing one code path inside
-  an otherwise-trusted program.
+  function that holds more -- the tool for narrowing one code path inside
+  an otherwise-trusted program (80 known shapes still defeat it on 1.3.0;
+  docs/THREAT-MODEL.md section 4.1).
 - Capability tracking follows closures through containers (struct fields,
   arrays, maps), closing the obvious laundering path.
 - The fail-closed design costs precision: 55% of enumerated pure-closure

@@ -14,8 +14,10 @@
 > strings: the same counts). The
 > 80 accepted repros are listed, each with a committed repro and its root, in
 > [docs/THREAT-MODEL.md](THREAT-MODEL.md) section 4.1. Do not read any "zero"
-> below as current. Only this banner and a short pointer beside the
-> section 1 quote further down were added; the rest is unchanged.
+> below as current, nor any count or classification of the OPEN LEDGER items
+> or a "remains true today" (section 10): those are dated too, and the OPEN
+> section of tools/loop/LEDGER.md is the live list. Only this banner and a short
+> pointer beside the section 1 quote further down were added; the rest is unchanged.
 
 
 > ## 2026-10-08 - ownership update (branch `fix/item3-call-boundary`)
