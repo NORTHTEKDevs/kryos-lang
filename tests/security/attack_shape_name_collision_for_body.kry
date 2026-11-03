@@ -1,0 +1,38 @@
+// LEDGER item 133, shape layer (found by the independent verifier of PR 41 as a variant present on master, NOT FIXED).
+// The pure local `id` is bound inside a `for` body; `f = id(reader)` after the loop reaches the top-level `fn id`.
+// Root: the shape layer's flat map of local closures is keyed by bare name and ignores scope, and it is consulted before the top-level function of the same name, so the call is charged what the pure local closure needs (nothing) and the value it returns is judged pure.
+// The deny! block sits in a `select` arm, which the row layer does not judge (LEDGER item 126, root R4), so the SHAPE layer is the only judge here.
+// Master 7cab5799: check rc=0 in default and strict mode, `kryos run` prints TOPSECRET-CLOSURE-9f8e7d6c5b4a (executed).
+// WANTED (when closed): rejected with E0507 or E0110 in default and strict mode, and `kryos run` must not print the secret.
+fn harmless() -> str {
+    return "not a secret"
+}
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+fn id(x: fn() -> str) -> fn() -> str {
+    return x
+}
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let mut f: fn() -> str = harmless
+    for k in [1] {
+        let id = |x: fn() -> str| {
+            
+            return harmless
+        }
+        let z = id(harmless)
+    }
+    f = id(reader)
+    let ch = chan()
+    send(ch, 1)
+    select {
+        v ch => {
+            deny!(fs:read) {
+                println("OUT: " + f())
+            }
+        }
+    }
+}

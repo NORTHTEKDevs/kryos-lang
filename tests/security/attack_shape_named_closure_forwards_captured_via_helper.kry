@@ -1,0 +1,35 @@
+// LEDGER item 127 (shape layer; found by the item-77 wave while hunting the siblings of item 77, NOT FIXED).
+// A top-level function returns a closure literal that forwards its captured parameter to a helper that calls it: `fn mk(b) { return || run(b) }`, `f = mk(reader)`.
+// `resolve_closure_caps` recognises a captured parameter only when the returned literal CALLS it by name (`|| b()`, rejected: measured, E0507); a parameter forwarded to a hot helper is deferred to empty, so `fn_return_closure_caps[mk]` is the empty set and `f()` is charged nothing.
+// The deny! block sits in a `select` arm, which the row layer does not judge (LEDGER item 126, root R4), so the SHAPE layer is the only judge here.
+// Master e2fbc46c: check rc=0 in default and strict mode, `kryos run` prints TOPSECRET-CLOSURE-9f8e7d6c5b4a (executed). The direct-call form (`|| b()`) is rejected with E0507.
+// WANTED (when closed): rejected with E0507 in default and strict mode, and `kryos run` must not print the secret.
+fn harmless() -> str {
+    return "not a secret"
+}
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+fn run(h: fn() -> str) -> str {
+    return h()
+}
+fn mk(b: fn() -> str) -> fn() -> str {
+    return || run(b)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let f = mk(reader)
+    let ch = chan()
+    send(ch, 1)
+    select {
+        v ch => {
+            deny!(fs:read) {
+                println("OUT: " + f())
+            }
+        }
+    }
+}

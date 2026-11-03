@@ -1,5 +1,18 @@
 # Capabilities
 
+> **Measured status (2026-11-02) - read this before anything else on this page.**
+> `bash tools/loop/escape_status.sh` re-runs every committed capability-escape repro under both
+> enforcement modes and prints the real count: **80 still escape, 180 are rejected (260 repros)**.
+> Each of the 80 is listed in [docs/THREAT-MODEL.md](THREAT-MODEL.md) section 4.1, with what not to
+> rely on and the workaround, and named in [tools/loop/LEDGER.md](../tools/loop/LEDGER.md) with its
+> measured routing in [tools/loop/ESCAPE-ROUTING.md](../tools/loop/ESCAPE-ROUTING.md). In every one
+> the program holds the capability and what fails is the narrowing of a `deny!` block; 56 of them
+> put the block inside a `select` arm, which the row layer does not judge. **A count of 0 would not
+> mean there are no escapes.** The corpus is adversarial shapes found by directed search, so a count
+> is a floor, not a soundness proof. Capabilities are a strong development-time discipline today;
+> they are not yet a boundary to run untrusted code behind. Where this page says a shape is
+> "rejected" or "checked", it means that shape is checked and gated, not that no other shape leaks.
+
 > **Implementation Status (revised after fail-closed hardening — read this
 > before trusting the model with a secret):** The `@capabilities(...)`
 > annotation is parsed and the compile-time capability checker
@@ -153,7 +166,7 @@ SPECIFIC closure argument at each call site (not the callee's own,
 correctly-empty, declaration), so `main`'s declared/inferred set still has
 to cover it — and this now ALSO holds when that closure is stashed in and
 read back out of a container (a struct field, array element, or map value):
-see "Closure indirection, including containers" below for the full sound
+see "Closure indirection, including containers" below for the full checked
 surface.
 
 ```bash
@@ -169,7 +182,7 @@ In a project, set it once in `kryos.toml` (a fresh `kryos new` already does):
 mode = "inferred"
 ```
 
-## Closure indirection, including containers, is sound (read this if you are trusting it with secrets)
+## Closure indirection, including containers, is checked (read this if you are trusting it with secrets)
 
 **If you are evaluating Kryos for a use case where capability enforcement is
 the thing standing between untrusted code and a secret (an embedded agent

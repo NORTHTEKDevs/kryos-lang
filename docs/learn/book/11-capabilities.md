@@ -319,10 +319,10 @@ error[E0507]: call to `zero_cap_tool` requires capabilities [fs:read] not grante
 argument carries at this call site, and `deny!(fs:read)` still catches it.
 The same tracing works when the closure is stashed in a struct field, an
 array element, or a map value instead of a plain local (a plugin registry,
-router table, or command-dispatch map, in other words). The full proof --
+router table, or command-dispatch map, in other words). The full write-up (not a proof) --
 struct/array/map/nested variants, plus the precision cost this buys you
 below -- lives in
-[`docs/10-capabilities.md`](../../10-capabilities.md#closure-indirection-including-containers-is-sound-read-this-if-you-are-trusting-it-with-secrets).
+[`docs/10-capabilities.md`](../../10-capabilities.md#closure-indirection-including-containers-is-checked-read-this-if-you-are-trusting-it-with-secrets).
 
 ## The honest boundary
 

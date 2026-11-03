@@ -1,0 +1,36 @@
+// LEDGER item 130, shape layer (found by the independent verifier of PR 41; present on master, NOT FIXED on 1.3.0).
+// The no-authority twin of attack_shape_local_hidden_return_match_stmt_with_authority: a local closure returns its parameter from a non-final `match` statement arm, nothing else in its body is privileged.
+// Root: `collect_return_exprs` lists the returns of if / for / while / try bodies and the tail of a block only, so a `return` in this position is invisible to every reader of that list (on master a call through a LOCAL closure is also charged its invocation authority, item 134).
+// Master 7cab5799 AND PR 41 head 364d2e44: check rc=0 in default and strict mode, `kryos run` prints TOPSECRET-CLOSURE-9f8e7d6c5b4a (executed).
+// The deny! block sits in a `select` arm, which the row layer does not judge (LEDGER item 126, root R4), so the SHAPE layer is the only judge here.
+// WANTED (when closed): rejected with E0507 or E0110 in default and strict mode, and `kryos run` must not print the secret. A candidate fix (PR 41) was deferred past 1.3.0.
+fn harmless() -> str {
+    return "not a secret"
+}
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let mut f: fn() -> str = harmless
+    let sel = |c: i64, r: fn() -> str| {
+        match c {
+            1 => { return r }
+            _ => { }
+        }
+        return harmless
+    }
+    f = sel(1, reader)
+    let ch = chan()
+    send(ch, 1)
+    select {
+        v ch => {
+            deny!(fs:read) {
+                println("OUT: " + f())
+            }
+        }
+    }
+}

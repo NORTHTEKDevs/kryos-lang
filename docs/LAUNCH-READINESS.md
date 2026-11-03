@@ -6,10 +6,11 @@
 > Each statement below that says "zero known" or "zero known live" capability
 > escapes describes the escape corpus as it stood on its own date (2026-08-16 to
 > 2026-08-29), and was true of that corpus only. The corpus has grown since (99
-> repros at PR #38, 190 at master 7cab5799). Measured 2026-11-02 with
+> repros at PR #38, 190 at master 7cab5799, 260 once the findings of the item-77
+> wave and its verifiers were recorded). Measured 2026-11-02 with
 > `bash tools/loop/escape_status.sh` on a kryos 1.2.0 build whose compiler equals
-> master 7cab5799: **`STILL ESCAPING: 10    now-rejected: 180    missing: 0`**. The
-> ten accepted repros are listed, each with a committed repro and its root, in
+> master 7cab5799: **`STILL ESCAPING: 80    now-rejected: 180    missing: 0`**. The
+> 80 accepted repros are listed, each with a committed repro and its root, in
 > [docs/THREAT-MODEL.md](THREAT-MODEL.md) section 4.1. Do not read any "zero"
 > below as current. Only this banner and a short pointer beside the
 > section 1 quote further down were added; the rest is unchanged.

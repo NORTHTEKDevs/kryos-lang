@@ -1,5 +1,13 @@
 # Capability soundness: theorem, invariants, and implementation audit
 
+> **UPDATE (2026-11-02) - read this first.** The measured status in the 2026-08-14
+> update below is out of date. `tools/loop/escape_status.sh` now lists 260 repros, and
+> 80 of them are accepted by `kryos check` in the default mode and under
+> `--strict-capabilities` and print the secret when run; each is listed in
+> [docs/THREAT-MODEL.md](THREAT-MODEL.md) section 4.1. By this document's own definition
+> each of the 80 is a reproducible counterexample to the property section 1 states, for the
+> current implementation.
+>
 > **UPDATE (2026-08-14, authority-surface wave - READ THIS FIRST. Supersedes every
 > update below, and changes the MECHANISM this document audits.)**
 >

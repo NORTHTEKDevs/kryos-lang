@@ -145,8 +145,8 @@ felt while writing ordinary higher-order code.
   drills into a container to invoke a privileged closure is caught at the
   call site that supplied it. See [docs/10-capabilities.md § Closure
   indirection, including
-  containers](docs/10-capabilities.md#closure-indirection-including-containers-is-sound-read-this-if-you-are-trusting-it-with-secrets)
-  for the full sound surface and the one documented residual (a container
+  containers](docs/10-capabilities.md#closure-indirection-including-containers-is-checked-read-this-if-you-are-trusting-it-with-secrets)
+  for the full checked surface and the documented residuals (a container
   populated from a non-literal source requires `all`, the same conservative
   fallback used for every other unresolvable closure provenance).
 

@@ -36,8 +36,8 @@ and in the escape corpus below; "no known escape" means "no escape found by the
 searches that were run", and the searches were run by the same people who wrote
 the checker.
 
-"Known" has two precise meanings here. Section 4.1 is the escape corpus: 190
-repros listed by name in `tools/loop/escape_status.sh`, 10 of them still accepted.
+"Known" has two precise meanings here. Section 4.1 is the escape corpus: 260
+repros listed by name in `tools/loop/escape_status.sh`, 80 of them still accepted.
 Section 4.5 lists accepted zero-authority shapes (B5, B6, B7 and B9) that are
 not in that corpus; five more (B1 to B4 and B8) were listed in the first version
 of this document and are closed in this build (PR #40). Both tables are checked
@@ -103,7 +103,7 @@ stdlib directory, the registry, or the host.
 ## 2. What capabilities DO guarantee
 
 Each guarantee is for source accepted by `kryos check` with the stated mode.
-**None of them is unconditional.** Each holds except for the ten accepted
+**None of them is unconditional.** Each holds except for the 80 accepted
 escapes in section 4.1 (they defeat `deny!` and a callee's narrowing) and the
 four zero-authority shapes in section 4.5 (B5, B6, B7, B9), of which B9 defeats
 G6 for the stdlib's API surface and B5 defeats G1 and G2 for library entry points;
@@ -163,8 +163,8 @@ permissive for the direct case (claims.tsv G3-deny-direct-*). For closures
 reaching the block through parameters, locals, containers, struct fields, actor
 state, `spawn`, generics, `dyn` and the other shapes in section 2 of
 [10-capabilities.md](10-capabilities.md): gate `tests/security_gate.sh`
-(gate, run for this revision: PASS, 342 `ok` lines, 0 FAIL) and `tools/loop/escape_status.sh` (180 of 190 repros rejected,
-executed 2026-11-02). **Exceptions: the ten shapes in 4.1, all of which defeat
+(gate, run for this revision: PASS, 342 `ok` lines, 0 FAIL) and `tools/loop/escape_status.sh` (180 of 260 repros rejected,
+executed 2026-11-02). **Exceptions: the 80 rows in 4.1, all of which defeat
 `deny!`.** `deny!` does not bound a callee that is handed a closure (N16, B6).
 
 **G4. `@pure` functions call no gated or impure builtin.**
@@ -424,7 +424,7 @@ in principle". Treat it as a declaration, not a boundary; a DLL built by a
 compiler older than PR #40 can carry B1 to B4 and B8, and one built by this compiler can
 still carry B9.
 
-**N15. Zero known escapes is not a soundness proof.** The corpus is 190 repros
+**N15. Zero known escapes is not a soundness proof.** The corpus is 260 repros
 found by directed search; 75 more shapes are enumerated by a generator. Both
 were written by the authors of the checker. Section 4.5 lists four accepted
 shapes that are in neither, and the first version of this document listed eight;
@@ -434,6 +434,10 @@ itself evidence that the corpus was incomplete. Every previous low-count claim
 in this repository was later wrong: on 2026-08-10 the README claimed a single
 residual while twelve others were live, and on 2026-10-15 "0 escaping" was true
 of the 19 named repros while eighteen other shapes escaped (LEDGER preamble).
+It happened again while this document was revised: its first count at master
+`7cab5799` was 10 accepted of 190, and the same day it became 80 of 260 when the
+findings of one more wave and its two verifiers were recorded (LEDGER: the
+release-freeze wave).
 
 **N16. Authority travels with a closure (delegation).** A function-typed
 parameter, and an actor-handler parameter, is charged to the *sender* at the
@@ -451,14 +455,20 @@ header: "DELEGATION, not an escape").
 ### 4.1 Capability escapes known and still accepted
 
 Measured 2026-11-02 with `bash tools/loop/escape_status.sh` on the in-place build
-(11 minutes): **`STILL ESCAPING: 10    now-rejected: 180    missing: 0`**, 190
+(12 minutes): **`STILL ESCAPING: 80    now-rejected: 180    missing: 0`**, 260
 repros. Each row below is a program that `kryos check` accepts in default **and**
 `--strict-capabilities` mode and whose `kryos run` printed the secret (executed,
 and re-executed by `tools/loop/check-escapes-documented.sh`, which fails if this
 table and the measurement disagree in either direction). The six rows of the
 first version (64, 72, 77a, 77b, 112, 114) are closed: PR #39 closed 64, 72, 77a,
-77b and 114, and 112 is rejected on this build. Items 119, 121, 122 and 123 were
-open on master before this revision and are the ten rows.
+77b and 114, and 112 is rejected on this build. Items 119, 121, 122 and 123 (ten
+rows) were open on master before this revision. The other 70 rows (items 124 to
+134) were found by the item-77 wave (PR #41) and its two independent verifiers,
+and this revision records them on master. That PR closes 31 of them on its own
+branch (items 128, 130, 132 and 134), but both of its heads were refuted: each
+accepted programs that master rejects, and each newly rejected legitimate
+programs. It is deferred past 1.3.0, so the rows stay open here (LEDGER: the
+release-freeze wave, and item 134).
 
 <!-- known-escapes:begin -->
 | id | repro | shape | root |
@@ -473,20 +483,109 @@ open on master before this revision and are the ten rows.
 | 123a | tests/security/attack_slot_param_fn_value_factory.kry | a store helper reached through a factory that returns the helper as a function value | R2 |
 | 123b | tests/security/attack_slot_param_trait_bound_dispatch.kry | a store helper reached through a generic function with a trait bound | R2 |
 | 123c | tests/security/attack_slot_dyn_registrar_store.kry | a store helper reached through dyn dispatch | R2 |
+| 124a | tests/security/attack_fwd_param_chain_invoke_in_deny.kry | `tool(r)` inside deny! copies its parameter and hands it to `invoke`, declared below `tool` | F (forward reference) |
+| 124b | tests/security/attack_fwd_param_chain_container_in_deny.kry | the same chain for an array of closures: `tool(fns)` hands it to `run_first` | F (forward reference) |
+| 124c | tests/security/attack_fwd_param_chain_method_in_deny.kry | the same chain through an impl method, then a free function | F (forward reference) |
+| 124d | tests/security/attack_fwd_param_chain_actor_in_deny.kry | the same chain through an actor handler, then a free function | F (forward reference) |
+| 124e | tests/security/attack_fwd_rev_hotparam_forward_via_local_alias.kry | a pinned program (a parameter forwarded through a local alias) with its helpers declared in the reverse order | F (forward reference) |
+| 124f | tests/security/attack_fwd_rev_slot_param_helper_chain.kry | a pinned program (a two-helper store chain) with the caller declared above its callee | F (forward reference) |
+| 124g | tests/security/attack_fwd_mainfirst_verify_actor_to_actor_message.kry | a pinned program (a closure sent from actor to actor) with `main` declared first | F (forward reference) |
+| 125a | tests/security/attack_fwd_store_relay_two_hop.kry | `h1` relays to `h2`, declared below it, which pushes the closure into the caller's array | F (forward reference) |
+| 125b | tests/security/attack_fwd_store_relay_global_slot.kry | the same relay into a global array read by a function declared above `main` | F (forward reference) |
+| 125c | tests/security/attack_fwd_store_relay_method.kry | the same relay through impl methods (`add` calls `put`) | F (forward reference) |
+| 125d | tests/security/attack_fwd_builder_relay_returns_container.kry | `guard(b1(r))` where `b1` relays to `b2`, which returns `[safe, x]` | F (forward reference) |
+| 125e | tests/security/attack_fwd_fill_relay_struct_field_after_main.kry | a struct field filled through `fill1` then `fill2`, both declared after `main` | F (forward reference) |
+| 125f | tests/security/attack_fwd_fill_relay_struct_field_before_main.kry | the same with both helpers declared before `main` | F (forward reference) |
+| 126a | tests/security/attack_deny_in_select_arm_callee.kry | a deny! block inside a `select` arm of a callee is never judged by the row layer | R4 (missing walk) |
+| 126b | tests/security/attack_deny_in_select_arm_main.kry | the same block inside a `select` arm of `main` | R4 (missing walk) |
+| 126c | tests/security/attack_deny_in_select_timeout_arm.kry | the same block inside the `timeout` arm of a `select` | R4 (missing walk) |
+| 127a | tests/security/attack_shape_named_closure_forwards_captured_via_helper.kry | a top-level function returns a closure that forwards its captured parameter to a helper that calls it | shape layer (captured parameters) |
+| 127b | tests/security/attack_shape_named_closure_two_captured_params.kry | a top-level function returns a closure that uses two captured parameters; only one is charged | shape layer (captured parameters) |
+| 128 | tests/security/attack_shape_named_chain_applies_returned_closure.kry | `make_getter(reader)()`: the closure a top-level function returns is applied in the same expression | shape layer (chained call) |
+| 129a | tests/security/attack_shape_loop_carried_rebound_callee.kry | `f = op(reader)` in a loop that rebinds `op` to a closure returning its parameter after the call | shape layer (map build order) |
+| 129b | tests/security/attack_shape_loop_carried_alias.kry | `g = f` then `f = reader` in a loop | shape layer (map build order) |
+| 129c | tests/security/attack_shape_lambda_let_replaces_earlier_binding.kry | a later lambda `let` of the same name replaces the entry of the earlier binding that is called | shape layer (map build order) |
+| 130f | tests/security/attack_shape_local_hidden_return_match_stmt.kry | a local closure returns its parameter from a non-final `match` arm | shape layer (return walk) |
+| 130g | tests/security/attack_named_fn_hidden_return_direct.kry | a top-level function returns its parameter from a non-final `match` arm | shape layer (return walk) |
+| 130h | tests/security/attack_select_arm_return_plain_deny.kry | a local closure returns its parameter from a `select` arm in its own body; the deny! is in ordinary position | shape layer (return walk) |
+| 130m | tests/security/attack_accessor_hidden_return.kry | a method with a hidden return is registered as a transparent accessor of `self.items[i]` | shape layer (return walk) |
+| 131a | tests/security/attack_shape_local_returns_struct_field_in_place.kry | `mkh(reader).run()`: a fn-typed field of the result of a call through a local closure, invoked in place | shape layer (field of a call result) |
+| 131b | tests/security/attack_shape_local_struct_passthrough_in_place.kry | `idh(Holder { run: reader }).run()`: a local closure returns its struct parameter | shape layer (field of a call result) |
+| 131c | tests/security/attack_shape_local_result_bound_then_field.kry | the result is bound first: `let h = mkh(reader)`, then `h.run()` | shape layer (field of a call result) |
+| 131d | tests/security/attack_shape_local_result_method_in_place.kry | `mkh(reader).go()`, where the method `go` calls the field | shape layer (field of a call result) |
+| 131e | tests/security/attack_shape_local_result_nested_field_in_place.kry | `mko(reader).inner.run()`: a nested struct | shape layer (field of a call result) |
+| 131f | tests/security/attack_shape_local_result_via_two_closures.kry | `wrap2(reader).run()`, where `wrap2` calls `mkh` | shape layer (field of a call result) |
+| 132a | tests/security/attack_shape_container_param_shadows_array.kry | a closure's parameter named like an outer array holds the privileged closure; an element is read through a local identity closure | shape layer (container read) |
+| 132b | tests/security/attack_shape_container_inner_let_shadows_array.kry | the same with an inner `let` of the array's name | shape layer (container read) |
+| 132c | tests/security/attack_shape_container_registry_holds_privileged.kry | `f = id(reg.items[1])`: a struct registry holding the privileged closure, read through a local identity closure | shape layer (container read) |
+| 132d | tests/security/attack_shape_container_lookup_over_privileged.kry | a local lookup closure over an array that holds the privileged closure: `f = get(1)` | shape layer (container read) |
+| 132e | tests/security/attack_shape_container_param_element_via_id.kry | a function returns an element of its array parameter through a local identity closure: `pick([harmless, reader], 1)` | shape layer (container read) |
+| 132f | tests/security/attack_shape_container_grown_by_callee.kry | a callee pushes the privileged closure into a pure array before an element is read through a local closure | shape layer (container read) |
+| 132g | tests/security/attack_shape_container_alias_grown.kry | an alias of a pure array is grown with the privileged closure before an element is read through a local closure | shape layer (container read) |
+| 133a | tests/security/attack_shape_name_collision_dead_if_block.kry | `f = id(reader)` calls the top-level `id`; a pure local closure named `id` sits in an `if false` block | shape layer (name lookup ignores scope) |
+| 133b | tests/security/attack_shape_name_collision_live_if_block.kry | the same with an `if true` block | shape layer (name lookup ignores scope) |
+| 133c | tests/security/attack_shape_name_collision_for_body.kry | the same with the local bound in a `for` body | shape layer (name lookup ignores scope) |
+| 133d | tests/security/attack_shape_name_collision_reader_factory.kry | a pure local named like the reader factory shadows the factory itself | shape layer (name lookup ignores scope) |
+| 133e | tests/security/attack_shape_name_collision_nested_fn_dead_block.kry | a nested `fn pick` in a dead block shadows the top-level `pick` that returns its second parameter | shape layer (name lookup ignores scope) |
+| 133f | tests/security/attack_shape_name_collision_dead_closure_body.kry | the local is bound inside a closure that is never called | shape layer (name lookup ignores scope) |
+| 133g | tests/security/attack_shape_name_collision_while_false.kry | the local is bound inside a `while false` body | shape layer (name lookup ignores scope) |
+| 133h | tests/security/attack_shape_name_collision_hidden_return_fn.kry | the top-level function returns its parameter from a non-final `match` arm | shape layer (name lookup ignores scope) |
+| 133i | tests/security/attack_shape_name_collision_generic_fn.kry | the top-level function is generic | shape layer (name lookup ignores scope) |
+| 133j | tests/security/attack_shape_name_collision_bound_result.kry | the result is bound first: `let g = id(reader)`, then `f = g` | shape layer (name lookup ignores scope) |
+| 133k | tests/security/attack_shape_name_collision_for_binder.kry | a `for` binder named `id` shadows a pure local closure `id` | shape layer (name lookup ignores scope) |
+| 133l | tests/security/attack_shape_name_collision_match_binder.kry | a `match` binder `Some(id)` shadows a pure local closure `id` | shape layer (name lookup ignores scope) |
+| 134a | tests/security/attack_shape_local_returns_param.kry | `f = setter(reader)` where the local closure `setter` returns its parameter (item 77a's shape) | shape layer (call through a local closure) |
+| 134b | tests/security/attack_shape_nested_fn_returns_second_param.kry | a nested `fn` returns its second parameter (item 77b's shape) | shape layer (call through a local closure) |
+| 134c | tests/security/attack_shape_local_returns_captured.kry | a local closure returns a captured privileged closure | shape layer (call through a local closure) |
+| 134d | tests/security/attack_shape_local_returns_captured_rebound.kry | the captured local is rebound to the privileged closure after the closure is defined | shape layer (call through a local closure) |
+| 134e | tests/security/attack_shape_local_returns_one_of_params.kry | a local closure returns one of several parameters, chosen at run time | shape layer (call through a local closure) |
+| 134f | tests/security/attack_shape_local_two_levels.kry | two levels of local closures, applied through a local | shape layer (call through a local closure) |
+| 134g | tests/security/attack_shape_local_two_levels_chain.kry | two levels applied in one chain: `mk(harmless)(reader)` | shape layer (call through a local closure) |
+| 134h | tests/security/attack_shape_local_result_invoked_in_place.kry | the call result is invoked in place: `setter(reader)()` | shape layer (call through a local closure) |
+| 134i | tests/security/attack_shape_local_result_let_init.kry | the call result initializes a `let` | shape layer (call through a local closure) |
+| 134j | tests/security/attack_shape_local_result_in_struct_field.kry | the call result is stored in a struct field and called through it | shape layer (call through a local closure) |
+| 134k | tests/security/attack_shape_local_calls_other_local.kry | a local closure returns the result of another local closure on its parameter | shape layer (call through a local closure) |
+| 134l | tests/security/attack_shape_nested_fn_recursive.kry | a recursive nested `fn` returns its parameter | shape layer (call through a local closure) |
+| 134m | tests/security/attack_shape_local_block_alias.kry | a block-bodied local closure binds its parameter to a local and returns the local | shape layer (call through a local closure) |
+| 134n | tests/security/attack_shape_local_result_as_hot_arg.kry | the call result is handed to a function that calls it: `run_it(setter(reader))` | shape layer (call through a local closure) |
+| 134o | tests/security/attack_shape_local_alias_of_local.kry | the local closure is reached through an alias | shape layer (call through a local closure) |
+| 134p | tests/security/attack_shape_local_alias_of_named_fn.kry | a top-level function that returns its second parameter, reached through a local alias | shape layer (call through a local closure) |
+| 134q | tests/security/attack_shape_local_two_bindings.kry | one local name bound to two closures, the second returning its parameter | shape layer (call through a local closure) |
+| 134r | tests/security/attack_shape_named_getter_through_local.kry | the getter a top-level function returns is bound to a local and called: `let g = make_getter(reader)` | shape layer (call through a local closure) |
+| 134s | tests/security/attack_shape_closure_in_closure_captured.kry | a local closure returns an inner closure that returns a captured privileged closure | shape layer (call through a local closure) |
 <!-- known-escapes:end -->
 
-What the ten have in common, as observed in the ten repros (not a proof about
+What the 80 have in common, as observed in the 80 repros (not a proof about
 unknown ones): in every repro the program holds the capability (`main` declares
 `fs:read` and builds or receives the privileged closure itself), and what fails
 is the **narrowing**: the privileged closure runs where `deny!` says it must not.
-None of the ten makes an unannotated, zero-authority program read a file
-(section 4.5 lists shapes that do). Eight of the ten (119a-e, 123a-c) are one
-mechanism: a helper stores a closure into a container it was handed and the
-caller's view of that container is not updated (LEDGER items 119 and 123). A
-variant of such a repro that hands the closure to a callee declared
+None of the 80 makes an unannotated, zero-authority program read a file
+(section 4.5 lists shapes that do). They fall in two groups.
+
+- **Row-layer gaps, 26 rows.** Items 119 and 123 (eight rows) are one mechanism:
+  a helper stores a closure into a container it was handed and the caller's view
+  of that container is not updated. 121 is coarse `deny!` families, 122 the body
+  of a trait default method. 124 and 125 (13 rows) are forward references: a
+  function declared above the callee it hands a closure to, or a store made by a
+  callee declared below its caller. 126 (3 rows) is a `deny!` inside a `select`
+  arm, which the row layer never judges.
+- **Shape-layer gaps, 54 rows (items 127 to 134).** The shape
+  layer (the E0507 check) mis-charges a call through a closure bound to a local
+  (134), a name that a local closure or binder also uses elsewhere in the
+  function (133), a chained call (128), a captured parameter (127), a loop that
+  rebinds a closure name (129), a hidden `return` (130), a fn-typed field of a
+  call result (131) or a container element handed through a local closure (132).
+  53 of the 54 put the `deny!` block in a `select` arm (item 126), so the row
+  layer does not judge it. For each of those 53 a twin with the arm's body in
+  place of the `select` was generated for this revision (not committed), and
+  every twin is rejected by the row layer in default and strict mode (E0110,
+  executed). The 54th, 130h, uses an ordinary `deny!` and hides the `return` in
+  a `select` arm of the closure instead.
+
+A variant of a 119 or 123 repro that hands the closure to a callee declared
 `@capabilities()` instead of calling it inside `deny!` is accepted and runs, but
-that is delegation (N16, B6), not an eleventh escape: a callee's declaration
-never bounded a closure it was handed, so it has no row here.
+that is delegation (N16, B6), not another escape: a callee's declaration never
+bounded a closure it was handed, so it has no row here.
 
 Per escape, what not to rely on, and the workaround. The only general
 workaround is not to use `deny!` or a callee's declaration as the boundary
@@ -509,6 +608,31 @@ it does not make the check sound.
 - **123a-c** (item 123, root R2). Do not rely on `deny!` when the store helper is
   reached through a function returned by a factory, a trait-bound generic or a
   `dyn` value.
+- **124a-g, 125a-f** (items 124 and 125, root F, forward references). Do not
+  rely on `deny!` across a chain of helpers declared out of dependency order: a
+  function declared above the callee it hands a closure to, or a callee declared
+  below its caller that stores into the caller's container. Declaring every
+  callee above its caller avoids the shape: the dependency-order twins of the
+  first four 124 probes and of all six 125 probes are rejected (LEDGER items 124
+  and 125, measured on master `e2fbc46c` by the wave that recorded them; not
+  re-executed for this revision).
+- **126a-c** (item 126, root R4). Do not put a `deny!` block inside a `select`
+  arm, the `timeout` arm included: the type checker does not walk them, so the
+  row layer never judges the block. Put the block outside the `select` (126a and
+  126b: the twins with the block out of the arm are rejected, E0110, executed).
+- **127 to 134** (shape layer). The advice for 126 covers 53 of the 54 rows: with
+  the block out of the `select` arm each was rejected (E0110, executed). For
+  130h, also do not `return` a closure from inside a `select` arm. Beyond that,
+  do not rely on the shape layer alone to see through a call to a closure bound
+  to a local (134), a function name that a local closure, a nested `fn` or a
+  `for` / `match` binder also uses anywhere in the same function (133), a
+  chained call of a returned closure (128), a returned closure that uses a
+  captured parameter through a helper or uses two of them (127), a loop that
+  rebinds a closure name (129), a `return` in a non-final `match` arm (130), a
+  fn-typed field of a call result (131) or a container element handed through a
+  local closure (132). The candidate fix for 128, 130, 132 and 134 (PR #41) is
+  deferred, and its verifiers found that it opens the 133 shape when the local
+  closure needs authority of its own.
 
 ### 4.2 Precision cost: legitimate programs that need `@capabilities(all)`
 
@@ -680,7 +804,7 @@ canary, then runs `tools/loop/escape_status.sh` and fails unless the set of
 accepted repros equals the set in the table between the `known-escapes` markers,
 id for id and path for path. A stale entry (fixed but still listed), an
 undocumented escape (accepted but not listed), a duplicate id, a mismatched repro
-path, an accepted repro whose leak did not reproduce, or fewer than 190 measured
+path, an accepted repro whose leak did not reproduce, or fewer than 260 measured
 rows (`MIN_ROWS`: rows are only ever added, so a lower count means one was
 deleted) each fail the check. It then re-runs every row of the `known-bypasses`
 table (4.5) with the same binary and fails when a row no longer behaves as
@@ -721,14 +845,15 @@ and generated lists inside `security_gate.sh`, which were not checked), so for t
 the only thing pinning them. It is not "there are no escapes". Not done: a sweep
 that requires every `tests/security/*.kry` accepted by `kryos check` to be
 classified as a control, a corpus row or a bypass row; on 2026-11-02
-`tests/security/` held 517 files, 155 of them accepted by `kryos check` in the
-default mode; 10 are corpus escapes, 4 are the `bypass_*` repros of 4.5, and 141
+`tests/security/` held 587 files, 225 of them accepted by `kryos check` in the
+default mode; 80 are corpus escapes, 4 are the `bypass_*` repros of 4.5, and 141
 are in neither (mostly must-accept controls and delegation probes, not
 individually classified).
 
-Measurement recorded for this revision, all on the in-place binary built from
+Measurement recorded for this revision, in two steps, both on in-place builds
+whose compiler and stdlib equal master `7cab5799`. First, on the binary built from
 `a9c4680b` (clean tree) with `cargo build --release -j 8`, run on 2026-11-02:
-`escape_status.sh` `STILL ESCAPING: 10  now-rejected: 180  missing: 0`;
+`escape_status.sh` `STILL ESCAPING: 10  now-rejected: 180  missing: 0` (190 repros);
 `tests/bypass_gate.sh` PASS (57 ok lines, including the cargo section);
 `tests/authority_surface_gate.sh` PASS (82 builtins, 77 gated, 5 rejected without
 a named capability); `tests/capability_matrix_gate.sh` PASS (0 escapes across 75
@@ -742,7 +867,18 @@ predicted there);
 problems); `tools/loop/check-threat-model-claims.sh` PASS (73 claims, 0 failed);
 `tools/loop/check-threat-model.sh` PASS. These three were run on the tree that
 became the commit containing this paragraph (the paragraph is the only
-difference). Not run for this revision: `tests/ir_signature_gate.sh` (part of the
+difference). Second, after the 70 rows of items 124 to 134 were recorded, on the
+same binary (2026-11-02): `escape_status.sh` `STILL ESCAPING: 80  now-rejected:
+180  missing: 0` (260 repros, 12 minutes); `tools/loop/check-escapes-documented.sh`
+PASS (canaries ok; 80 documented escapes, 80 accepted, 0 undocumented, 0 stale; 4
+documented bypasses, 4 verified, 0 problems; 16 minutes);
+`tools/loop/check-docs-truth.sh` PASS (the README and the LEDGER preamble state
+80); `tools/loop/check-routing-complete.sh` PASS;
+`tools/loop/check-threat-model-claims.sh` PASS (73 claims, 0 failed);
+`tools/loop/check-threat-model.sh` PASS. They ran on the tree with the rows, the
+table and the counts in place; the edits made after them change wording only. The
+gates of the first step were not re-run for the second, because none of them
+reads the added programs. Not run for this revision: `tests/ir_signature_gate.sh` (part of the
 `escape-root` accept), `tests/inferred_soundness.sh`, `tests/repl_capability_gate.sh`,
 `tests/backend_divergence_pins.sh` and `tools/loop/graph-run.sh`, so the graph node
 `escape-root` is not recorded green as a whole by this document.

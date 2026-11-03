@@ -1,0 +1,50 @@
+// LEDGER item 125 (root F, forward references; found by the independent verifier of the R3 wave, recorded first by the item-77 wave, NOT FIXED).
+// A store made by a callee that is itself declared BELOW its caller is never recorded in the first callee's store list: in the relay h1 -> h2 (h1 declared above h2)
+// the slot of the argument never learns the closure h2 stores into it. The same program with the two helpers in the other order is rejected.
+// Shape: the slot is a struct field (`Host.items`) read by `Host.run` (deny! block); the relay `fill1` -> `fill2` is declared BEFORE `main`, caller above callee.
+// master e2fbc46c, measured before any checker edit of the wave that recorded this: `kryos check` rc=0 in default and strict mode, `kryos run` prints TOPSECRET-CLOSURE-9f8e7d6c5b4a in both modes (executed).
+// WANTED (when closed): rejected with E0110 in both modes, and `kryos run` must not print the secret.
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+fn wrap_once(inner: fn() -> str) -> fn() -> str {
+    return || inner()
+}
+
+struct Host {
+    items: [fn() -> str],
+}
+impl Host {
+    fn run(self) {
+        let f = || "harmless"
+        deny!(fs:read) {
+            for f in self.items {
+                println("LEAK: " + f())
+            }
+        }
+    }
+}
+
+
+fn fill1(h: Host, f: fn() -> str) {
+    fill2(h, f)
+}
+
+fn fill2(h: Host, f: fn() -> str) {
+    h.items = push(h.items, f)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let r = secret()
+    let h = Host { items: [safe] }
+    fill1(h, r)
+    h.run()
+}
+
