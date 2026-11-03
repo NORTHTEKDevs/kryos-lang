@@ -1481,6 +1481,94 @@ for ctl in $S77_CONTROLS; do
     done
     [ $ctl_ok -eq 1 ] && echo "  ok   $ctl.kry accepted in default and strict mode (no over-rejection)"
 done
+# LEDGER item 130 (the revise round of the item-77 wave): a `return` the return flow could not see.
+#
+# `collect_return_exprs` listed the explicit returns of if / for / while / try bodies only, so the return flow
+# of a closure (item 77), the return record of a top-level function and the accessor / factory records read
+# off the same list missed a `return r` inside a non-final `match`, a `select` arm, a `deny!` block, a bare or
+# `unsafe` block, an `if` / `match` used as a value, ... The independent verifier of PR 41 found eight of these
+# programs (five of them accepted by that head and refused by master, which charged the call what invoking the
+# closure needs, three accepted by both); the others are the remaining placements and the method form
+# (a method with a hidden return was registered as a transparent accessor). Every program is judged by the
+# SHAPE layer (E0507) in default and strict mode, and `kryos run` must refuse it and print nothing.
+S130_ESCAPES="attack_shape_local_hidden_return_match_stmt_with_authority \
+    attack_shape_local_hidden_return_select_arm_plain_deny \
+    attack_shape_alias_of_named_fn_hidden_return_with_authority \
+    attack_shape_chain_named_hidden_return_with_authority \
+    attack_shape_curried_local_hidden_return_with_authority \
+    attack_shape_local_hidden_return_match_stmt \
+    attack_named_fn_hidden_return_direct \
+    attack_select_arm_return_plain_deny \
+    attack_shape_local_hidden_return_deny_block \
+    attack_shape_local_hidden_return_unsafe_block \
+    attack_shape_local_hidden_return_let_if_expr \
+    attack_shape_nested_fn_hidden_return_match_stmt \
+    attack_accessor_hidden_return"
+# Item 132: a value read out of a container local and handed through a local closure is traced only for a
+# container the program never changes or aliases (`pristine_container_roots`). Each program below leaks on
+# master (executed); PR 41 rejected all of them by charging every such read `all`, and the precision work of
+# its revise round must keep rejecting them: a closure parameter or an inner `let` that shadows the array, a
+# registry or array that holds the privileged closure, a callee or an alias that grows the array in place, and
+# a container parameter whose elements reach the call through an identity closure.
+S132_PINS="attack_shape_container_param_shadows_array \
+    attack_shape_container_inner_let_shadows_array \
+    attack_shape_container_registry_holds_privileged \
+    attack_shape_container_lookup_over_privileged \
+    attack_shape_container_param_element_via_id \
+    attack_shape_container_grown_by_callee \
+    attack_shape_container_alias_grown"
+for esc in $S130_ESCAPES $S132_PINS; do
+    esc_ok=1
+    for mode in "" "--strict-capabilities"; do
+        if "$K" check $mode "tests/security/$esc.kry" >"$TMP/s130" 2>&1; then
+            echo "  FAIL: $esc.kry passed \`check $mode\` -- the return flow did not see what the closure or function hands back"
+            esc_ok=0; fail=1
+        elif ! grep -q "E0507" "$TMP/s130"; then
+            echo "  FAIL: $esc.kry rejected by \`check $mode\`, but not by the shape layer (E0507):"
+            tail -3 "$TMP/s130" | sed 's/^/    /'; esc_ok=0; fail=1
+        fi
+    done
+    if timeout 60 "$K" run "tests/security/$esc.kry" >"$TMP/s130run" 2>&1; then
+        echo "  FAIL: $esc.kry RAN (exit 0) -- the run must be refused at check time"
+        esc_ok=0; fail=1
+    elif grep -q "TOPSECRET" "$TMP/s130run"; then
+        echo "  FAIL: $esc.kry printed the secret"
+        esc_ok=0; fail=1
+    fi
+    [ $esc_ok -eq 1 ] && echo "  ok   $esc.kry rejected by the shape layer in default and strict mode, run refused"
+done
+# The controls: the pure twin of a hidden return handed through a local closure, the pure registries of the
+# verifier of PR 41 (its programs P1 and P3, accepted by master and rejected by PR 41's head) read through a
+# local closure, a lookup closure over a pure array and a pure map, and a registry holding a PRIVILEGED closure
+# read through a local closure inside a block that denies a different capability (its program L3e). They must
+# be accepted in both modes, and the two registries with output must still print it.
+S130_CONTROLS="ctl_shape_local_hidden_return_match_stmt_pure \
+    ctl_shape_nested_fn_hidden_return_match_stmt_pure \
+    ctl_shape_container_registry_via_id \
+    ctl_shape_container_array_via_id \
+    ctl_shape_container_lookup_closure \
+    ctl_shape_container_lookup_map_closure \
+    ctl_shape_container_privileged_registry_other_deny"
+for ctl in $S130_CONTROLS; do
+    ctl_ok=1
+    for mode in "" "--strict-capabilities"; do
+        if ! "$K" check $mode "tests/security/$ctl.kry" >"$TMP/s130c" 2>&1; then
+            echo "  FAIL: the return flow over-rejects $ctl.kry under \`check $mode\`:"
+            tail -3 "$TMP/s130c" | sed 's/^/    /'; ctl_ok=0; fail=1
+        fi
+    done
+    [ $ctl_ok -eq 1 ] && echo "  ok   $ctl.kry accepted in default and strict mode (no over-rejection)"
+done
+# The same two registries RUN (master runs them): `kryos run` must print what they print.
+for pair in "ctl_shape_container_registry_via_id:item: hello" "ctl_shape_container_array_via_id:item: world"; do
+    ctl="${pair%%:*}"; want="${pair#*:}"
+    if timeout 60 "$K" run "tests/security/$ctl.kry" >"$TMP/s130r" 2>&1 && grep -q "^$want\$" "$TMP/s130r"; then
+        echo "  ok   $ctl.kry runs and prints '$want'"
+    else
+        echo "  FAIL: $ctl.kry does not run and print '$want':"
+        tail -3 "$TMP/s130r" | sed 's/^/    /'; fail=1
+    fi
+done
 # The two shipped registry-dispatch programs are the precision witnesses the
 # fail-closed row work is measured against: both hold privileged closures in
 # slots and both must keep compiling.

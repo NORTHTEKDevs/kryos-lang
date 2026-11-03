@@ -430,6 +430,12 @@ impl RetSources {
 struct LocalCaps {
     caps: HashMap<String, ClosureCapsResult>,
     rets: HashMap<String, Vec<Option<LocalRet>>>,
+    /// The container locals whose contents the program can be proven never to
+    /// change or alias (see `pristine_container_roots`), name -> the literal
+    /// they are bound to. A value read out of one of them and handed on
+    /// (`id(reg.items[0])`, `|i| { items[i] }`) carries the authority of the
+    /// elements the literal names, not `Unknown`.
+    pristine: HashMap<String, Expr>,
 }
 
 impl std::ops::Deref for LocalCaps {
@@ -446,6 +452,7 @@ impl LocalCaps {
     fn clear(&mut self) {
         self.caps.clear();
         self.rets.clear();
+        self.pristine.clear();
     }
 
     /// Forget a name entirely (a closure parameter shadows whatever the flat
@@ -462,6 +469,55 @@ impl LocalCaps {
         slot.dedup();
         if slot.len() > MAX_LOCAL_BINDINGS {
             *slot = vec![None];
+        }
+    }
+}
+
+/// The state of the scan `pristine_container_roots` runs over a function
+/// body.
+#[derive(Default)]
+struct PristineScan {
+    /// How many times each name is bound anywhere in the body (and as a
+    /// parameter).
+    binders: HashMap<String, usize>,
+    /// Plain `let`s of a struct / array / map literal seen so far, name ->
+    /// the literal.
+    cands: HashMap<String, Expr>,
+    /// Names with an occurrence that could change, alias or keep the
+    /// container: the name is not pristine.
+    bad: HashSet<String>,
+    /// Plain `let`s of a function value that nothing but its initializer can
+    /// have changed: `let r = make_reader("p")` (a call of a defined function
+    /// with literal arguments) or `let r = named_fn`.
+    stable: HashSet<String>,
+    /// For each candidate container, the stable locals its reads rely on: the
+    /// container is pristine only if each of them is still bound exactly once
+    /// when the whole body has been seen.
+    deps: HashMap<String, HashSet<String>>,
+}
+
+impl PristineScan {
+    fn bind(&mut self, name: &str) {
+        *self.binders.entry(name.to_string()).or_insert(0) += 1;
+    }
+
+    fn bind_pattern(&mut self, p: &kryos_ast::Pattern) {
+        use kryos_ast::Pattern;
+        match p {
+            Pattern::Ident { name, .. } => self.bind(name),
+            Pattern::Tuple { elements: ps, .. }
+            | Pattern::Enum { fields: ps, .. }
+            | Pattern::Or { patterns: ps, .. } => {
+                for q in ps {
+                    self.bind_pattern(q);
+                }
+            }
+            Pattern::Struct { fields, .. } => {
+                for (_, q) in fields {
+                    self.bind_pattern(q);
+                }
+            }
+            Pattern::Wildcard { .. } | Pattern::Literal { .. } => {}
         }
     }
 }
@@ -2074,15 +2130,47 @@ impl CapabilityChecker {
         result
     }
 
-    /// Every RETURN-position expression in `block`: explicit `return expr`
-    /// statements (recursing through if/for/while/try-catch so a return
-    /// nested in a branch still counts), plus the block's own trailing tail
-    /// expression (a best-effort implicit-return heuristic - nested tail
-    /// positions inside a branch used as the function's overall value, e.g.
-    /// a trailing `if/else` with no final `return`, are NOT covered; explicit
-    /// `return` is the documented/preferred style, so this is a deliberately
-    /// bounded approximation, not full control-flow return analysis).
+    /// Every RETURN-position expression in `block`: every explicit `return
+    /// expr` statement wherever it sits (`collect_explicit_returns_block`),
+    /// plus the block's own trailing tail expression and the tail expressions
+    /// of the nested blocks of `if` / `for` / `while` / `try` (a best-effort
+    /// implicit-return heuristic - nested tail positions inside a branch used
+    /// as the function's overall value, e.g. a trailing `if/else` with no
+    /// final `return`, are over-approximated by `collect_return_exprs_listed`
+    /// and expanded by `collect_value_exprs`; explicit `return` is the
+    /// documented/preferred style, so this is a deliberately bounded
+    /// approximation, not full control-flow return analysis).
+    ///
+    /// Until the verifier of PR 41 found the hole (LEDGER item 130) this listed
+    /// explicit returns from four statement kinds only: a `return r` inside a
+    /// non-final `match`, a `select` arm, a `deny!` block, a bare / `unsafe`
+    /// block or an `if` / `match` used as a value was invisible, so a return
+    /// flow built from this list (LEDGER item 77) charged a call less than the
+    /// function or closure can hand back. The listed walk is kept as it was (its
+    /// over-approximation of tails is part of the precision level of the
+    /// checker); the complete walk is added to it and the two are merged
+    /// without duplicates, so the result is a superset of what it used to be.
     fn collect_return_exprs<'a>(block: &'a kryos_ast::Block, out: &mut Vec<&'a Expr>) {
+        Self::collect_return_exprs_listed(block, out);
+        let mut explicit: Vec<&'a Expr> = Vec::new();
+        Self::collect_explicit_returns_block(block, &mut explicit);
+        Self::push_unseen(out, explicit);
+    }
+
+    /// Append every expression of `more` that `out` does not already hold (by
+    /// identity: two different AST nodes are never the same return).
+    fn push_unseen<'a>(out: &mut Vec<&'a Expr>, more: Vec<&'a Expr>) {
+        for e in more {
+            if !out.iter().any(|seen| std::ptr::eq(*seen, e)) {
+                out.push(e);
+            }
+        }
+    }
+
+    /// The statement kinds this walk has always listed: explicit returns of
+    /// `if` / `for` / `while` / `try` bodies, and the tail expression of the
+    /// block and of each of those bodies.
+    fn collect_return_exprs_listed<'a>(block: &'a kryos_ast::Block, out: &mut Vec<&'a Expr>) {
         let last_idx = block.stmts.len().checked_sub(1);
         for (i, stmt) in block.stmts.iter().enumerate() {
             match stmt {
@@ -2093,28 +2181,231 @@ impl CapabilityChecker {
                     else_block,
                     ..
                 } => {
-                    Self::collect_return_exprs(then_block, out);
+                    Self::collect_return_exprs_listed(then_block, out);
                     for (_, b) in elif_clauses {
-                        Self::collect_return_exprs(b, out);
+                        Self::collect_return_exprs_listed(b, out);
                     }
                     if let Some(b) = else_block {
-                        Self::collect_return_exprs(b, out);
+                        Self::collect_return_exprs_listed(b, out);
                     }
                 }
                 Stmt::For { body, .. } | Stmt::While { body, .. } => {
-                    Self::collect_return_exprs(body, out)
+                    Self::collect_return_exprs_listed(body, out)
                 }
                 Stmt::TryCatch {
                     try_block,
                     catch_block,
                     ..
                 } => {
-                    Self::collect_return_exprs(try_block, out);
-                    Self::collect_return_exprs(catch_block, out);
+                    Self::collect_return_exprs_listed(try_block, out);
+                    Self::collect_return_exprs_listed(catch_block, out);
                 }
                 Stmt::Expr { expr, .. } if Some(i) == last_idx => out.push(expr),
                 _ => {}
             }
+        }
+    }
+
+    /// Every expression a `return` statement hands back, wherever the statement
+    /// sits in `block`: in any statement kind (a `select` arm and its timeout
+    /// body, a `deny!` body, `spawn`, `throw`, the value of a `let` or an
+    /// assignment, a loop header) and in any expression kind (a `match` or an
+    /// `if` used as a statement, a bare / `unsafe` / `comptime` / `quantum`
+    /// block, a call argument, an operand). A `return` inside a nested lambda
+    /// leaves THAT lambda, so a lambda's body is not entered (the defaults of
+    /// its parameters are).
+    ///
+    /// The three walks are exhaustive over `Stmt` and `Expr` with no wildcard
+    /// arm, the rule of `build_local_closure_caps_expr`: a new variant is a
+    /// compile error here, not a silent hole.
+    fn collect_explicit_returns_block<'a>(block: &'a kryos_ast::Block, out: &mut Vec<&'a Expr>) {
+        for stmt in &block.stmts {
+            Self::collect_explicit_returns_stmt(stmt, out);
+        }
+    }
+
+    fn collect_explicit_returns_stmt<'a>(stmt: &'a Stmt, out: &mut Vec<&'a Expr>) {
+        match stmt {
+            Stmt::Return { value, .. } => {
+                // The returned expression is itself a return flow, and it can
+                // hold a nested `return` of its own
+                // (`return match c { 1 => { return r } .. }`).
+                if let Some(e) = value {
+                    out.push(e);
+                    Self::collect_explicit_returns_expr(e, out);
+                }
+            }
+            Stmt::Let { value, .. } => {
+                if let Some(e) = value {
+                    Self::collect_explicit_returns_expr(e, out);
+                }
+            }
+            Stmt::Assign { target, value, .. } => {
+                Self::collect_explicit_returns_expr(target, out);
+                Self::collect_explicit_returns_expr(value, out);
+            }
+            Stmt::If {
+                condition,
+                then_block,
+                elif_clauses,
+                else_block,
+                ..
+            } => {
+                Self::collect_explicit_returns_expr(condition, out);
+                Self::collect_explicit_returns_block(then_block, out);
+                for (c, b) in elif_clauses {
+                    Self::collect_explicit_returns_expr(c, out);
+                    Self::collect_explicit_returns_block(b, out);
+                }
+                if let Some(b) = else_block {
+                    Self::collect_explicit_returns_block(b, out);
+                }
+            }
+            Stmt::For { iterable, body, .. } => {
+                Self::collect_explicit_returns_expr(iterable, out);
+                Self::collect_explicit_returns_block(body, out);
+            }
+            Stmt::While { condition, body, .. } => {
+                Self::collect_explicit_returns_expr(condition, out);
+                Self::collect_explicit_returns_block(body, out);
+            }
+            Stmt::Expr { expr, .. } | Stmt::Spawn { expr, .. } | Stmt::Throw { expr, .. } => {
+                Self::collect_explicit_returns_expr(expr, out);
+            }
+            Stmt::Select {
+                branches, timeout, ..
+            } => {
+                for branch in branches {
+                    Self::collect_explicit_returns_expr(&branch.channel, out);
+                    Self::collect_explicit_returns_block(&branch.body, out);
+                }
+                if let Some(t) = timeout {
+                    Self::collect_explicit_returns_expr(&t.duration_ms, out);
+                    Self::collect_explicit_returns_block(&t.body, out);
+                }
+            }
+            Stmt::TryCatch {
+                try_block,
+                catch_block,
+                ..
+            } => {
+                Self::collect_explicit_returns_block(try_block, out);
+                Self::collect_explicit_returns_block(catch_block, out);
+            }
+            Stmt::DenyBlock { body, .. } => Self::collect_explicit_returns_block(body, out),
+            Stmt::Break { .. } | Stmt::Continue { .. } => {}
+        }
+    }
+
+    fn collect_explicit_returns_expr<'a>(expr: &'a Expr, out: &mut Vec<&'a Expr>) {
+        use kryos_ast::StringPart;
+        match expr {
+            Expr::IntLiteral { .. }
+            | Expr::FloatLiteral { .. }
+            | Expr::StringLiteral { .. }
+            | Expr::CharLiteral { .. }
+            | Expr::BoolLiteral { .. }
+            | Expr::NoneLiteral { .. }
+            | Expr::Identifier { .. } => {}
+            Expr::InterpolatedString { parts, .. } => {
+                for part in parts {
+                    if let StringPart::Expr(e) = part {
+                        Self::collect_explicit_returns_expr(e, out);
+                    }
+                }
+            }
+            Expr::FieldAccess { object, .. } => Self::collect_explicit_returns_expr(object, out),
+            Expr::IndexAccess { object, index, .. } => {
+                Self::collect_explicit_returns_expr(object, out);
+                Self::collect_explicit_returns_expr(index, out);
+            }
+            Expr::BinaryOp { left, right, .. } | Expr::PipeExpr { left, right, .. } => {
+                Self::collect_explicit_returns_expr(left, out);
+                Self::collect_explicit_returns_expr(right, out);
+            }
+            Expr::UnaryOp { operand, .. } => Self::collect_explicit_returns_expr(operand, out),
+            Expr::FnCall { callee, args, .. } => {
+                Self::collect_explicit_returns_expr(callee, out);
+                for a in args {
+                    Self::collect_explicit_returns_expr(a, out);
+                }
+            }
+            Expr::MethodCall { object, args, .. } => {
+                Self::collect_explicit_returns_expr(object, out);
+                for a in args {
+                    Self::collect_explicit_returns_expr(a, out);
+                }
+            }
+            Expr::StaticMethodCall { args, .. } => {
+                for a in args {
+                    Self::collect_explicit_returns_expr(a, out);
+                }
+            }
+            Expr::ArrayLiteral { elements, .. } | Expr::TupleLiteral { elements, .. } => {
+                for e in elements {
+                    Self::collect_explicit_returns_expr(e, out);
+                }
+            }
+            Expr::MapLiteral { entries, .. } => {
+                for (k, v) in entries {
+                    Self::collect_explicit_returns_expr(k, out);
+                    Self::collect_explicit_returns_expr(v, out);
+                }
+            }
+            Expr::StructLiteral { fields, .. } => {
+                for (_, e) in fields {
+                    Self::collect_explicit_returns_expr(e, out);
+                }
+            }
+            // A `return` in a lambda's body leaves the lambda, not the body being
+            // walked; the defaults of its parameters run in the caller's frame.
+            Expr::Lambda { params, .. } => {
+                for p in params {
+                    if let Some(d) = &p.default {
+                        Self::collect_explicit_returns_expr(d, out);
+                    }
+                }
+            }
+            Expr::IfExpr {
+                condition,
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                Self::collect_explicit_returns_expr(condition, out);
+                Self::collect_explicit_returns_block(then_branch, out);
+                if let Some(b) = else_branch {
+                    Self::collect_explicit_returns_block(b, out);
+                }
+            }
+            Expr::MatchExpr { subject, arms, .. } => {
+                Self::collect_explicit_returns_expr(subject, out);
+                for arm in arms {
+                    if let Some(g) = &arm.guard {
+                        Self::collect_explicit_returns_expr(g, out);
+                    }
+                    Self::collect_explicit_returns_expr(&arm.body, out);
+                }
+            }
+            Expr::RangeExpr { start, end, .. } => {
+                if let Some(e) = start {
+                    Self::collect_explicit_returns_expr(e, out);
+                }
+                if let Some(e) = end {
+                    Self::collect_explicit_returns_expr(e, out);
+                }
+            }
+            Expr::Borrow { inner, .. }
+            | Expr::Deref { inner, .. }
+            | Expr::SharedExpr { inner, .. }
+            | Expr::MoveExpr { inner, .. }
+            | Expr::WeakExpr { inner, .. } => Self::collect_explicit_returns_expr(inner, out),
+            Expr::ComptimeBlock { body, .. }
+            | Expr::QuantumBlock { body, .. }
+            | Expr::UnsafeBlock { body, .. } => Self::collect_explicit_returns_block(body, out),
+            Expr::Cast { expr: inner, .. } => Self::collect_explicit_returns_expr(inner, out),
+            Expr::Block { block, .. } => Self::collect_explicit_returns_block(block, out),
+            Expr::Await { value, .. } => Self::collect_explicit_returns_expr(value, out),
         }
     }
 
@@ -2729,7 +3020,7 @@ impl CapabilityChecker {
 
     /// What an ARGUMENT carries when a return flow hands it back: a literal is a
     /// value, never a closure, so it carries nothing; everything else resolves
-    /// as a function value.
+    /// as a function value (`resolve_flow_value`).
     #[allow(clippy::too_many_arguments)]
     fn resolve_flow_arg(
         &self,
@@ -2748,8 +3039,46 @@ impl CapabilityChecker {
             | Expr::CharLiteral { .. }
             | Expr::BoolLiteral { .. }
             | Expr::NoneLiteral { .. } => ClosureCapsResult::Known(CapabilitySet::empty()),
-            _ => self.resolve_closure_caps(arg, working, fn_return_caps, local_caps, local_container_lits, own_params),
+            _ => self.resolve_flow_value(arg, working, fn_return_caps, local_caps, local_container_lits, own_params),
         }
+    }
+
+    /// What a value carries when a return flow hands it back (an argument the
+    /// closure returns, or a value it returns itself): `resolve_closure_caps`,
+    /// except that a field / index read out of a PRISTINE container local
+    /// (`pristine_container_roots`) resolves like the direct invocation of the
+    /// same read (`resolve_direct_invoke_caps`) does: to the union of the
+    /// authority of what the literal it is bound to puts there. Any other read
+    /// out of a container stays `Unknown` (`all`), which is what a named
+    /// function that returns such a read has always been charged.
+    ///
+    /// Only a fully known answer is taken from the container: a container
+    /// parameter or an element the literal does not spell out is `Unknown`,
+    /// never the deferral a parameter gets, because the elements of a
+    /// container parameter are whatever the caller put there.
+    #[allow(clippy::too_many_arguments)]
+    fn resolve_flow_value(
+        &self,
+        e: &Expr,
+        working: &HashMap<String, CapabilitySet>,
+        fn_return_caps: &HashMap<String, ClosureCapsResult>,
+        local_caps: &LocalCaps,
+        local_container_lits: &HashMap<String, Expr>,
+        own_params: &HashSet<String>,
+    ) -> ClosureCapsResult {
+        if let Some((root, path, _)) = Self::plain_chain(e) {
+            if !path.is_empty() {
+                if let Some(lit) = local_caps.pristine.get(root) {
+                    return match self.resolve_container_path_caps(
+                        lit, &path, working, fn_return_caps, local_caps, local_container_lits, own_params,
+                    ) {
+                        ClosureCapsResult::Known(c) => ClosureCapsResult::Known(c),
+                        ClosureCapsResult::DependsOnParam(_) | ClosureCapsResult::Unknown => ClosureCapsResult::Unknown,
+                    };
+                }
+            }
+        }
+        self.resolve_closure_caps(e, working, fn_return_caps, local_caps, local_container_lits, own_params)
     }
 
     /// The summary of the closure the expression `e` evaluates to, when the
@@ -3086,6 +3415,27 @@ impl CapabilityChecker {
         let names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
         let mut value_exprs: Vec<&Expr> = Vec::new();
         Self::collect_value_exprs(body, &mut value_exprs, 0);
+        // A `return` the tail expansion above does not reach (inside a call
+        // argument or an operand of a body that is not a block, in a `select`
+        // arm, a `deny!` block, a non-final `match`...) still hands its value
+        // back (LEDGER item 130): every explicit return of the body counts.
+        // The same node reached twice (once as a return, once through the
+        // expansion of a tail `match`) is one value, so the count below that
+        // decides whether the closure returns exactly one closure literal
+        // stays what it was for a body without a hidden return.
+        let mut hidden: Vec<&Expr> = Vec::new();
+        Self::collect_explicit_returns_expr(body, &mut hidden);
+        Self::push_unseen(&mut value_exprs, hidden);
+        let mut seen: Vec<*const Expr> = Vec::new();
+        value_exprs.retain(|e| {
+            let p: *const Expr = *e;
+            if seen.contains(&p) {
+                false
+            } else {
+                seen.push(p);
+                true
+            }
+        });
         let mut flow = RetFlow::pure();
         for &e in &value_exprs {
             if let Expr::Identifier { name, .. } = e {
@@ -3099,7 +3449,7 @@ impl CapabilityChecker {
                 }
             }
             flow.add(
-                self.resolve_closure_caps(e, working, fn_return_caps, &env, local_container_lits, own_params),
+                self.resolve_flow_value(e, working, fn_return_caps, &env, local_container_lits, own_params),
                 level,
                 &names,
             );
@@ -3311,9 +3661,488 @@ impl CapabilityChecker {
         own_params: &HashSet<String>,
         local_container_lits: &HashMap<String, Expr>,
     ) -> LocalCaps {
-        let mut locals = LocalCaps::default();
+        // Computed before the walk: the bindings the walk resolves read it.
+        let mut locals = LocalCaps {
+            pristine: self.pristine_container_roots(block, own_params),
+            ..LocalCaps::default()
+        };
         self.build_local_closure_caps_block(block, working, fn_return_caps, own_params, local_container_lits, &mut locals);
         locals
+    }
+
+    /// The container locals of the function whose body is `block` that nothing
+    /// can change and nothing can alias after their `let`, name -> the literal
+    /// each is bound to.
+    ///
+    /// Why it exists. A value read out of a container and handed through a
+    /// local closure (`id(reg.items[0])`, `|i| { items[i] }`) resolves to
+    /// `Unknown` (`all`) because `resolve_closure_caps` does not follow a
+    /// container read. Before LEDGER item 77 the call was charged what invoking
+    /// the closure needs, which accepted a pure registry and, with a privileged
+    /// closure in the registry, leaked (measured). `resolve_container_path_caps`
+    /// can answer for a container tracked as a literal, but the flat
+    /// `local_container_lits` map is per NAME and optimistic: it does not see a
+    /// closure parameter or an inner `let` that shadows the name, nor a callee
+    /// that grows the array in place, nor an alias. So a flow trusts a
+    /// container only when all of the following holds, checked over the whole
+    /// function body (nested closures included).
+    ///
+    /// The name is bound exactly once: a `let`, a parameter, a closure
+    /// parameter, a pattern, a `for` / `select` / `catch` name all count.
+    /// That binding is a plain `let` (not `mut`) of a struct / array / map
+    /// literal. No occurrence of the name precedes the `let`. Every occurrence
+    /// is the root of a field / index read whose addressed values are all
+    /// named functions, builtins, lambda literals, data literals or stable
+    /// function-valued locals (`reg.items[0]`, `items[i]`), the argument of
+    /// `len`, or the iterable of a `for` over such values. Anything else (an
+    /// assignment target, a `&` / `*` / move, a call argument, a receiver, an
+    /// alias, a slice, a read that yields a sub-container or any other local)
+    /// disqualifies the name.
+    ///
+    /// A name that fails any of it keeps the answer it had: `Unknown`.
+    fn pristine_container_roots(
+        &self,
+        block: &kryos_ast::Block,
+        own_params: &HashSet<String>,
+    ) -> HashMap<String, Expr> {
+        let mut st = PristineScan::default();
+        for p in own_params {
+            st.bind(p);
+        }
+        self.pristine_block(block, &mut st);
+        let PristineScan {
+            binders,
+            cands,
+            bad,
+            stable,
+            deps,
+        } = st;
+        cands
+            .into_iter()
+            .filter(|(name, _)| {
+                binders.get(name) == Some(&1)
+                    && !bad.contains(name)
+                    // the stable locals its reads rely on are still bound once
+                    && deps.get(name).is_none_or(|d| {
+                        d.iter().all(|x| stable.contains(x) && binders.get(x) == Some(&1))
+                    })
+            })
+            .collect()
+    }
+
+    /// Whether `e` is a value whose authority the checker can name by looking at
+    /// it, so that reading it out of a container the program never changes is
+    /// safe: a lambda literal, a named function or builtin that no local
+    /// shadows, a data literal.
+    fn pristine_safe_leaf(&self, e: &Expr, binders: &HashMap<String, usize>) -> bool {
+        match e {
+            Expr::Lambda { .. }
+            | Expr::IntLiteral { .. }
+            | Expr::FloatLiteral { .. }
+            | Expr::StringLiteral { .. }
+            | Expr::CharLiteral { .. }
+            | Expr::BoolLiteral { .. } => true,
+            Expr::Identifier { name, .. } => {
+                !binders.contains_key(name)
+                    && (self.defined_fns.contains(name) || required_capability_for_builtin(name).is_some())
+            }
+            _ => false,
+        }
+    }
+
+    /// The expressions the path `path` addresses in the literal `e` (every
+    /// element of an array or map for an `Index` step: the read is index
+    /// insensitive), or `None` when the path leaves what the literal spells
+    /// out.
+    fn addressed_values<'e>(e: &'e Expr, path: &[PathStep]) -> Option<Vec<&'e Expr>> {
+        match path.split_first() {
+            None => Some(vec![e]),
+            Some((PathStep::Field(f), rest)) => match e {
+                Expr::StructLiteral { fields, .. } => {
+                    let (_, fe) = fields.iter().find(|(n, _)| n == f)?;
+                    Self::addressed_values(fe, rest)
+                }
+                _ => None,
+            },
+            Some((PathStep::Index, rest)) => {
+                let mut out = Vec::new();
+                match e {
+                    Expr::ArrayLiteral { elements, .. } => {
+                        for el in elements {
+                            out.extend(Self::addressed_values(el, rest)?);
+                        }
+                    }
+                    Expr::MapLiteral { entries, .. } => {
+                        for (_, v) in entries {
+                            out.extend(Self::addressed_values(v, rest)?);
+                        }
+                    }
+                    _ => return None,
+                }
+                Some(out)
+            }
+        }
+    }
+
+    /// `root` followed by the field / index steps of the chain `e`, plus the
+    /// index expressions on the way; `None` when anything else (a call, a `&`,
+    /// a `*`) is part of the chain.
+    fn plain_chain(e: &Expr) -> Option<(&str, Vec<PathStep>, Vec<&Expr>)> {
+        match e {
+            Expr::Identifier { name, .. } => Some((name.as_str(), Vec::new(), Vec::new())),
+            Expr::FieldAccess { object, field, .. } => {
+                let (root, mut path, idx) = Self::plain_chain(object)?;
+                path.push(PathStep::Field(field.clone()));
+                Some((root, path, idx))
+            }
+            Expr::IndexAccess { object, index, .. } => {
+                // A slice (`items[1..2]`) is not an element read: whether it
+                // copies or views the buffer is not this analysis's to assume.
+                if matches!(index.as_ref(), Expr::RangeExpr { .. }) {
+                    return None;
+                }
+                let (root, mut path, mut idx) = Self::plain_chain(object)?;
+                path.push(PathStep::Index);
+                idx.push(index.as_ref());
+                Some((root, path, idx))
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether reading `root` along `path` addresses only safe leaves of the
+    /// candidate literal `root` is bound to.
+    fn pristine_chain_ok(&self, st: &mut PristineScan, root: &str, path: &[PathStep]) -> bool {
+        let PristineScan {
+            binders,
+            cands,
+            stable,
+            deps,
+            ..
+        } = st;
+        let Some(lit) = cands.get(root) else {
+            return false;
+        };
+        let Some(values) = Self::addressed_values(lit, path) else {
+            return false;
+        };
+        let mut used: Vec<String> = Vec::new();
+        for v in values {
+            match v {
+                // A stable local: its authority is the one of its initializer
+                // (read from the flat map at the call, where the same entry is
+                // what a direct invocation of the local would be charged).
+                Expr::Identifier { name, .. } if stable.contains(name) => used.push(name.clone()),
+                _ => {
+                    if !self.pristine_safe_leaf(v, binders) {
+                        return false;
+                    }
+                }
+            }
+        }
+        if !used.is_empty() {
+            deps.entry(root.to_string()).or_default().extend(used);
+        }
+        true
+    }
+
+    fn pristine_block(&self, block: &kryos_ast::Block, st: &mut PristineScan) {
+        for stmt in &block.stmts {
+            self.pristine_stmt(stmt, st);
+        }
+    }
+
+    /// Exhaustive over `Stmt` and `Expr` (no wildcard arm), like every other
+    /// walk of the function body in this file.
+    fn pristine_stmt(&self, stmt: &Stmt, st: &mut PristineScan) {
+        match stmt {
+            Stmt::Let {
+                name,
+                mutable,
+                pattern,
+                value,
+                ..
+            } => {
+                // The initializer runs before the binding exists.
+                if let Some(v) = value {
+                    self.pristine_expr(v, st, false);
+                }
+                st.bind(name);
+                if let Some(p) = pattern {
+                    st.bind_pattern(p);
+                }
+                if !*mutable && pattern.is_none() {
+                    if let Some(v) = value {
+                        if matches!(
+                            v,
+                            Expr::StructLiteral { .. } | Expr::ArrayLiteral { .. } | Expr::MapLiteral { .. }
+                        ) && !st.bad.contains(name)
+                        {
+                            st.cands.insert(name.clone(), v.clone());
+                        }
+                        // A function value whose entry in the flat map is the
+                        // resolution of its initializer alone: no other local
+                        // is read to build it, so a later binding or a loop
+                        // cannot leave it short of what it holds.
+                        let defined = |f: &String| self.defined_fns.contains(f) && !st.binders.contains_key(f);
+                        let literal = |a: &Expr| {
+                            matches!(
+                                a,
+                                Expr::IntLiteral { .. }
+                                    | Expr::FloatLiteral { .. }
+                                    | Expr::StringLiteral { .. }
+                                    | Expr::CharLiteral { .. }
+                                    | Expr::BoolLiteral { .. }
+                            )
+                        };
+                        let stable_init = match v {
+                            Expr::Identifier { name: f, .. } => defined(f),
+                            Expr::FnCall { callee, args, .. } => {
+                                matches!(callee.as_ref(), Expr::Identifier { name: f, .. } if defined(f))
+                                    && args.iter().all(literal)
+                            }
+                            _ => false,
+                        };
+                        if stable_init {
+                            st.stable.insert(name.clone());
+                        }
+                    }
+                }
+            }
+            Stmt::Assign { target, value, .. } => {
+                self.pristine_expr(target, st, true);
+                self.pristine_expr(value, st, false);
+            }
+            Stmt::Return { value, .. } => {
+                if let Some(v) = value {
+                    self.pristine_expr(v, st, false);
+                }
+            }
+            Stmt::If {
+                condition,
+                then_block,
+                elif_clauses,
+                else_block,
+                ..
+            } => {
+                self.pristine_expr(condition, st, false);
+                self.pristine_block(then_block, st);
+                for (c, b) in elif_clauses {
+                    self.pristine_expr(c, st, false);
+                    self.pristine_block(b, st);
+                }
+                if let Some(b) = else_block {
+                    self.pristine_block(b, st);
+                }
+            }
+            Stmt::For {
+                pattern,
+                iterable,
+                body,
+                ..
+            } => {
+                self.pristine_iterable(iterable, st);
+                st.bind_pattern(pattern);
+                self.pristine_block(body, st);
+            }
+            Stmt::While { condition, body, .. } => {
+                self.pristine_expr(condition, st, false);
+                self.pristine_block(body, st);
+            }
+            Stmt::Expr { expr, .. } | Stmt::Spawn { expr, .. } | Stmt::Throw { expr, .. } => {
+                self.pristine_expr(expr, st, false);
+            }
+            Stmt::Select {
+                branches, timeout, ..
+            } => {
+                for branch in branches {
+                    self.pristine_expr(&branch.channel, st, false);
+                    st.bind(&branch.pattern);
+                    self.pristine_block(&branch.body, st);
+                }
+                if let Some(t) = timeout {
+                    self.pristine_expr(&t.duration_ms, st, false);
+                    self.pristine_block(&t.body, st);
+                }
+            }
+            Stmt::TryCatch {
+                try_block,
+                catch_name,
+                catch_block,
+                ..
+            } => {
+                self.pristine_block(try_block, st);
+                st.bind(catch_name);
+                self.pristine_block(catch_block, st);
+            }
+            Stmt::DenyBlock { body, .. } => self.pristine_block(body, st),
+            Stmt::Break { .. } | Stmt::Continue { .. } => {}
+        }
+    }
+
+    /// `for x in <iterable>`: iterating a container of safe leaves keeps
+    /// nothing of it (the loop variable is a copy of a leaf).
+    fn pristine_iterable(&self, iterable: &Expr, st: &mut PristineScan) {
+        if let Some((root, mut path, idx)) = Self::plain_chain(iterable) {
+            path.push(PathStep::Index);
+            if !self.pristine_chain_ok(st, root, &path) {
+                st.bad.insert(root.to_string());
+            }
+            for i in idx {
+                self.pristine_expr(i, st, false);
+            }
+        } else {
+            self.pristine_expr(iterable, st, false);
+        }
+    }
+
+    /// `bad_ctx` is set for the operand of an assignment target and of a `&`,
+    /// `*`, `move`, `shared` or `weak`: a read there can write or keep what it
+    /// reads.
+    fn pristine_expr(&self, e: &Expr, st: &mut PristineScan, bad_ctx: bool) {
+        use kryos_ast::StringPart;
+        match e {
+            // A bare occurrence: an alias, an argument, a callee, a whole
+            // reassignment. (`len(x)` and `for _ in x` are handled by their
+            // parents and never reach here.)
+            Expr::Identifier { name, .. } => {
+                st.bad.insert(name.clone());
+            }
+            Expr::IntLiteral { .. }
+            | Expr::FloatLiteral { .. }
+            | Expr::StringLiteral { .. }
+            | Expr::CharLiteral { .. }
+            | Expr::BoolLiteral { .. }
+            | Expr::NoneLiteral { .. } => {}
+            Expr::InterpolatedString { parts, .. } => {
+                for part in parts {
+                    if let StringPart::Expr(x) = part {
+                        self.pristine_expr(x, st, false);
+                    }
+                }
+            }
+            Expr::FieldAccess { .. } | Expr::IndexAccess { .. } => match Self::plain_chain(e) {
+                Some((root, path, idx)) => {
+                    if bad_ctx || !self.pristine_chain_ok(st, root, &path) {
+                        st.bad.insert(root.to_string());
+                    }
+                    for i in idx {
+                        self.pristine_expr(i, st, false);
+                    }
+                }
+                None => match e {
+                    Expr::FieldAccess { object, .. } => self.pristine_expr(object, st, bad_ctx),
+                    Expr::IndexAccess { object, index, .. } => {
+                        self.pristine_expr(object, st, bad_ctx);
+                        self.pristine_expr(index, st, false);
+                    }
+                    _ => {}
+                },
+            },
+            Expr::BinaryOp { left, right, .. } | Expr::PipeExpr { left, right, .. } => {
+                self.pristine_expr(left, st, false);
+                self.pristine_expr(right, st, false);
+            }
+            Expr::UnaryOp { operand, .. } => self.pristine_expr(operand, st, false),
+            Expr::FnCall { callee, args, .. } => {
+                // `len(x)` reads a container and keeps nothing of it, unless a
+                // user function or a local is named `len`.
+                let is_len = matches!(
+                    callee.as_ref(),
+                    Expr::Identifier { name, .. }
+                        if name == "len" && !self.defined_fns.contains("len") && !st.binders.contains_key("len")
+                );
+                if is_len && args.len() == 1 {
+                    if let Some((_, _, idx)) = Self::plain_chain(&args[0]) {
+                        for i in idx {
+                            self.pristine_expr(i, st, false);
+                        }
+                        return;
+                    }
+                }
+                self.pristine_expr(callee, st, false);
+                for a in args {
+                    self.pristine_expr(a, st, false);
+                }
+            }
+            Expr::MethodCall { object, args, .. } => {
+                self.pristine_expr(object, st, false);
+                for a in args {
+                    self.pristine_expr(a, st, false);
+                }
+            }
+            Expr::StaticMethodCall { args, .. } => {
+                for a in args {
+                    self.pristine_expr(a, st, false);
+                }
+            }
+            Expr::ArrayLiteral { elements, .. } | Expr::TupleLiteral { elements, .. } => {
+                for x in elements {
+                    self.pristine_expr(x, st, false);
+                }
+            }
+            Expr::MapLiteral { entries, .. } => {
+                for (k, v) in entries {
+                    self.pristine_expr(k, st, false);
+                    self.pristine_expr(v, st, false);
+                }
+            }
+            Expr::StructLiteral { fields, .. } => {
+                for (_, x) in fields {
+                    self.pristine_expr(x, st, false);
+                }
+            }
+            Expr::Lambda { params, body, .. } => {
+                for p in params {
+                    st.bind(&p.name);
+                    if let Some(d) = &p.default {
+                        self.pristine_expr(d, st, false);
+                    }
+                }
+                self.pristine_expr(body, st, false);
+            }
+            Expr::IfExpr {
+                condition,
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                self.pristine_expr(condition, st, false);
+                self.pristine_block(then_branch, st);
+                if let Some(b) = else_branch {
+                    self.pristine_block(b, st);
+                }
+            }
+            Expr::MatchExpr { subject, arms, .. } => {
+                self.pristine_expr(subject, st, false);
+                for arm in arms {
+                    st.bind_pattern(&arm.pattern);
+                    if let Some(g) = &arm.guard {
+                        self.pristine_expr(g, st, false);
+                    }
+                    self.pristine_expr(&arm.body, st, false);
+                }
+            }
+            Expr::RangeExpr { start, end, .. } => {
+                if let Some(x) = start {
+                    self.pristine_expr(x, st, false);
+                }
+                if let Some(x) = end {
+                    self.pristine_expr(x, st, false);
+                }
+            }
+            Expr::Borrow { inner, .. }
+            | Expr::Deref { inner, .. }
+            | Expr::SharedExpr { inner, .. }
+            | Expr::MoveExpr { inner, .. }
+            | Expr::WeakExpr { inner, .. } => self.pristine_expr(inner, st, true),
+            Expr::ComptimeBlock { body, .. }
+            | Expr::QuantumBlock { body, .. }
+            | Expr::UnsafeBlock { body, .. } => self.pristine_block(body, st),
+            Expr::Cast { expr: inner, .. } => self.pristine_expr(inner, st, false),
+            Expr::Block { block, .. } => self.pristine_block(block, st),
+            Expr::Await { value, .. } => self.pristine_expr(value, st, false),
+        }
     }
 
     /// Union a binding's authority into `name`'s entry.
