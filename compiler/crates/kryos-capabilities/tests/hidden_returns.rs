@@ -369,6 +369,12 @@ let id = |g: fn() -> str| { g }",
 println(h())",
     },
     Case {
+        name: "registry of closures that call a defined function",
+        decls: REGISTRY,
+        body: "let reg = Registry { items: [|| harmless(), || other()] }\nlet id = |g: fn() -> str| { g }",
+        deny: "let h = id(reg.items[1])\nprintln(h())",
+    },
+    Case {
         name: "registry built by a factory without parameters",
         decls: "struct Registry {
     items: [fn() -> str],
@@ -462,6 +468,18 @@ let id = |g2: fn() -> str| { g2 }
 g = reader",
         deny: "let h = id(reg.items[0])
 println(h())",
+    },
+    Case {
+        name: "a registry leaf closure literal that calls a local the loop rebinds after it (item 129)",
+        decls: REGISTRY,
+        body: "let mut g: fn() -> str = harmless\nlet mut h: fn() -> str = harmless\nlet id = |g2: fn() -> str| { g2 }\nlet mut i = 0\nwhile i < 2 {\n    let reg = Registry { items: [|| g()] }\n    h = id(reg.items[0])\n    g = reader\n    i = i + 1\n}",
+        deny: "println(h())",
+    },
+    Case {
+        name: "a registry of closures that call a privileged defined function",
+        decls: "struct Registry {\n    items: [fn() -> str],\n}\n@capabilities(fs:read)\nfn read_secret() -> str {\n    return file_read(\"secret.txt\")\n}\n",
+        body: "let reg = Registry { items: [|| harmless(), || read_secret()] }\nlet id = |g: fn() -> str| { g }",
+        deny: "let h = id(reg.items[1])\nprintln(h())",
     },
     Case {
         name: "a mut registry is reassigned",

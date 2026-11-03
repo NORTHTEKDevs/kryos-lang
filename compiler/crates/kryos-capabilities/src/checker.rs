@@ -3732,12 +3732,20 @@ impl CapabilityChecker {
 
     /// Whether `e` is a value whose authority the checker can name by looking at
     /// it, so that reading it out of a container the program never changes is
-    /// safe: a lambda literal, a named function or builtin that no local
+    /// safe: an inert lambda literal, a named function or builtin that no local
     /// shadows, a data literal.
     fn pristine_safe_leaf(&self, e: &Expr, binders: &HashMap<String, usize>) -> bool {
         match e {
-            Expr::Lambda { .. }
-            | Expr::IntLiteral { .. }
+            // A closure literal in a container is safe only when invoking it
+            // reads no local: its authority is then what the program text says.
+            // One that calls a local (`|| g()`) has the authority the flat map
+            // holds for `g` at that point of the text, which a rebinding later in
+            // the text and run earlier (a loop) leaves short (LEDGER item 129).
+            Expr::Lambda { params, body, .. } => {
+                let names: HashSet<&str> = params.iter().map(|p| p.name.as_str()).collect();
+                self.lambda_inert(body, &names, binders)
+            }
+            Expr::IntLiteral { .. }
             | Expr::FloatLiteral { .. }
             | Expr::StringLiteral { .. }
             | Expr::CharLiteral { .. }
@@ -3927,7 +3935,7 @@ impl CapabilityChecker {
                                 // no authority and its entry cannot be short.
                                 Expr::Lambda { params, body, .. } => {
                                     let names: HashSet<&str> = params.iter().map(|p| p.name.as_str()).collect();
-                                    Self::lambda_inert(body, &names)
+                                    self.lambda_inert(body, &names, &st.binders)
                                 }
                                 _ => false,
                             };
@@ -4009,11 +4017,13 @@ impl CapabilityChecker {
         }
     }
 
-    /// Whether the body of a closure only computes from literals and the
-    /// closure's own parameters: it calls nothing, names no other local and
-    /// opens no block with statements, so invoking it needs no capability and
-    /// returns nothing but a value.
-    fn lambda_inert(e: &Expr, params: &HashSet<&str>) -> bool {
+    /// Whether the body of a closure only computes from literals, its own
+    /// parameters and calls of defined functions with such arguments: it names
+    /// no other local, so what invoking it needs is a function of the program
+    /// text alone (a call of a defined function is `working[f]`, final) and no
+    /// binding made later in the body of the function, in a loop or not, can
+    /// leave the entry of the closure short.
+    fn lambda_inert(&self, e: &Expr, params: &HashSet<&str>, binders: &HashMap<String, usize>) -> bool {
         use kryos_ast::StringPart;
         match e {
             Expr::IntLiteral { .. }
@@ -4022,15 +4032,24 @@ impl CapabilityChecker {
             | Expr::CharLiteral { .. }
             | Expr::BoolLiteral { .. } => true,
             Expr::Identifier { name, .. } => params.contains(name.as_str()),
-            Expr::BinaryOp { left, right, .. } => Self::lambda_inert(left, params) && Self::lambda_inert(right, params),
-            Expr::UnaryOp { operand, .. } => Self::lambda_inert(operand, params),
+            Expr::BinaryOp { left, right, .. } => {
+                self.lambda_inert(left, params, binders) && self.lambda_inert(right, params, binders)
+            }
+            Expr::UnaryOp { operand, .. } => self.lambda_inert(operand, params, binders),
             Expr::InterpolatedString { parts, .. } => parts.iter().all(|p| match p {
                 StringPart::Literal(_) => true,
-                StringPart::Expr(x) => Self::lambda_inert(x, params),
+                StringPart::Expr(x) => self.lambda_inert(x, params, binders),
             }),
+            // `|| hello()`: a defined function no local shadows, called with
+            // arguments of the same kind.
+            Expr::FnCall { callee, args, .. } => {
+                matches!(callee.as_ref(), Expr::Identifier { name: f, .. }
+                    if self.defined_fns.contains(f) && !binders.contains_key(f) && !params.contains(f.as_str()))
+                    && args.iter().all(|a| self.lambda_inert(a, params, binders))
+            }
             Expr::Block { block, .. } => {
                 block.stmts.len() == 1
-                    && matches!(&block.stmts[0], Stmt::Expr { expr, .. } if Self::lambda_inert(expr, params))
+                    && matches!(&block.stmts[0], Stmt::Expr { expr, .. } if self.lambda_inert(expr, params, binders))
             }
             _ => false,
         }
