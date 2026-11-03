@@ -1,0 +1,10 @@
+// THREAT-MODEL.md G7: kryos_process_exec_simple runs a process, so an extern
+// call to it needs `process` (E0506) in the default and strict modes.
+extern {
+    fn kryos_process_exec_simple(cmd: i64) -> i64
+}
+
+fn main() {
+    let r = kryos_process_exec_simple(0)
+    println(to_string(r))
+}

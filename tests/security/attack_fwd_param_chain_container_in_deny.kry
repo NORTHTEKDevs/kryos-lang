@@ -1,0 +1,36 @@
+// LEDGER item 124 (root F, forward references; found by the independent verifier of the R3 wave, recorded first by the item-77 wave, NOT FIXED).
+// A function declared ABOVE the callee it hands its parameter on to (or `main` declared above its helpers) leaves the deny! verdict without the argument's row:
+// the copy var the first function hands on is never mapped by `main`'s later instantiation. The same program with the declarations in the other order is rejected.
+// Shape: the same chain for a container: `tool(fns)` copies the array and hands it to `run_first`, declared BELOW it, which calls an element.
+// master e2fbc46c, measured before any checker edit of the wave that recorded this: `kryos check` rc=0 in default and strict mode, `kryos run` prints TOPSECRET-CLOSURE-9f8e7d6c5b4a in both modes (executed).
+// WANTED (when closed): rejected with E0110 in both modes, and `kryos run` must not print the secret.
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+fn wrap_once(inner: fn() -> str) -> fn() -> str {
+    return || inner()
+}
+
+fn tool(fns: [fn() -> str]) -> str {
+    let g = fns
+    return run_first(g)
+}
+
+fn run_first(xs: [fn() -> str]) -> str {
+    let f = xs[1]
+    return f()
+}
+
+@capabilities(fs:read)
+fn main() {
+    let r = secret()
+    deny!(fs:read) {
+        println("LEAK: " + tool([safe, r]))
+    }
+}

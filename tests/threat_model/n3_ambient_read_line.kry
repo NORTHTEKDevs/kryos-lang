@@ -1,0 +1,5 @@
+// THREAT-MODEL.md N3: read_line() needs no capability.
+fn main() {
+    let l = read_line()
+    println(l)
+}

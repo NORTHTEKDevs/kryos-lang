@@ -1,0 +1,43 @@
+// LEDGER item 125 (root F, forward references; found by the independent verifier of the R3 wave, recorded first by the item-77 wave, NOT FIXED).
+// A store made by a callee that is itself declared BELOW its caller is never recorded in the first callee's store list: in the relay h1 -> h2 (h1 declared above h2)
+// the slot of the argument never learns the closure h2 stores into it. The same program with the two helpers in the other order is rejected.
+// Shape: `h1(reg, name, f)` returns `h2(reg, name, f)`, `h2` pushes a Plugin holding `f` into the array; two hops (the verifier measured 2, 4, 8, 12, 15-18, 20 and 22). `h2` declared above `h1` is rejected.
+// Measured with KRYOS_ROW_TRACE=1: `fn h1 = {?C8}`, `fn h2 = {}`, `fn main = {?C7}`.
+// master e2fbc46c, measured before any checker edit of the wave that recorded this: `kryos check` rc=0 in default and strict mode, `kryos run` prints TOPSECRET-CLOSURE-9f8e7d6c5b4a in both modes (executed).
+// WANTED (when closed): rejected with E0110 in both modes, and `kryos run` must not print the secret.
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+// two-hop forward store relay: h1 is declared above h2, both above main
+struct Plugin {
+    name: str,
+    run: fn() -> str,
+}
+
+fn h1(reg: [Plugin], name: str, f: fn() -> str) -> [Plugin] {
+    return h2(reg, name, f)
+}
+
+fn h2(reg: [Plugin], name: str, f: fn() -> str) -> [Plugin] {
+    return push(reg, Plugin { name: name, run: f })
+}
+
+@capabilities(fs:read)
+fn main() {
+    let r = secret()
+    let mut reg: [Plugin] = []
+    reg = h1(reg, "a", safe)
+    reg = h1(reg, "evil", r)
+    let f = || "harmless"
+    deny!(fs:read) {
+        for q in reg {
+            println("LEAK: " + q.run())
+        }
+    }
+}

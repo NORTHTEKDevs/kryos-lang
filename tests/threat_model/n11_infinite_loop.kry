@@ -1,0 +1,6 @@
+// THREAT-MODEL.md N11: an infinite loop passes kryos check with no declaration.
+// (check only: this program is never run.)
+fn main() {
+    while true {
+    }
+}

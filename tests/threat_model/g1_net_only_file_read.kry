@@ -1,0 +1,6 @@
+// THREAT-MODEL.md G1: a gated builtin needs its capability where it is called.
+// main declares net, not fs:read, so file_read is rejected (E0505) in every mode.
+@capabilities(net)
+fn main() {
+    file_read("x.txt")
+}

@@ -1,0 +1,16 @@
+// THREAT-MODEL.md 4.4 (LEDGER item 122): the body of a trait default method is
+// not type-checked. The initializer below is a type error and `kryos check`
+// accepts it in the default and strict modes.
+trait Runner {
+    fn go(self: Self) {
+        let x: i64 = "not an int"
+        println(x)
+    }
+}
+struct R1 {}
+impl Runner for R1 {}
+
+fn main() {
+    let x = R1 {}
+    x.go()
+}

@@ -1,0 +1,39 @@
+// LEDGER item 126 (root R4, `Stmt::Select` has an empty arm in kryos-types; found by the independent verifier of the R3 wave, recorded first by the item-77 wave, NOT FIXED).
+// The type checker skips the arms of `select`, so a deny! block inside an arm is never judged by the row layer (KRYOS_ROW_TRACE=1 prints `fn host = {}` / `fn main = {}`
+// although the block calls an fs:read closure). The shape layer is blinded by the loop variable `f` shadowing the outer harmless `f`, as in the rest of the corpus.
+// Shape: the block sits in the `timeout 10 =>` arm of a select in a callee.
+// master e2fbc46c, measured before any checker edit of the wave that recorded this: `kryos check` rc=0 in default and strict mode, `kryos run` prints TOPSECRET-CLOSURE-9f8e7d6c5b4a in both modes (executed).
+// WANTED (when closed): rejected with E0110 in both modes, and `kryos run` must not print the secret.
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+fn wrap_once(inner: fn() -> str) -> fn() -> str {
+    return || inner()
+}
+
+fn host(fns: [fn() -> str]) {
+    let f = || "harmless"
+    let ch = chan()
+    select {
+        v ch => { println("recv") }
+        timeout 10 => {
+            deny!(fs:read) {
+                for f in fns {
+                    println("LEAK: " + f())
+                }
+            }
+        }
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let r = secret()
+    host([safe, r])
+}

@@ -1,0 +1,80 @@
+# Threat-model claims pinned to an executed verdict. Run by tools/loop/check-threat-model-claims.sh.
+# Columns (tab separated): id, cmd, program, expect, contains, backs
+#   cmd      kryos subcommand and flags; the program is appended, {tmp} is a scratch directory
+#   program  path from the repo root; @dir:<path> runs the command with that directory as cwd and no program argument
+#   expect   0 (exit status 0) or nz (nonzero)
+#   contains a fixed string that must appear in stdout+stderr (ANSI colour removed), or - for none
+#   backs    the section/guarantee of docs/THREAT-MODEL.md this pins
+G1-annotated-missing-cap-default	check	tests/threat_model/g1_net_only_file_read.kry	nz	E0505	G1: annotated function missing the capability is rejected in all three modes
+G1-annotated-missing-cap-strict	check --strict-capabilities	tests/threat_model/g1_net_only_file_read.kry	nz	E0505	G1: annotated function missing the capability is rejected in all three modes
+G1-annotated-missing-cap-permissive	check --capabilities-mode=permissive	tests/threat_model/g1_net_only_file_read.kry	nz	E0505	G1: annotated function missing the capability is rejected in all three modes
+G1-unannotated-main-default	check	tests/threat_model/g1_unannotated_main_file_read.kry	nz	E0505	G1/N2: unannotated main rejected in default and strict, accepted in permissive
+G1-unannotated-main-strict	check --strict-capabilities	tests/threat_model/g1_unannotated_main_file_read.kry	nz	E0505	G1/N2: unannotated main rejected in default and strict, accepted in permissive
+G1-unannotated-main-permissive	check --capabilities-mode=permissive	tests/threat_model/g1_unannotated_main_file_read.kry	0	-	G1/N2: unannotated main rejected in default and strict, accepted in permissive
+G2-annotated-caller-default	check	tests/threat_model/g2_caller_fs_write_callee_fs_read.kry	nz	E0507	G2: a caller without the callee's capability is rejected (E0507) in all three modes
+G2-annotated-caller-strict	check --strict-capabilities	tests/threat_model/g2_caller_fs_write_callee_fs_read.kry	nz	E0507	G2: a caller without the callee's capability is rejected (E0507) in all three modes
+G2-annotated-caller-permissive	check --capabilities-mode=permissive	tests/threat_model/g2_caller_fs_write_callee_fs_read.kry	nz	E0507	G2: a caller without the callee's capability is rejected (E0507) in all three modes
+G2-inferred-helper-default	check	tests/threat_model/g2_inferred_helper_file_read.kry	nz	E0507	G2: inferred helper authority reaches main (E0507 default, E0505 strict, accepted permissive)
+G2-inferred-helper-strict	check --strict-capabilities	tests/threat_model/g2_inferred_helper_file_read.kry	nz	E0505	G2: inferred helper authority reaches main (E0507 default, E0505 strict, accepted permissive)
+G2-inferred-helper-permissive	check --capabilities-mode=permissive	tests/threat_model/g2_inferred_helper_file_read.kry	0	-	G2: inferred helper authority reaches main (E0507 default, E0505 strict, accepted permissive)
+G3-deny-direct-default	check	tests/threat_model/g3_deny_direct.kry	nz	E0110	G3: a deny! block that uses the denied capability is rejected in all three modes
+G3-deny-direct-strict	check --strict-capabilities	tests/threat_model/g3_deny_direct.kry	nz	E0110	G3: a deny! block that uses the denied capability is rejected in all three modes
+G3-deny-direct-permissive	check --capabilities-mode=permissive	tests/threat_model/g3_deny_direct.kry	nz	E0110	G3: a deny! block that uses the denied capability is rejected in all three modes
+G4-pure-call-default	check	tests/threat_model/g4_pure_calls_file_read.kry	nz	cannot call non-pure function	G4: @pure function calling a gated builtin is rejected in all three modes
+G4-pure-call-strict	check --strict-capabilities	tests/threat_model/g4_pure_calls_file_read.kry	nz	cannot call non-pure function	G4: @pure function calling a gated builtin is rejected in all three modes
+G4-pure-call-permissive	check --capabilities-mode=permissive	tests/threat_model/g4_pure_calls_file_read.kry	nz	cannot call non-pure function	G4: @pure function calling a gated builtin is rejected in all three modes
+G6-raw-memory-undeclared-default	check	tests/threat_model/g6_unannotated_raw_memory.kry	nz	E0505	G6: str_to_ptr/ptr_byte_at need ffi in user code, in every mode
+G6-raw-memory-undeclared-strict	check --strict-capabilities	tests/threat_model/g6_unannotated_raw_memory.kry	nz	E0505	G6: str_to_ptr/ptr_byte_at need ffi in user code, in every mode
+G6-raw-memory-undeclared-permissive	check --capabilities-mode=permissive	tests/threat_model/g6_unannotated_raw_memory.kry	nz	E0505	G6: str_to_ptr/ptr_byte_at need ffi in user code, in every mode
+G6-raw-memory-declared-default	check	tests/threat_model/g6_declared_raw_memory.kry	0	-	G6: the same program with @capabilities(ffi) is accepted
+G6-raw-memory-declared-strict	check --strict-capabilities	tests/threat_model/g6_declared_raw_memory.kry	0	-	G6: the same program with @capabilities(ffi) is accepted
+G6-raw-memory-declared-permissive	check --capabilities-mode=permissive	tests/threat_model/g6_declared_raw_memory.kry	0	-	G6: the same program with @capabilities(ffi) is accepted
+G7-extern-c-default	check	tests/threat_model/g7_extern_c_library.kry	nz	E0506	G7: extern C function needs ffi (E0506), default
+G7-extern-c-strict	check --strict-capabilities	tests/threat_model/g7_extern_c_library.kry	nz	E0506	G7: extern C function needs ffi (E0506), strict
+G7-extern-c-E0508-default	check	tests/threat_model/g7_extern_c_library.kry	nz	E0508	G7: a non-kryos_* extern name is rejected (E0508) in every mode
+G7-extern-c-E0508-strict	check --strict-capabilities	tests/threat_model/g7_extern_c_library.kry	nz	E0508	G7: a non-kryos_* extern name is rejected (E0508) in every mode
+G7-extern-c-E0508-permissive	check --capabilities-mode=permissive	tests/threat_model/g7_extern_c_library.kry	nz	E0508	G7: a non-kryos_* extern name is rejected (E0508) in every mode
+G8-unsafe-default	check	tests/threat_model/g8_unsafe_file_read.kry	nz	E0505	G8: unsafe { } grants no authority (default)
+G8-unsafe-permissive	check --capabilities-mode=permissive	tests/threat_model/g8_unsafe_file_read.kry	0	-	G8: unsafe { } in an unannotated main is accepted in permissive
+G8-comptime-default	check	tests/threat_model/g8_comptime_file_read.kry	nz	E0505	G8: comptime { } grants no authority (default)
+G8-comptime-permissive	check --capabilities-mode=permissive	tests/threat_model/g8_comptime_file_read.kry	0	-	G8: comptime { } in an unannotated main is accepted in permissive
+G9-run	run	tests/threat_model/g1_unannotated_main_file_read.kry	nz	E0505	G9: kryos run rejects what check rejects
+G9-build	build -o {tmp}/g9.exe	tests/threat_model/g1_unannotated_main_file_read.kry	nz	E0505	G9: kryos build rejects what check rejects
+G9-build-wasm	build --backend wasm -o {tmp}/g9.wasm	tests/threat_model/g1_unannotated_main_file_read.kry	nz	E0505	G9: kryos build --backend wasm rejects what check rejects
+G9-manifest-check	check	@dir:tests/threat_model/manifest_mode	nz	E0505	G9: a project's [capabilities] mode = permissive does not loosen kryos check
+G9-manifest-run	run	@dir:tests/threat_model/manifest_mode	nz	E0505	G9: a project's [capabilities] mode = permissive does not loosen kryos run
+G9-manifest-build	build -o {tmp}/m.exe	@dir:tests/threat_model/manifest_mode	0	-	G9: project-mode kryos build honours [capabilities] mode = permissive (accepts what check rejects)
+G10-import-unannotated	check	tests/threat_model/g10_std_fs_unannotated.kry	nz	E0507	G10: std::fs::exists carries fs:read to an unannotated main
+G10-import-declared	check	tests/threat_model/g10_std_fs_declared.kry	0	-	G10: the same with @capabilities(fs:read) is accepted
+N3-args-time-sleep	check	tests/threat_model/n3_ambient_args_time_sleep.kry	0	-	N3: args(), time_now(), sleep() are ambient
+N3-read-line	check	tests/threat_model/n3_ambient_read_line.kry	0	-	N3: read_line() is ambient
+N3-file-exists-gated	check	tests/threat_model/n3_file_exists_needs_fs_read.kry	nz	E0505	N3: file_exists is not ambient
+N3-latent-intrinsics-default	check	tests/threat_model/n3_latent_memory_intrinsics.kry	0	-	N3/4.4: str_data_ptr/mem_read_byte/mem_write_byte are accepted with no capability
+N3-latent-intrinsics-strict	check --strict-capabilities	tests/threat_model/n3_latent_memory_intrinsics.kry	0	-	N3/4.4: the same in strict mode
+N3-latent-intrinsics-run	run	tests/threat_model/n3_latent_memory_intrinsics.kry	nz	str_data_ptr	N3/4.4: they do not link on the Rust toolchain, so run fails (latent)
+N9-env-get-default	check	tests/threat_model/n9_env_get_unannotated.kry	nz	E0505	N9: env_get needs process
+N9-env-get-strict	check --strict-capabilities	tests/threat_model/n9_env_get_unannotated.kry	nz	E0505	N9: env_get needs process (strict)
+S1-audit-inferred	audit	tests/threat_model/n9_env_get_unannotated.kry	nz	[E0505]	S1: kryos audit runs the inferred-mode checker and prints its violations
+S1-audit-inventory	audit	tests/threat_model/n9_env_get_unannotated.kry	nz	(no @capabilities annotations found)	S1/4.4: the audit capability inventory lists declared annotations only
+N11-infinite-loop	check	tests/threat_model/n11_infinite_loop.kry	0	-	N11: an infinite loop passes check with no declaration
+S42-container-param-default	check	tests/threat_model/s42_container_fn_param.kry	nz	call through a function value requires capabilities [all]	4.2: calling a closure taken from a container parameter needs all
+S43-repo-auditor-default	check	examples/showcase/repo_auditor.kry	0	-	4.3: the deny!(net:http) registry example is accepted (default)
+S43-repo-auditor-strict	check --strict-capabilities	examples/showcase/repo_auditor.kry	0	-	4.3: the same in strict mode
+B5-test-default	check	tests/threat_model/b5_test_fn_leak.kry	0	-	G1 exception B5: an unannotated @test fn is not a boundary in the default mode
+B5-test-strict	check --strict-capabilities	tests/threat_model/b5_test_fn_leak.kry	nz	E0505	B5: strict rejects it
+B5-test-runs	test	tests/threat_model/b5_test_fn_leak.kry	0	B5-TEST-MARKER	B5: kryos test runs the unannotated @test fn
+B1-closed-default	check	tests/bypass/b1_env_get_shadowed_by_method.kry	nz	E0505	B1 closed by PR #40: rejected in default and strict (also pinned by tests/bypass_gate.sh)
+B1-closed-strict	check --strict-capabilities	tests/bypass/b1_env_get_shadowed_by_method.kry	nz	E0505	B1 closed by PR #40: rejected in default and strict (also pinned by tests/bypass_gate.sh)
+B2-closed-default	check	tests/bypass/b2_env_get_shadowed_by_trait_decl.kry	nz	E0505	B2 closed by PR #40: rejected in default and strict (also pinned by tests/bypass_gate.sh)
+B2-closed-strict	check --strict-capabilities	tests/bypass/b2_env_get_shadowed_by_trait_decl.kry	nz	E0505	B2 closed by PR #40: rejected in default and strict (also pinned by tests/bypass_gate.sh)
+B3-closed-default	check	tests/bypass/b3_std_ffi_zero_cap.kry	nz	E0505	B3 closed by PR #40: rejected in default and strict (also pinned by tests/bypass_gate.sh)
+B3-closed-strict	check --strict-capabilities	tests/bypass/b3_std_ffi_zero_cap.kry	nz	E0505	B3 closed by PR #40: rejected in default and strict (also pinned by tests/bypass_gate.sh)
+B4-closed-default	check	tests/bypass/b4_extern_ffi_cstr.kry	nz	E0506	B4 closed by PR #40: rejected in default and strict (also pinned by tests/bypass_gate.sh)
+B4-closed-strict	check --strict-capabilities	tests/bypass/b4_extern_ffi_cstr.kry	nz	E0506	B4 closed by PR #40: rejected in default and strict (also pinned by tests/bypass_gate.sh)
+S41-121-fine-grained-deny-default	check	tests/threat_model/s41_121_fine_grained_deny.kry	nz	E0110	4.1 item 121 workaround: the precise capability in deny! is rejected
+S44-trait-default-body-unchecked-default	check	tests/threat_model/s44_trait_default_body_unchecked.kry	0	-	4.4 item 122: a type error in a trait default method body is accepted
+S44-trait-default-body-unchecked-strict	check --strict-capabilities	tests/threat_model/s44_trait_default_body_unchecked.kry	0	-	4.4 item 122: the same in strict mode
+G7-kryos_env_get-default	check	tests/threat_model/g7_extern_kryos_env_get.kry	nz	E0506	G7: a classified kryos_* extern is charged what the native does (default)
+G7-kryos_env_get-strict	check --strict-capabilities	tests/threat_model/g7_extern_kryos_env_get.kry	nz	E0506	G7: a classified kryos_* extern is charged what the native does (strict)
+G7-kryos_process_exec-default	check	tests/threat_model/g7_extern_kryos_process_exec.kry	nz	E0506	G7: a classified kryos_* extern is charged what the native does (default)
+G7-kryos_process_exec-strict	check --strict-capabilities	tests/threat_model/g7_extern_kryos_process_exec.kry	nz	E0506	G7: a classified kryos_* extern is charged what the native does (strict)

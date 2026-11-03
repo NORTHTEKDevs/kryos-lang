@@ -1,0 +1,7 @@
+// THREAT-MODEL.md G6: the same program with @capabilities(ffi) is accepted in
+// every mode.
+@capabilities(ffi)
+fn main() {
+    let p = str_to_ptr("abc")
+    println(to_string(ptr_byte_at(p, 0)))
+}

@@ -1,0 +1,38 @@
+// THREAT-MODEL.md section 4.5, row B9 (open; not an escape_status.sh row).
+// std::sync::AtomicInt is a struct { cell: i64, mu: Mutex } with a public `cell`
+// that holds the HEAP ADDRESS of its 8-byte value, and load()/store() dereference
+// whatever `cell` holds. Struct literals are unrestricted, so a program that
+// declares no capability can build an AtomicInt around an address it computed as
+// a plain i64 and read or write memory through it, with no `ffi` declaration.
+// The language builtins that do the same (ptr_read_i64, ptr_write_i64, alloc,
+// str_to_ptr) are rejected without `ffi` (G6); the stdlib wrapper is not.
+//
+// What this shows: `forged` is a different AtomicInt value from `victim`, built
+// from an address derived by integer arithmetic (not by copying the struct).
+// forged.load() reads victim's cell and forged.store() overwrites it.
+// What it does not show: nothing outside the program's own memory is touched,
+// the address is one the program was handed by its own allocation, and no
+// file, process, network or dlopen call is made (it prints to stdout, and
+// AtomicInt load/store take a mutex). It is not an exploit of the OS; it shows that an integer chosen
+// by the program is dereferenced by a stdlib method. The same API accepts any
+// other integer (std::chan::ChanWaitGroup.count_cell and std::tensor handles are
+// the same shape), and which address is valid is the attacker's problem, not the
+// type system's. This repro deliberately stays on memory it allocated itself so
+// it is deterministic and cannot crash.
+//
+// kryos 1.2.0 at 7cab5799 (build of a9c4680b): `kryos check` rc=0 in default and
+// --strict-capabilities mode, and `kryos run` prints BYPASS-B9-OK (executed
+// 2026-11-02).
+use std::sync::{AtomicInt, atomic_int, mutex_new}
+
+fn main() {
+    let victim = atomic_int(1111)
+    let addr = (victim.cell + 4096) - 4096
+    let forged = AtomicInt { cell: addr, mu: mutex_new() }
+    let seen = forged.load()
+    forged.store(2222)
+    let after = victim.load()
+    if seen == 1111 && after == 2222 {
+        println("BYPASS-B9-OK")
+    }
+}

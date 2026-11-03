@@ -1,0 +1,42 @@
+// LEDGER item 125 (root F, forward references; found by the independent verifier of the R3 wave, recorded first by the item-77 wave, NOT FIXED).
+// A store made by a callee that is itself declared BELOW its caller is never recorded in the first callee's store list: in the relay h1 -> h2 (h1 declared above h2)
+// the slot of the argument never learns the closure h2 stores into it. The same program with the two helpers in the other order is rejected.
+// Shape: the relay builds the container: `guard(b1(r))`, `b1` returns `b2(x)` and `b2` returns `[safe, x]`, `guard` (deny! block) declared above all of them.
+// master e2fbc46c, measured before any checker edit of the wave that recorded this: `kryos check` rc=0 in default and strict mode, `kryos run` prints TOPSECRET-CLOSURE-9f8e7d6c5b4a in both modes (executed).
+// WANTED (when closed): rejected with E0110 in both modes, and `kryos run` must not print the secret.
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+fn wrap_once(inner: fn() -> str) -> fn() -> str {
+    return || inner()
+}
+
+fn guard(fns: [fn() -> str]) {
+    let f = || "harmless"
+    deny!(fs:read) {
+        for f in fns {
+            println("LEAK: " + f())
+        }
+    }
+}
+
+fn b1(x: fn() -> str) -> [fn() -> str] {
+    return b2(x)
+}
+
+fn b2(x: fn() -> str) -> [fn() -> str] {
+    return [safe, x]
+}
+
+@capabilities(fs:read)
+fn main() {
+    let r = secret()
+    guard(b1(r))
+}
+

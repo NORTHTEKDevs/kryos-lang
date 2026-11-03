@@ -1,0 +1,10 @@
+// THREAT-MODEL.md G4: a @pure function cannot call a gated builtin (E0110) in
+// every mode.
+@pure
+fn p() -> str {
+    return file_read("x.txt")
+}
+
+fn main() {
+    println(p())
+}

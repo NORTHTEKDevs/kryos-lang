@@ -1,0 +1,14 @@
+// THREAT-MODEL.md 4.2: failing closed over-rejects. A function with no declared
+// capabilities cannot call a closure it takes out of a container parameter
+// (E0507, "call through a function value requires capabilities [all]").
+@capabilities()
+fn run(fns: [fn() -> str]) {
+    for f in fns {
+        f()
+    }
+}
+
+fn main() {
+    let xs: [fn() -> str] = []
+    run(xs)
+}

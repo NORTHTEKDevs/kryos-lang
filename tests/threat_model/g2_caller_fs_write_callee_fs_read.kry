@@ -1,0 +1,11 @@
+// THREAT-MODEL.md G2: authority propagates up the call graph. inner needs
+// fs:read, main holds only fs:write: E0507 in every mode.
+@capabilities(fs:read)
+fn inner() {
+    file_read("x.txt")
+}
+
+@capabilities(fs:write)
+fn main() {
+    inner()
+}

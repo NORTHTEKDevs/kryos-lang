@@ -1,0 +1,32 @@
+// LEDGER item 132, shape layer (found by the revise round of PR 41 while writing the precision fix; a sibling of item 77; NOT FIXED on 1.3.0).
+// A pure array is aliased (`let alias = items`) and the alias is grown in place with the privileged closure before `id(items[1])` reads it.
+// Master 7cab5799: check rc=0 in default and strict mode, `kryos run` prints TOPSECRET-CLOSURE-9f8e7d6c5b4a (executed); PR 41 head 364d2e44 rejects it (E0507, the read was Unknown).
+// The deny! block sits in a `select` arm, which the row layer does not judge (LEDGER item 126, root R4), so the SHAPE layer is the only judge here.
+// WANTED (when closed): rejected with E0507 or E0110 in default and strict mode, and `kryos run` must not print the secret. A candidate fix (PR 41) was deferred past 1.3.0.
+fn harmless() -> str {
+    return "not a secret"
+}
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let mut f: fn() -> str = harmless
+    let items = [harmless]
+    let id = |g: fn() -> str| { g }
+    let alias = items
+    push(alias, reader)
+    f = id(items[1])
+    let ch = chan()
+    send(ch, 1)
+    select {
+        v ch => {
+            deny!(fs:read) {
+                println("OUT: " + f())
+            }
+        }
+    }
+}

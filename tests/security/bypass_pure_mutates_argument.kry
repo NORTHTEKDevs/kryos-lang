@@ -1,0 +1,21 @@
+// THREAT-MODEL.md section 4.5, row B7: `@pure` restricts CALLS only.
+// It does not forbid mutating an argument container or module-level state.
+//
+// kryos 1.2.0 at dbfb989d: `kryos check` rc=0 in default and
+// --strict-capabilities mode, and `kryos run` prints BYPASS-B7-OK (executed
+// 2026-11-01).
+let mut counter = 0
+
+@pure
+fn bump(a: [i64]) {
+    push(a, 99)
+    counter = counter + 1
+}
+
+fn main() {
+    let xs = [1]
+    bump(xs)
+    if len(xs) == 2 && counter == 1 {
+        println("BYPASS-B7-OK")
+    }
+}

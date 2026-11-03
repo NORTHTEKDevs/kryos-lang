@@ -1,0 +1,12 @@
+// THREAT-MODEL.md section 4.5, row B5 (not an escape_status.sh row).
+// In the default (inferred) mode the checked boundary is `main` plus annotated
+// functions. An unannotated `pub fn` in a file with no `fn main` (the shape a
+// host or the C ABI would call, and the shape of an unannotated `@test` fn run
+// by `kryos test`) is not a boundary, so its `env_get` is not charged.
+//
+// kryos 1.2.0 at dbfb989d: `kryos check` rc=0 in default mode and rc=1
+// (E0505) with --strict-capabilities (executed 2026-11-01). Not run: there is no
+// `main`.
+pub fn leak() -> str {
+    return env_get("PATH")
+}

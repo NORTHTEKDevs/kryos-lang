@@ -1,0 +1,8 @@
+// THREAT-MODEL.md B5: an unannotated @test fn is not a boundary in the default
+// mode. check accepts it (rejected only with --strict-capabilities) and
+// `kryos test` runs it.
+@test
+fn leaks() {
+    let p = env_get("PATH")
+    println("B5-TEST-MARKER")
+}

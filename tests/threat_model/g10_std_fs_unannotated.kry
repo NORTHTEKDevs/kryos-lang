@@ -1,0 +1,7 @@
+// THREAT-MODEL.md G10: a stdlib module carries its authority to the importer.
+// std::fs::exists needs fs:read: an unannotated main is rejected (E0507).
+use std::fs::{exists}
+
+fn main() {
+    println(to_string(exists("x.txt")))
+}

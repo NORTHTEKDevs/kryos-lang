@@ -7,6 +7,8 @@ from `CHANGELOG.md` and tooling.
 
 Last updated: 2026-08-29 (v1.0.0). Check counts sync to README/CI, which
 `tests/docs_status_gate.sh` gate-checks; this file is refreshed after them.
+The capability claims in section 5 were revised for 1.3.0 on 2026-11-03;
+section 4 is the v1.0.0 snapshot (the README carries current counts).
 
 ---
 
@@ -66,7 +68,7 @@ A release tag is cut when **all** of the following hold:
 
 ---
 
-## 4. Current pass rates (v1.0.0)
+## 4. Pass rates at v1.0.0
 
 - Cranelift JIT (`kryos run`): **100%** on the native runner suite.
 - LLVM release (`kryos build --release`): **100%** on the
@@ -89,9 +91,11 @@ A release tag is cut when **all** of the following hold:
 
 Both concurrency release blockers tracked at 0.9.0 (`conf_spinlock_mutex`
 use-after-free and the `conf_errors_concurrency` actor deadlock) were traced to
-a single spawn-wrapper ABI defect and fixed on 2026-07-28. Conformance is 68/68
-on both backends (`bash tests/conformance/run_conformance.sh`; grows as tests
-are added -- `tests/docs_status_gate.sh` fails CI if this number drifts). See
+a single spawn-wrapper ABI defect and fixed on 2026-07-28. Conformance was 68/68
+on both backends at 1.0.0 (`bash tests/conformance/run_conformance.sh`). The
+suite grows as tests are added; the README states the current count, and
+`tests/docs_status_gate.sh` (a tier-1 gate of `tools/loop/kryos-loop.sh`, not a
+CI job) fails if that count drifts from the live file count. See
 [docs/BUGS.md](docs/BUGS.md).
 
 ### 5.0 Shipped with 1.0: known memory-retention limits, measured
@@ -130,23 +134,28 @@ alias analysis, planned as one unified ownership pass, not another patch.
 **A third, non-memory limit:** capability inference is fail-closed on closure
 values whose provenance it cannot resolve, so 41 of 75 enumerated LEGITIMATE
 pure-closure shapes require an explicit `@capabilities(all)` annotation (LEDGER
-item 41). This is a precision cost, not an unsoundness -- it over-demands
-authority, never under-demands it -- but it is the limitation most likely to be
-felt while writing ordinary higher-order code.
+item 41). On these shapes the error is in the safe direction (it over-demands
+authority), and it is the limitation most likely to be felt while writing
+ordinary higher-order code. Under-demanding is a separate failure, documented
+in the next paragraph.
 
-- **Capability enforcement is sound for direct calls AND for closure/fn-value
-  indirection through a parameter, local, return value, passthrough chain,
-  actor message, `spawn`, generic, `dyn Trait` dispatch, OR a CONTAINER (a
-  struct field, array element, or map value that holds a closure, including
-  nested combinations) -- in EVERY mode including `--strict-capabilities`.**
+- **Capability enforcement is checked, not proven sound, for direct calls AND
+  for closure/fn-value indirection through a parameter, local, return value,
+  passthrough chain, actor message, `spawn`, generic, `dyn Trait` dispatch, OR
+  a CONTAINER (a struct field, array element, or map value that holds a
+  closure, including nested combinations), in every mode including
+  `--strict-capabilities`, with known exceptions: the capability escapes listed
+  one per row in [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md) section 4.1 are
+  accepted in the default mode and under `--strict-capabilities` and leak when
+  run (80 of the 260 escape repros on 1.3.0).**
   A struct/array/map value that CONTAINS a closure is traced back to its
   construction site (a struct field precisely, an array/map value
   conservatively across all elements), so a zero-capability function that
   drills into a container to invoke a privileged closure is caught at the
   call site that supplied it. See [docs/10-capabilities.md § Closure
   indirection, including
-  containers](docs/10-capabilities.md#closure-indirection-including-containers-is-sound-read-this-if-you-are-trusting-it-with-secrets)
-  for the full sound surface and the one documented residual (a container
+  containers](docs/10-capabilities.md#closure-indirection-including-containers-is-checked-read-this-if-you-are-trusting-it-with-secrets)
+  for the full checked surface and the documented residuals (a container
   populated from a non-literal source requires `all`, the same conservative
   fallback used for every other unresolvable closure provenance).
 

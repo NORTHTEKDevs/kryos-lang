@@ -7,8 +7,8 @@ on the `master` branch receives security fixes.
 
 | Version | Supported |
 | ------- | --------- |
-| 1.2.x   | ✅        |
-| < 1.2   | ❌        |
+| 1.3.x   | Yes       |
+| < 1.3   | No        |
 
 ## Reporting a Vulnerability
 

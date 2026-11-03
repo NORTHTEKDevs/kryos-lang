@@ -6,8 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-Capability-boundary fixes: seven ways a program or a shipped
-binary got more authority than it declared are closed, and a REPL bug on Linux.
+## [1.3.0] - 2026-11-02
+
+Capability-boundary release. It closes the ways a program or a shipped binary
+got more authority than it declared that were found since 1.2.0: the REPL, one
+environment variable, the raw-memory gate, closures stored into containers, a
+`deny!` verdict taken too early, `std::ffi`, unmapped runtime externs and
+`--cache`. It also ships [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md), which
+states what `@capabilities`, `deny!` and `@pure` guarantee and what they do
+not, and lists every known capability escape that is still accepted, each with
+a committed repro and a check that fails when the list and the compiler
+disagree. Capabilities are a compile-time check, not a sandbox: 80 known
+escapes are still accepted (Known limitations, below).
 
 Upgrade notes:
 
@@ -29,6 +39,14 @@ Upgrade notes:
 - `kryos repl` applies the same raw-memory rule as a file: a session with no
   `ffi` grant is rejected with E0505 on `str_to_ptr`, `ptr_byte_at` and the
   rest, and `:allow ffi` (or `--allow ffi`) grants them.
+- A program that uses `std::ffi`, `tensor::arr_data_ptr` or
+  `crypto::_bytes_to_hex` must declare `ffi`, in every mode. A program that
+  calls `std::wasm`'s `http_fetch`, `http_fetch_get`, `http_fetch_post` or
+  `fetch_text` must declare `net:http`.
+- An `extern` declaration of a `kryos_*` runtime symbol that the compiler does
+  not classify needs `ffi`.
+- A build with `--cache` runs the type, ownership and capability checks before
+  it looks the cache up, so a cache hit no longer skips them.
 
 ### Fixed - the capability boundary
 
@@ -57,9 +75,12 @@ Upgrade notes:
   lambda. One
   conservative cost: a lambda that reassigns an outer function-typed local
   (which never changes the outer one, since closures capture by value) is
-  rejected when the outer one is called inside `deny!`. Still open: a local
-  reassigned from the result of calling a local closure or nested `fn` that
-  returns its parameter; the README lists it with the other live shapes.
+  rejected when the outer one is called inside `deny!`. A local reassigned from
+  the result of calling a local closure or nested `fn` that returns its
+  parameter (item 77) is rejected by the row layer since the `deny!` verdict
+  change below; it is still accepted when the `deny!` block sits in a `select`
+  arm, where only the shape layer judges it (items 126 and 134, listed in
+  docs/THREAT-MODEL.md section 4.1).
 - **A zero-grant `kryos repl` session read raw process memory.**
   `ptr_byte_at(str_to_ptr("TOP"), 0)` printed `84` at the prompt while the same
   expression in a file or `kryos eval` was rejected with E0505.
@@ -108,8 +129,9 @@ Upgrade notes:
   again at every reference to the function that holds the block, with that reference's
   argument (a relay, a recursion, a method chain and a function value included): the
   plugin platform of LEDGER item 72 is rejected in its shipped declaration order, and
-  `outer(pure)` is still accepted. It also closes a fn-typed local reassigned from the
-  result of a local closure that returns its parameter (item 77), a registration
+  `outer(pure)` is still accepted. It also closes, at the row layer, a fn-typed local
+  reassigned from the result of a local closure that returns its parameter (item 77;
+  the shape-layer half is item 134, still open), a registration
   helper declared after the function that calls it (item 114), and four of the seven
   repros of item 118 (a store helper reached through a function-typed parameter, a
   struct field, a map of operations or a lambda).
@@ -125,6 +147,40 @@ Upgrade notes:
   parameter (item 119), and `deny!(fs)`, `deny!(io)` and `deny!(all)`, which the type
   checker does not match against a used `fs:read` (item 121); the README lists them
   with the other live shapes.
+
+### Fixed - zero-authority bypasses (B1-B4, B8)
+
+Each of these let a program that declares no capability, or fewer than it
+uses, read the environment or files, read or write process memory, call C
+functions, or be handed an artifact the checker had rejected, in the default
+and `--strict-capabilities` modes. Each was executed before it was fixed and
+is pinned by the new `tests/bypass_gate.sh` (programs in `tests/bypass/`).
+
+- **A method named like a gated builtin silenced the builtin (B1, B2).** An
+  `impl` method, or a bodiless trait method declaration, named `env_get` (or
+  any other gated builtin) left every bare call to the builtin uncharged,
+  while the compiled program still called the builtin. A function-typed
+  parameter or local named like a method, a free function or a builtin did
+  the same to a closure called inside `deny!` (B1b).
+- **`std::ffi` needed no capability (B3).** Its 32 exports (`open`, `sym`,
+  `call0`-`call6`, `alloc`, `read_*`, `write_*`, ...) gave a zero-capability
+  program arbitrary C calls and raw memory. Every export now declares
+  `@capabilities(ffi)`, and a user module that imports a `std::ffi` name, or
+  calls `tensor::arr_data_ptr` or `crypto::_bytes_to_hex` (which read a
+  caller-supplied address), needs `ffi` in every mode. `std::wasm`'s
+  `http_fetch`, `http_fetch_get`, `http_fetch_post` and `fetch_text` now
+  declare `net:http`.
+- **An `extern` declaration of an unmapped `kryos_*` runtime symbol was
+  ambient (B4).** Every symbol `kryos-rt` and `kryos-stdlib-native` export is
+  now classified by exact name (411 ambient, 196 with a capability), and an
+  unclassified one needs `ffi`.
+- **`--cache` served an artifact before the checker ran (B8).** A build
+  accepted in permissive mode was handed to a later default or strict build of
+  the same source, and an edited imported module could hit a stale entry. The
+  cache is now consulted only after the type, ownership and capability checks
+  accept the program in this build's mode, and its key covers the capability
+  mode and strict flag, the backend and its options, the stdlib directory and
+  every imported file.
 
 ### Fixed - `kryos repl`
 
@@ -175,6 +231,41 @@ Upgrade notes:
   diagnostics**, then `... N more diagnostics not shown`. The error and warning
   counts still cover all of them. This also applies to warnings: a program
   with more than 100 warnings no longer lists them all.
+
+### Added
+
+- **[docs/THREAT-MODEL.md](docs/THREAT-MODEL.md)**: the attacker model, the
+  guarantees (each with its exceptions), what capabilities do not guarantee,
+  and the known limitations. Its statements are tagged by how they were
+  established; the pinned ones are backed by 73 verdicts (one program in one
+  mode each) that `tools/loop/check-threat-model-claims.sh` re-executes, and
+  `tools/loop/check-escapes-documented.sh` fails unless the table of accepted
+  escapes equals what `tools/loop/escape_status.sh` measures.
+
+### Known limitations shipped with 1.3.0
+
+- **80 known capability escapes are still accepted** by `kryos check` in the
+  default mode and under `--strict-capabilities` (260 repros; 180 are
+  rejected). Each is a row of docs/THREAT-MODEL.md section 4.1, with what not
+  to rely on and the workaround. In every one `main` declares the capability
+  and what fails is the narrowing of a `deny!` block. 56 of them put the block
+  inside a `select` arm, which the type checker does not walk: do not put a
+  `deny!` block inside a `select` arm. A fix for the largest family, a call
+  through a closure bound to a local (LEDGER items 128, 130, 132 and 134), was
+  refuted twice by independent verifiers, each time because it let through
+  programs that this release rejects, and is deferred.
+- **Four accepted zero-authority shapes** (section 4.5): in the default mode an
+  unannotated `pub fn` in a file with no `main`, or an unannotated `@test` fn,
+  is not checked as a boundary (B5; use `--strict-capabilities`); a closure
+  parameter is charged to the sender, so a callee declared with no
+  capabilities runs it (B6, by design); `@pure` restricts calls only and may
+  still mutate its arguments and globals (B7); and `std::sync::AtomicInt` and
+  other stdlib types expose a raw heap address as a public `i64` field that
+  their methods dereference, so a program with no capability can read and
+  write an address it chooses, within its own process (B9, open).
+- `str_data_ptr`, `mem_read_byte`, `mem_write_byte` and the other self-host
+  memory intrinsics are accepted with no capability; on this build a program
+  that calls them fails to link (section 4.4).
 
 ## [1.2.0] - 2026-10-31
 

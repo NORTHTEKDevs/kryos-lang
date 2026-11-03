@@ -1,0 +1,12 @@
+// THREAT-MODEL.md G2: in inferred mode an unannotated helper's authority is the
+// union of what it and its callees need, so main must declare it. main declares
+// fs:write only: E0507 in the default mode, E0505 on the helper in strict mode,
+// accepted in permissive mode.
+fn helper() {
+    file_read("x.txt")
+}
+
+@capabilities(fs:write)
+fn main() {
+    helper()
+}

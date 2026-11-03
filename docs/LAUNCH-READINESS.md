@@ -1,6 +1,25 @@
 # Kryos Launch Readiness - Re-Adjudication (2026-08-16, dogfooding closeout addendum; 2026-08-17 universal-claim addendum; **2026-08-29 1.0.0 cut addendum, read first**)
 
 
+> ## 2026-11-02 - every "zero known capability escapes" count in this document is HISTORICAL
+>
+> Each statement below that says "zero known" or "zero known live" capability
+> escapes describes the escape corpus as it stood on its own date (2026-08-16 to
+> 2026-08-29), and was true of that corpus only. The corpus has grown since (99
+> repros at PR #38, 190 at master 7cab5799, 260 once the findings of the item-77
+> wave and its verifiers were recorded). Measured 2026-11-02 with
+> `bash tools/loop/escape_status.sh` on a kryos 1.2.0 build whose compiler equals
+> master 7cab5799: **`STILL ESCAPING: 80    now-rejected: 180    missing: 0`**
+> (re-run 2026-11-03 on the kryos 1.3.0 build, which changes only the version
+> strings: the same counts). The
+> 80 accepted repros are listed, each with a committed repro and its root, in
+> [docs/THREAT-MODEL.md](THREAT-MODEL.md) section 4.1. Do not read any "zero"
+> below as current, nor any count or classification of the OPEN LEDGER items
+> or a "remains true today" (section 10): those are dated too, and the OPEN
+> section of tools/loop/LEDGER.md is the live list. Only this banner and a short
+> pointer beside the section 1 quote further down were added; the rest is unchanged.
+
+
 > ## 2026-10-08 - ownership update (branch `fix/item3-call-boundary`)
 >
 > Items **3** (struct-argument leak) and **51** (struct enum-field overwrite
@@ -29,6 +48,8 @@
 > - **§1's engineering findings still stand and were re-measured at the cut.**
 >   Zero known capability escapes, full gate ladder green, byte-identical
 >   bootstrap 16/16, ecosystem 259/259, conformance 68/68 on both backends.
+>   (2026-11-02: the escape count in that line is historical; see the banner
+>   at the top and THREAT-MODEL.md section 4.1 for the current count.)
 > - **§1's exposure finding also still stands.** No stranger has stress-tested
 >   this compiler. Every number in this repository comes from its own gates on
 >   its own machine.

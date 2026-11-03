@@ -64,10 +64,10 @@ live_count=$(ls tests/conformance/*.kry 2>/dev/null | wc -l | tr -d ' ')
 echo "  live tests/conformance/*.kry count: $live_count"
 
 check_count_claims() {
-    local file="$1"
+    local file="$1" case_flag="${2:-}"
     [ -f "$file" ] || return 0
     # Matches "conformance is N/N" / "conformance N/N PASS" / "conformance is N/N on both backends"
-    grep -oE 'conformance[^.]{0,40}[0-9]+/[0-9]+' "$file" | grep -oE '[0-9]+/[0-9]+' | sort -u | while read -r pair; do
+    grep -o${case_flag}E 'conformance[^.]{0,40}[0-9]+/[0-9]+' "$file" | grep -oE '[0-9]+/[0-9]+' | sort -u | while read -r pair; do
         local claimed="${pair%%/*}"
         if [ "$claimed" != "$live_count" ]; then
             echo "  STALE  $file claims conformance $pair, but tests/conformance/ currently has $live_count files"
@@ -76,15 +76,22 @@ check_count_claims() {
 }
 
 count_out=""
+# README.md's status line is the one current claim, and it starts with a capital
+# ("Conformance is N/N"), which the case-sensitive match never saw: on 2026-11-02 it
+# still said 68/68 with 118 files here, and this gate passed. README.md is matched
+# case-insensitively. docs/BUGS.md and STABILITY.md keep the case-sensitive match:
+# their capitalized counts are dated history ("as of this writing", the v1.0.0
+# limitations), not current claims.
 for f in README.md docs/BUGS.md STABILITY.md; do
-    out="$(check_count_claims "$f")"
+    case_flag=""; [ "$f" = "README.md" ] && case_flag="i"
+    out="$(check_count_claims "$f" "$case_flag")"
     if [ -n "$out" ]; then
         echo "$out"
         count_out="$count_out$out"
         fail=1
     fi
 done
-[ -z "$count_out" ] && echo "  ok: no stale conformance-count claims found in README.md / docs/BUGS.md"
+[ -z "$count_out" ] && echo "  ok: no stale conformance-count claims found in README.md / docs/BUGS.md / STABILITY.md"
 
 if [ "$fail" -eq 0 ]; then
     echo "docs_status_gate: PASS -- docs/BUGS.md matches live test state"

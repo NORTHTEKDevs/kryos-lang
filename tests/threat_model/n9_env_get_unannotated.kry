@@ -1,0 +1,5 @@
+// THREAT-MODEL.md N9, section 1 (audit): env_get needs process. An unannotated
+// main is rejected (E0505) in the default and strict modes.
+fn main() {
+    println(env_get("PATH"))
+}

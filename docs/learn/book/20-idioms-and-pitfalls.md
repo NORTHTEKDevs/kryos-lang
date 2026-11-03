@@ -306,7 +306,7 @@ fn run_plugin(config_path: str) -> str {
 fn run_plugin(config_path: str) -> str {
     let config: str = file_read(config_path)
     deny!(net) {
-        return call_plugin(config)   // plugin logic cannot reach the network
+        return call_plugin(config)   // a network call here is rejected (known escapes: docs/THREAT-MODEL.md 4.1)
     }
 }
 ```

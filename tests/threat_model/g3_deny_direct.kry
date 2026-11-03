@@ -1,0 +1,8 @@
+// THREAT-MODEL.md G3: deny!(c) rejects a block that uses c (E0110) in every mode.
+@capabilities(fs:read)
+fn main() {
+    deny!(fs:read) {
+        let s = file_read("x.txt")
+        println(s)
+    }
+}

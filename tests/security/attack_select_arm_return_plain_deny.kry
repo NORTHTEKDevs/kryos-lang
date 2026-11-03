@@ -1,0 +1,31 @@
+// LEDGER item 130, shape layer (found by the independent verifier of PR 41; present on master, NOT FIXED on 1.3.0).
+// A local closure returns its parameter from a `select` arm inside its own body; the `deny!` block is in ordinary position.
+// Root: `collect_return_exprs` lists the returns of if / for / while / try bodies and the tail of a block only, so a `return` in this position is invisible to every reader of that list (on master a call through a LOCAL closure is also charged its invocation authority, item 134).
+// Master 7cab5799 AND PR 41 head 364d2e44: check rc=0 in default and strict mode, `kryos run` prints TOPSECRET-CLOSURE-9f8e7d6c5b4a (executed).
+// The deny! block is in ORDINARY position (no select around it): no item-126 placement is needed for the leak. The row layer does not follow a return out of a select arm (item 126), the shape layer did not either.
+// WANTED (when closed): rejected with E0507 or E0110 in default and strict mode, and `kryos run` must not print the secret. A candidate fix (PR 41) was deferred past 1.3.0.
+fn harmless() -> str {
+    return "not a secret"
+}
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let mut f: fn() -> str = harmless
+    let sel = |r: fn() -> str| {
+        let c2 = chan()
+        send(c2, 1)
+        select {
+            v c2 => { return r }
+        }
+        return harmless
+    }
+    f = sel(reader)
+    deny!(fs:read) {
+        println("OUT: " + f())
+    }
+}

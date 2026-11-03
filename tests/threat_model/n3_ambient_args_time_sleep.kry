@@ -1,0 +1,7 @@
+// THREAT-MODEL.md N3: args(), time_now() and sleep() need no capability.
+fn main() {
+    let a = args()
+    let t = time_now()
+    sleep(1)
+    println(to_string(len(a)) + " " + to_string(t))
+}

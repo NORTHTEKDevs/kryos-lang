@@ -1,0 +1,4 @@
+// THREAT-MODEL.md N3: file_exists is not ambient; it needs fs:read (E0505).
+fn main() {
+    println(to_string(file_exists("x.txt")))
+}

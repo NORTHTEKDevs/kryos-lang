@@ -1,0 +1,37 @@
+// LEDGER item 124 (root F, forward references; found by the independent verifier of the R3 wave, recorded first by the item-77 wave, NOT FIXED).
+// A function declared ABOVE the callee it hands its parameter on to (or `main` declared above its helpers) leaves the deny! verdict without the argument's row:
+// the copy var the first function hands on is never mapped by `main`'s later instantiation. The same program with the declarations in the other order is rejected.
+// Shape: tests/security/attack_verify_actor_to_actor_message.kry with `main` moved above the actors. The original is rejected.
+// master e2fbc46c, measured before any checker edit of the wave that recorded this: `kryos check` rc=0 in default and strict mode, `kryos run` prints TOPSECRET-CLOSURE-9f8e7d6c5b4a in both modes (executed).
+// WANTED (when closed): rejected with E0110 in both modes, and `kryos run` must not print the secret.
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let s = Sender()
+    let r = Receiver()
+    deny!(fs:read) {
+        s.relay(r, reader)
+        sleep(100)
+    }
+}
+
+// ADVERSARIAL: a fn value passed as a MESSAGE ARGUMENT from one actor to
+// another (not stored back into state at all -- just forwarded through a
+// handler parameter), then invoked by the receiving actor.
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+actor Sender {
+    fn relay(self, target: Receiver, f: fn() -> str) {
+        target.receive(f)
+    }
+}
+
+actor Receiver {
+    fn receive(self, f: fn() -> str) {
+        let leaked = f()
+        println("ACTOR-TO-ACTOR MESSAGE LEAK: " + leaked)
+    }
+}

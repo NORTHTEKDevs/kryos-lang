@@ -1,9 +1,9 @@
-# Kryos completion loop — design
+# Kryos completion loop - design
 
 **Date:** 2026-08-11
 **Status:** approved
 **Goal:** drive Kryos to a professionally finished, honestly documented, benchmarked
-state — and, critically, give that goal a **terminating condition** it has never had.
+state - and, critically, give that goal a **terminating condition** it has never had.
 
 ## Why this exists
 
@@ -51,13 +51,21 @@ wholesale on every verify.
 
 | Node | Depends on | Acceptance |
 | --- | --- | --- |
-| `docs-truth` | — | README + LEDGER escape counts equal `escape_status.sh` output, compared by script |
-| `escape-instrument` | — | Committed routing table: where each open escape actually reaches the checker |
+| `docs-truth` | - | README + LEDGER escape counts equal `escape_status.sh` output, compared by script |
+| `escape-instrument` | - | Committed routing table: where each open escape actually reaches the checker |
 | `escape-root` | `escape-instrument` | `escape_status.sh` reports 0 escaping, AND gates 2 + security_gate + ir_signatures green |
 | `threat-model` | `escape-root` | `docs/THREAT-MODEL.md` exists, README links it, no unqualified "capability-safe" claim remains |
 | `gates-full` | `escape-root` | `kryos-loop.sh gates 2` green AND `test_bootstrap.sh` 16/16 |
 | `bench` | `gates-full`, `threat-model` | Benchmarks re-run; `BENCHMARKS.md` carries measured numbers + machine + commit |
 | `release-ready` | all of the above | Every node green in one pass at one commit |
+
+This table is the original design (2026-08-11). The live accept lines are the
+`accept:` lines of [GRAPH.md](GRAPH.md), which `graph-run.sh` runs: on
+2026-11-01 `stage2-rows` and `escape-root` were converted to documented-limitation
+nodes under the failure policy below, so `escape-root` now accepts when
+`check-escapes-documented.sh` (the table of accepted escapes in
+docs/THREAT-MODEL.md equals the measurement), `security_gate.sh` and
+`ir_signature_gate.sh` pass, not when `escape_status.sh` reports 0 escaping.
 
 `escape-instrument` exists because skipping it cost two failed fixes on 2026-08-10 (a
 `&`/`*` decomposer passthrough that did not close item 37, and a `TupleLiteral`
@@ -70,7 +78,7 @@ Instrument where the call actually routes *before* editing.
 
 **Every node green in a single uninterrupted `verify-all` at one commit.**
 
-Not "no more bugs findable" — that is unbounded and unreachable. This is a state that
+Not "no more bugs findable" - that is unbounded and unreachable. This is a state that
 can actually be entered, observed, and defended.
 
 ## Failure policy: three strikes, then document
@@ -101,7 +109,7 @@ serious language does.
 - `cargo` must run from `compiler/`, not the repo root; a wrong-directory build
   prints an error and still exits 0 through a pipe, which silently tests a stale
   binary.
-- `ir_signatures` is the canary for capability false positives — it is what caught
+- `ir_signatures` is the canary for capability false positives - it is what caught
   the pipe fix over-rejecting `5 |> padd(10)`.
 - Never put backticks in a `git commit -m`; bash command substitution eats them.
   Use `-F <file>`.
