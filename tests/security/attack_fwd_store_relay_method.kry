@@ -1,0 +1,51 @@
+// LEDGER item 125 (root F, forward references; found by the independent verifier of the R3 wave, recorded first by the item-77 wave, NOT FIXED).
+// A store made by a callee that is itself declared BELOW its caller is never recorded in the first callee's store list: in the relay h1 -> h2 (h1 declared above h2)
+// the slot of the argument never learns the closure h2 stores into it. The same program with the two helpers in the other order is rejected.
+// Shape: the relay is a pair of impl methods (`Registry.add` -> `Registry.put`, `add` declared above `put`).
+// master e2fbc46c, measured before any checker edit of the wave that recorded this: `kryos check` rc=0 in default and strict mode, `kryos run` prints TOPSECRET-CLOSURE-9f8e7d6c5b4a in both modes (executed).
+// WANTED (when closed): rejected with E0110 in both modes, and `kryos run` must not print the secret.
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+fn wrap_once(inner: fn() -> str) -> fn() -> str {
+    return || inner()
+}
+
+struct Plugin {
+    name: str,
+    run: fn() -> str,
+}
+
+struct Registry {
+    items: [Plugin],
+}
+impl Registry {
+    fn add(self, name: str, f: fn() -> str) {
+        self.put(name, f)
+    }
+    fn put(self, name: str, f: fn() -> str) {
+        self.items = push(self.items, Plugin { name: name, run: f })
+    }
+    fn run_all(self) {
+        let f = || "harmless"
+        deny!(fs:read) {
+            for q in self.items {
+                println("LEAK: " + q.run())
+            }
+        }
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let r = secret()
+    let reg = Registry { items: [] }
+    reg.add("evil", r)
+    reg.run_all()
+}

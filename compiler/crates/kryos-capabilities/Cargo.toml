@@ -7,6 +7,12 @@ edition.workspace = true
 kryos-errors.workspace = true
 kryos-ast.workspace = true
 
+[dev-dependencies]
+# Source-text tests of the capability checker alone (tests/local_closure_returns.rs):
+# the row layer (kryos-types) must neither hide nor stand in for a shape-layer verdict.
+kryos-lexer.workspace = true
+kryos-parser.workspace = true
+
 [features]
 # LEDGER item 41 re-measurement only: honors KRYOS_NO_HOTPARAM_ALL, which
 # weakens enforcement. Never enable in a shipped build.

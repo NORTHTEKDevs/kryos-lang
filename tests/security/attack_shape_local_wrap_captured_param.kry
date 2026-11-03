@@ -1,0 +1,27 @@
+// LEDGER item 77, shape layer: regression guard (master e2fbc46c already rejects this program with E0507; it is pinned so the return-flow change cannot reopen it).
+// A local closure returns a closure that calls its captured parameter (the local form of `wrap_once`): `let w = wrap(reader)`.
+// The deny! block sits in a `select` arm, which the row layer does not judge (LEDGER item 126, root R4), so the SHAPE layer is the only judge here.
+// Must be REJECTED with E0507 in default and strict mode, and `kryos run` must not print the secret.
+fn harmless() -> str {
+    return "not a secret"
+}
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let wrap = |inner: fn() -> str| { || inner() }
+    let f = wrap(reader)
+    let ch = chan()
+    send(ch, 1)
+    select {
+        v ch => {
+            deny!(fs:read) {
+                println("OUT: " + f())
+            }
+        }
+    }
+}

@@ -1,5 +1,27 @@
 # Capabilities
 
+> **Measured status (2026-11-02) - read this before anything else on this page.**
+> `bash tools/loop/escape_status.sh` re-runs every committed capability-escape repro under both
+> enforcement modes and prints the real count: **33 still escape, 220 are rejected (253 repros)**
+> (`tools/loop/check-docs-truth.sh` fails CI if the README or the LEDGER preamble drifts from that
+> number). Every escape still live is named in [tools/loop/LEDGER.md](../tools/loop/LEDGER.md) with its
+> measured routing in [tools/loop/ESCAPE-ROUTING.md](../tools/loop/ESCAPE-ROUTING.md). They fall in
+> six groups: a closure stored into a container the callee was handed, where the container sits in a
+> tuple, `Option`, `Result` or enum (item 119) or the store is reached through a factory result, a
+> generic bound or a `dyn` (item 123); `deny!(fs)`, `deny!(io)` and `deny!(all)`, which the row layer
+> does not match (item 121); the body of a trait default method, which the type checker never checks
+> (item 122); the `deny!` verdict missing a function declared above the callee it hands a closure to
+> or a store made by a callee declared below its caller (items 124, 125), or a `deny!` inside a `select`
+> arm, which the type checker never visits (item 126); and a closure returned by a top-level function
+> that uses a captured parameter through a helper or alongside another one (item 127); and the order the shape layer builds its per-name map in, which a
+> loop-carried rebinding of an alias or of a local closure and a later lambda `let` of the same name get past (item 129); and a fn-typed field of the result of a call
+> through a local closure, invoked in place, which the shape layer holds no type for (item 131; the row layer rejects it wherever it judges the `deny!`). **A count of 0
+> would not mean there are no escapes.** The corpus is adversarial shapes found by directed search,
+> so a green count is a floor, not a soundness proof, and the shape nobody has thought of is the one
+> that matters. Today capabilities are a strong development-time discipline; they are not yet a
+> boundary to run untrusted code behind. Where this page says a shape is "rejected" or the section
+> below says "sound", it means that shape is checked and gated, not that no other shape leaks.
+
 > **Implementation Status (revised after fail-closed hardening — read this
 > before trusting the model with a secret):** The `@capabilities(...)`
 > annotation is parsed and the compile-time capability checker
@@ -153,7 +175,7 @@ SPECIFIC closure argument at each call site (not the callee's own,
 correctly-empty, declaration), so `main`'s declared/inferred set still has
 to cover it — and this now ALSO holds when that closure is stashed in and
 read back out of a container (a struct field, array element, or map value):
-see "Closure indirection, including containers" below for the full sound
+see "Closure indirection, including containers" below for the full checked
 surface.
 
 ```bash
@@ -169,7 +191,7 @@ In a project, set it once in `kryos.toml` (a fresh `kryos new` already does):
 mode = "inferred"
 ```
 
-## Closure indirection, including containers, is sound (read this if you are trusting it with secrets)
+## Closure indirection, including containers, is checked (read this if you are trusting it with secrets)
 
 **If you are evaluating Kryos for a use case where capability enforcement is
 the thing standing between untrusted code and a secret (an embedded agent
@@ -472,8 +494,57 @@ helper that stores a closure into a container it was handed is not followed thro
 a factory result, a generic trait bound or a `dyn` (item 123), or when the container
 sits inside a tuple, an `Option`, a `Result` or an enum (item 119); `deny!(fs)`,
 `deny!(io)` and `deny!(all)` are not matched against a used `fs:read` by this layer
-(item 121). Rejected: the `tests/security/attack_deny_*.kry` programs (E0110).
+(item 121); a function declared above the callee it hands a closure to, a store made by a callee
+declared below its caller (items 124 and 125) and a `deny!` inside a `select` arm (item 126) are
+not seen by it either. Rejected: the `tests/security/attack_deny_*.kry` programs (E0110).
 Accepted: the `tests/security/ctl_deny_*.kry` controls.
+
+**A call through a closure bound to a local is charged what the closure returns (2026-11-02,
+LEDGER item 77, shape layer).** After `let setter = |r| { r }` the value of `setter(reader)` is `reader`,
+so `f = setter(reader)` carries `reader`'s authority, not the (empty) authority of invoking `setter`.
+The shape layer used to answer a call through a local with the local's own invocation authority, so
+`f()` inside `deny!(fs:read)` read the file whenever the row layer was not the one judging the block
+(the row layer rejects the original repros, items 77a and 77b, and every shape below wherever it judges
+the block; a `deny!` inside a `select` arm is not judged by it, item 126). A closure bound to a local now
+carries a return flow: the closures its body creates or names and returns (their flat authority), the
+arguments it returns (replaced by the authority of the argument at each call), the parameters of an
+enclosing closure or function it captures and returns, the locals it hands back (looked up when the call
+is resolved, so a rebinding after the definition counts), and what it cannot trace. When the only thing
+it returns is a closure literal, the flow of that closure is kept too, so `mk(a)(b)`, `let inner = mk(a)`
+then `inner(b)` and `make_getter(reader)()` (item 128: a top-level function returning a closure that
+returns its captured parameter) are charged what applying the result hands back, four closures deep. The
+same holds for an alias of a local closure or of a top-level function and for a name bound to two
+closures. What is not traced is `all`: a recursive nested `fn`, a parameter bound to a block local before
+it is returned (`let q = r` then `return q`), a closure received as a parameter. Two costs, measured on
+the pure twin of each shape and recorded in the LEDGER: the first two of those are rejected even when
+every argument is pure. Rejected: the `tests/security/attack_shape_*.kry` programs (E0507; each puts its
+`deny!` in a `select` arm so that only this layer judges it). Accepted: the
+`tests/security/ctl_shape_*.kry` controls, `tests/conformance/conf_curried_generic_closure.kry` and
+`tests/security/attack_generic_nested_function_type_param.kry` (a generic `wrap<T>` applied to its own
+result). Still open at this layer: a closure returned by a top-level function that uses a captured
+parameter through a helper, or two captured parameters (item 127).
+
+**Every return of a closure counts (2026-11-02, LEDGER item 130), and a container read through a local
+closure is traced only for a container nothing changes or aliases (item 132).** The first version of the
+change above charged a call through a local closure what its visible `return`s carried: a `return r` inside
+a non-final `match`, a `select` arm, a `deny!` block, a bare or `unsafe` block, an `if` or `match` bound by
+`let`, or a call argument was never listed, so such a closure was charged nothing (the independent verifier
+of that change ran five programs that printed the secret, and master refused each of them only by charging
+the closure's own authority). Every `return` outside a nested lambda is listed now, for local closures, top-level
+functions, transparent accessors and factory literals alike. A value read out of a container
+(`id(reg.items[0])`, or a lookup closure `|i| { items[i] }`) and handed through a local closure is charged what
+invoking the same read directly is charged when the container is a local the program never changes or
+aliases: bound once by a `let` of a literal (or of a call to a factory without parameters whose returned literal
+is known), read only through field and index reads whose values are named functions, builtins, lambdas, data literals
+or stable function-valued locals (`let r = make_reader("literal")`, or a closure that computes from literals and its own
+parameters), plus `len` and `for`. Any other read stays `all`, which is also what a named function that returns such a read
+is charged and what a container PARAMETER's element is charged at the call (the pure call and the leaking call
+of the same function get one answer: `fn pick(items, i) { let id = |g| { g }  return id(items[i]) }`). Rejected:
+`tests/security/attack_shape_*hidden_return*.kry`, `attack_named_fn_hidden_return_direct.kry`,
+`attack_select_arm_return_plain_deny.kry`, `attack_accessor_hidden_return.kry` and
+`attack_shape_container_*.kry` (E0507). Accepted: the `ctl_shape_container_*.kry` controls and the
+`ctl_shape_*hidden_return*_pure.kry` twins. Still open at this layer: a fn-typed field of the result of a call
+through a local closure, invoked in place (item 131).
 
 See `tests/security/cap_escape_closure_launder_local_struct_field.kry`,
 `..._local_registry_index_field.kry` (the array-of-struct-field flagship

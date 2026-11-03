@@ -1,0 +1,16 @@
+// Control: a local closure that looks an element up in a PURE array local, `get = |i| { items[i] }`, inside deny!(fs:read).
+// Master 7cab5799 accepted it ('item: world'); PR 41 head rejected it (E0507 [all]). ACCEPTED again in default and strict mode (the array is a pristine container local).
+fn hello() -> str {
+    return "hello"
+}
+fn world() -> str {
+    return "world"
+}
+fn main() {
+    let items = [hello, world]
+    let get = |i: i64| { items[i] }
+    deny!(fs:read) {
+        let h = get(1)
+        println("item: " + h())
+    }
+}

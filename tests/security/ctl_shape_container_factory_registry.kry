@@ -1,0 +1,22 @@
+// Control (a natural neighbour of the verifier's P1): a registry built by a factory without parameters (`let reg = make_reg()`) read through a local identity closure, inside deny!(fs:read).
+// Master 7cab5799 accepted it; the PR 41 head and the first revise build rejected it (E0507 [all]). Each call of the factory makes a fresh container and the local holds the literal the factory returns: ACCEPTED in default and strict mode.
+fn hello() -> str {
+    return "hello"
+}
+fn world() -> str {
+    return "world"
+}
+struct Registry {
+    items: [fn() -> str],
+}
+fn make_reg() -> Registry {
+    return Registry { items: [hello, world] }
+}
+fn main() {
+    let reg = make_reg()
+    let id = |g: fn() -> str| { g }
+    deny!(fs:read) {
+        let h = id(reg.items[1])
+        println("item: " + h())
+    }
+}

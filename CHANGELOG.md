@@ -57,9 +57,9 @@ Upgrade notes:
   lambda. One
   conservative cost: a lambda that reassigns an outer function-typed local
   (which never changes the outer one, since closures capture by value) is
-  rejected when the outer one is called inside `deny!`. Still open: a local
-  reassigned from the result of calling a local closure or nested `fn` that
-  returns its parameter; the README lists it with the other live shapes.
+  rejected when the outer one is called inside `deny!`. (A local reassigned from
+  the result of calling a local closure or nested `fn` that returns its parameter
+  was still open at that point; the two entries below close it.)
 - **A zero-grant `kryos repl` session read raw process memory.**
   `ptr_byte_at(str_to_ptr("TOP"), 0)` printed `84` at the prompt while the same
   expression in a file or `kryos eval` was rejected with E0505.
@@ -125,6 +125,29 @@ Upgrade notes:
   parameter (item 119), and `deny!(fs)`, `deny!(io)` and `deny!(all)`, which the type
   checker does not match against a used `fs:read` (item 121); the README lists them
   with the other live shapes.
+- **A call through a closure bound to a local was charged what invoking the closure
+  needs, not what it returns.** After `let setter = |r| { r }`, `f = setter(reader)`
+  made `f` look pure and `f()` inside `deny!(fs:read)` read the file; so did a local
+  closure that returns a captured privileged closure or one of several parameters, the
+  same call result invoked in place, stored in a struct field or handed to a function
+  that calls it, an alias of a local closure or of a top-level function, and a closure
+  returned by a closure and applied in a second step (`mk(a)(b)`, and `make_getter(reader)()`
+  for a top-level function). The type checker already rejects the original two shapes
+  (the row layer, since the previous entry), so each of these is pinned with the
+  `deny!` block in a `select` arm, which the row layer does not visit and where only
+  the capability checker decides. A closure bound to a local now carries what a call
+  through it returns (the closures it creates, the arguments and captured values it
+  hands back, what it cannot trace), and a function that returns a closure literal
+  carries the same for the closure it returns.
+  Pinned: 20 programs that master accepts and runs are rejected (E0507) in both modes,
+  3 regression pins, 19 controls stay accepted; a verdict diff over 1523 programs in
+  both modes moved only those 20 programs (40 rows, all newly rejected). Costs: a
+  recursive nested `fn` that returns its parameter, and a closure that binds its parameter
+  to a local before returning it, are charged `all` even when the argument is pure.
+  Still open at this layer: a closure returned by a top-level function that uses a
+  captured parameter through a helper, or two of them (item 127); the order the per-name map is built in, which a
+  loop-carried rebinding or a later lambda `let` of the same name get past (item 129); sixteen repros of the
+  `deny!` verdict (items 124, 125 and 126) were recorded and not fixed.
 
 ### Fixed - `kryos repl`
 

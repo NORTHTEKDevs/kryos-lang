@@ -1,0 +1,16 @@
+// Control: a local closure that looks a handler up in a PURE map local, `lookup = |k| { handlers[k] }`, inside deny!(fs:read).
+// Master 7cab5799 accepted it ('item: world'); PR 41 head rejected it (E0507 [all]). ACCEPTED again in default and strict mode (the map is a pristine container local).
+fn hello() -> str {
+    return "hello"
+}
+fn world() -> str {
+    return "world"
+}
+fn main() {
+    let handlers = {"a": hello, "b": world}
+    let lookup = |k: str| { handlers[k] }
+    deny!(fs:read) {
+        let h = lookup("b")
+        println("item: " + h())
+    }
+}

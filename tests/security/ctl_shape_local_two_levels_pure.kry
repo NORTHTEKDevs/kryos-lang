@@ -1,0 +1,27 @@
+// Control for tests/security/attack_shape_local_two_levels.kry: the same program handing the PURE closure `harmless` through the same shape.
+// The return flow now charges the argument, so a pure argument must still charge nothing: ACCEPTED in default and strict mode (no over-rejection).
+fn harmless() -> str {
+    return "not a secret"
+}
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let mut f: fn() -> str = harmless
+    let mk = |a: fn() -> str| { |b: fn() -> str| { b } }
+    let inner = mk(harmless)
+    f = inner(harmless)
+    let ch = chan()
+    send(ch, 1)
+    select {
+        v ch => {
+            deny!(fs:read) {
+                println("OUT: " + f())
+            }
+        }
+    }
+}

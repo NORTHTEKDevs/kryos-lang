@@ -1,0 +1,34 @@
+// LEDGER item 129 (shape layer; found by the item-77 wave while hunting the siblings of item 77, NOT FIXED).
+// Root: the flat per-name map `build_local_closure_caps_block` fills is built once, in textual order. An entry derived from another entry (an alias, the result of a call) is a snapshot of the map at its
+// position, so a binding that comes LATER in the text but runs EARLIER (a loop) is not in it; and a lambda `let` pre-registers a placeholder that REPLACES the entry of an earlier binding of the same name.
+// Shape: `let h = reader` is called inside the block; further down, in another scope, `let h = || { "x" }` binds the same name to a lambda. The lambda `let` pre-registers a placeholder that replaces the privileged entry of the first `h`.
+// The deny! block sits in a `select` arm, which the row layer does not judge (LEDGER item 126, root R4), so the SHAPE layer is the only judge here.
+// Master e2fbc46c AND this wave's head: check rc=0 in default and strict mode, `kryos run` prints TOPSECRET-CLOSURE-9f8e7d6c5b4a (executed).
+// WANTED (when closed): rejected with E0507 in default and strict mode, and `kryos run` must not print the secret.
+fn harmless() -> str {
+    return "not a secret"
+}
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let h = reader
+    let ch = chan()
+    send(ch, 1)
+    select {
+        v ch => {
+            deny!(fs:read) {
+                println("OUT: " + h())
+            }
+        }
+    }
+    let flag = 1
+    if flag == 2 {
+        let h = || { "x" }
+        println(h())
+    }
+}

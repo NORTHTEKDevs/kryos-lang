@@ -465,8 +465,8 @@ closure argument at each call site (tracing through a container's
 field/index structure when applicable) and requires its authority there, so
 it is no longer invisible just because it flows through a value instead of a
 name. See [docs/10-capabilities.md § Closure indirection, including
-containers](10-capabilities.md#closure-indirection-including-containers-is-sound-read-this-if-you-are-trusting-it-with-secrets)
-for the full sound surface and the one documented residual (a container
+containers](10-capabilities.md#closure-indirection-including-containers-is-checked-read-this-if-you-are-trusting-it-with-secrets)
+for the full checked surface and the documented residuals (a container
 populated from a non-literal source requires `all`, the same conservative
 fallback used for every other unresolvable closure provenance).
 
