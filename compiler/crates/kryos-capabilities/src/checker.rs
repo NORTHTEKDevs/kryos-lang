@@ -3871,40 +3871,69 @@ impl CapabilityChecker {
                 if let Some(p) = pattern {
                     st.bind_pattern(p);
                 }
-                if !*mutable && pattern.is_none() {
+                if pattern.is_none() {
                     if let Some(v) = value {
-                        if matches!(
-                            v,
-                            Expr::StructLiteral { .. } | Expr::ArrayLiteral { .. } | Expr::MapLiteral { .. }
-                        ) && !st.bad.contains(name)
-                        {
-                            st.cands.insert(name.clone(), v.clone());
+                        // A container the program may declare `mut` and never
+                        // change is still pristine: every change is an occurrence
+                        // the scan disqualifies (an assignment target, a call
+                        // argument, an alias), whatever the declaration says.
+                        if !st.bad.contains(name) {
+                            match v {
+                                Expr::StructLiteral { .. } | Expr::ArrayLiteral { .. } | Expr::MapLiteral { .. } => {
+                                    st.cands.insert(name.clone(), v.clone());
+                                }
+                                // A registry a factory without parameters builds:
+                                // each call makes a fresh container, so the local
+                                // holds the literal the factory returns
+                                // (`fn_return_container_lits`, the same record the
+                                // direct invocation of a read uses).
+                                Expr::FnCall { callee, args, .. } if args.is_empty() => {
+                                    if let Expr::Identifier { name: f, .. } = callee.as_ref() {
+                                        if self.defined_fns.contains(f) && !st.binders.contains_key(f) {
+                                            if let Some(lit) = self.fn_return_container_lits.get(f) {
+                                                st.cands.insert(name.clone(), lit.clone());
+                                            }
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
                         }
                         // A function value whose entry in the flat map is the
                         // resolution of its initializer alone: no other local
                         // is read to build it, so a later binding or a loop
                         // cannot leave it short of what it holds.
-                        let defined = |f: &String| self.defined_fns.contains(f) && !st.binders.contains_key(f);
-                        let literal = |a: &Expr| {
-                            matches!(
-                                a,
-                                Expr::IntLiteral { .. }
-                                    | Expr::FloatLiteral { .. }
-                                    | Expr::StringLiteral { .. }
-                                    | Expr::CharLiteral { .. }
-                                    | Expr::BoolLiteral { .. }
-                            )
-                        };
-                        let stable_init = match v {
-                            Expr::Identifier { name: f, .. } => defined(f),
-                            Expr::FnCall { callee, args, .. } => {
-                                matches!(callee.as_ref(), Expr::Identifier { name: f, .. } if defined(f))
-                                    && args.iter().all(literal)
+                        if !*mutable {
+                            let defined = |f: &String| self.defined_fns.contains(f) && !st.binders.contains_key(f);
+                            let literal = |a: &Expr| {
+                                matches!(
+                                    a,
+                                    Expr::IntLiteral { .. }
+                                        | Expr::FloatLiteral { .. }
+                                        | Expr::StringLiteral { .. }
+                                        | Expr::CharLiteral { .. }
+                                        | Expr::BoolLiteral { .. }
+                                )
+                            };
+                            let stable_init = match v {
+                                Expr::Identifier { name: f, .. } => defined(f),
+                                Expr::FnCall { callee, args, .. } => {
+                                    matches!(callee.as_ref(), Expr::Identifier { name: f, .. } if defined(f))
+                                        && args.iter().all(literal)
+                                }
+                                // A closure that computes from literals and its own
+                                // parameters only (`|| "a"`, `|x| { x + 1 }`): it
+                                // calls nothing and captures nothing, so it holds
+                                // no authority and its entry cannot be short.
+                                Expr::Lambda { params, body, .. } => {
+                                    let names: HashSet<&str> = params.iter().map(|p| p.name.as_str()).collect();
+                                    Self::lambda_inert(body, &names)
+                                }
+                                _ => false,
+                            };
+                            if stable_init {
+                                st.stable.insert(name.clone());
                             }
-                            _ => false,
-                        };
-                        if stable_init {
-                            st.stable.insert(name.clone());
                         }
                     }
                 }
@@ -3977,6 +4006,33 @@ impl CapabilityChecker {
             }
             Stmt::DenyBlock { body, .. } => self.pristine_block(body, st),
             Stmt::Break { .. } | Stmt::Continue { .. } => {}
+        }
+    }
+
+    /// Whether the body of a closure only computes from literals and the
+    /// closure's own parameters: it calls nothing, names no other local and
+    /// opens no block with statements, so invoking it needs no capability and
+    /// returns nothing but a value.
+    fn lambda_inert(e: &Expr, params: &HashSet<&str>) -> bool {
+        use kryos_ast::StringPart;
+        match e {
+            Expr::IntLiteral { .. }
+            | Expr::FloatLiteral { .. }
+            | Expr::StringLiteral { .. }
+            | Expr::CharLiteral { .. }
+            | Expr::BoolLiteral { .. } => true,
+            Expr::Identifier { name, .. } => params.contains(name.as_str()),
+            Expr::BinaryOp { left, right, .. } => Self::lambda_inert(left, params) && Self::lambda_inert(right, params),
+            Expr::UnaryOp { operand, .. } => Self::lambda_inert(operand, params),
+            Expr::InterpolatedString { parts, .. } => parts.iter().all(|p| match p {
+                StringPart::Literal(_) => true,
+                StringPart::Expr(x) => Self::lambda_inert(x, params),
+            }),
+            Expr::Block { block, .. } => {
+                block.stmts.len() == 1
+                    && matches!(&block.stmts[0], Stmt::Expr { expr, .. } if Self::lambda_inert(expr, params))
+            }
+            _ => false,
         }
     }
 

@@ -1540,15 +1540,20 @@ done
 # The controls: the pure twin of a hidden return handed through a local closure, the pure registries of the
 # verifier of PR 41 (its programs P1 and P3, accepted by master and rejected by PR 41's head) read through a
 # local closure, a lookup closure over a pure array and a pure map, and a registry holding a PRIVILEGED closure
-# read through a local closure inside a block that denies a different capability (its program L3e). They must
-# be accepted in both modes, and the two registries with output must still print it.
+# read through a local closure inside a block that denies a different capability (its program L3e), and three
+# natural neighbours (a registry of local closures that compute from literals, one a factory builds, one declared
+# `mut` that nothing changes). They must be accepted in both modes, and the two registries with output must still
+# print it.
 S130_CONTROLS="ctl_shape_local_hidden_return_match_stmt_pure \
     ctl_shape_nested_fn_hidden_return_match_stmt_pure \
     ctl_shape_container_registry_via_id \
     ctl_shape_container_array_via_id \
     ctl_shape_container_lookup_closure \
     ctl_shape_container_lookup_map_closure \
-    ctl_shape_container_privileged_registry_other_deny"
+    ctl_shape_container_privileged_registry_other_deny \
+    ctl_shape_container_local_lambda_registry \
+    ctl_shape_container_factory_registry \
+    ctl_shape_container_mut_registry_unmutated"
 for ctl in $S130_CONTROLS; do
     ctl_ok=1
     for mode in "" "--strict-capabilities"; do

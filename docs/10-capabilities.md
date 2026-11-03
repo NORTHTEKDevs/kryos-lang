@@ -534,9 +534,10 @@ the closure's own authority). Every `return` outside a nested lambda is listed n
 functions, transparent accessors and factory literals alike. A value read out of a container
 (`id(reg.items[0])`, or a lookup closure `|i| { items[i] }`) and handed through a local closure is charged what
 invoking the same read directly is charged when the container is a local the program never changes or
-aliases: bound once by a plain `let`, read only through field and index reads whose values are named
-functions, builtins, lambdas, data literals or stable function-valued locals (`let r = make_reader("literal")`),
-plus `len` and `for`. Any other read stays `all`, which is also what a named function that returns such a read
+aliases: bound once by a `let` of a literal (or of a call to a factory without parameters whose returned literal
+is known), read only through field and index reads whose values are named functions, builtins, lambdas, data literals
+or stable function-valued locals (`let r = make_reader("literal")`, or a closure that computes from literals and its own
+parameters), plus `len` and `for`. Any other read stays `all`, which is also what a named function that returns such a read
 is charged and what a container PARAMETER's element is charged at the call (the pure call and the leaking call
 of the same function get one answer: `fn pick(items, i) { let id = |g| { g }  return id(items[i]) }`). Rejected:
 `tests/security/attack_shape_*hidden_return*.kry`, `attack_named_fn_hidden_return_direct.kry`,

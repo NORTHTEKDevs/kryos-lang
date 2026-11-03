@@ -359,6 +359,38 @@ const CONTAINER_CONTROLS: &[Case] = &[
         deny: "let h = id(reg.items[0])\nprintln(h() + to_string(n + m))",
     },
     Case {
+        name: "registry of local closures that compute from literals",
+        decls: REGISTRY,
+        body: "let a = || \"a\"
+let b = || \"b\"
+let reg = Registry { items: [a, b] }
+let id = |g: fn() -> str| { g }",
+        deny: "let h = id(reg.items[0])
+println(h())",
+    },
+    Case {
+        name: "registry built by a factory without parameters",
+        decls: "struct Registry {
+    items: [fn() -> str],
+}
+fn make_reg() -> Registry {
+    return Registry { items: [harmless, other] }
+}
+",
+        body: "let reg = make_reg()
+let id = |g: fn() -> str| { g }",
+        deny: "let h = id(reg.items[1])
+println(h())",
+    },
+    Case {
+        name: "registry declared mut and never changed",
+        decls: REGISTRY,
+        body: "let mut reg = Registry { items: [harmless, other] }
+let id = |g: fn() -> str| { g }",
+        deny: "let h = id(reg.items[0])
+println(h())",
+    },
+    Case {
         name: "a parameter forwarded through an identity closure",
         decls: "fn run(g: fn() -> str) -> str {\n    let id = |x: fn() -> str| { x }\n    let h = id(g)\n    return h()\n}\n",
         body: "",
@@ -391,6 +423,74 @@ const CONTAINER_ATTACKS: &[Case] = &[
         name: "an inner let shadows the pristine array (inner last)",
         decls: "",
         body: "let items = [harmless, other]\nlet id = |g: fn() -> str| { g }\nlet run = |n: i64| {\n    let items = [reader]\n    return id(items[0])\n}\nlet h = run(1)",
+        deny: "println(h())",
+    },
+    Case {
+        name: "a factory-built registry that holds a privileged named function",
+        decls: "struct Registry {
+    items: [fn() -> str],
+}
+@capabilities(fs:read)
+fn read_secret() -> str {
+    return file_read(\"secret.txt\")
+}
+fn make_reg() -> Registry {
+    return Registry { items: [read_secret] }
+}
+",
+        body: "let reg = make_reg()
+let id = |g: fn() -> str| { g }",
+        deny: "let h = id(reg.items[0])
+println(h())",
+    },
+    Case {
+        name: "a registry leaf that is a local closure which reads the file",
+        decls: REGISTRY,
+        body: "let a = || file_read(\"secret.txt\")
+let reg = Registry { items: [harmless, a] }
+let id = |g: fn() -> str| { g }",
+        deny: "let h = id(reg.items[1])
+println(h())",
+    },
+    Case {
+        name: "a registry leaf closure that calls a local the program rebinds after the closure (the build order of the flat map)",
+        decls: REGISTRY,
+        body: "let mut g: fn() -> str = harmless
+let a = || g()
+let reg = Registry { items: [a] }
+let id = |g2: fn() -> str| { g2 }
+g = reader",
+        deny: "let h = id(reg.items[0])
+println(h())",
+    },
+    Case {
+        name: "a mut registry is reassigned",
+        decls: REGISTRY,
+        body: "let mut reg = Registry { items: [harmless] }
+let id = |g: fn() -> str| { g }
+reg = Registry { items: [reader] }",
+        deny: "let h = id(reg.items[0])
+println(h())",
+    },
+    Case {
+        name: "an element of a mut registry is overwritten",
+        decls: REGISTRY,
+        body: "let mut reg = Registry { items: [harmless] }
+let id = |g: fn() -> str| { g }
+reg.items[0] = reader",
+        deny: "let h = id(reg.items[0])
+println(h())",
+    },
+    Case {
+        name: "a for-loop variable shadows the pristine array",
+        decls: "",
+        body: "let items = [harmless, other]\nlet id = |g: fn() -> str| { g }\nlet mut h: fn() -> str = harmless\nfor items in [[reader]] {\n    h = id(items[0])\n}",
+        deny: "println(h())",
+    },
+    Case {
+        name: "a nested fn parameter shadows the pristine array",
+        decls: "",
+        body: "let items = [harmless, other]\nlet id = |g: fn() -> str| { g }\nfn inner(items: [fn() -> str]) -> fn() -> str {\n    return id(items[0])\n}\nlet h = inner([reader])",
         deny: "println(h())",
     },
     Case {

@@ -1,0 +1,19 @@
+// Control (a natural neighbour of the verifier's P1): a registry declared `mut` that nothing changes, read through a local identity closure, inside deny!(fs:read).
+// Master 7cab5799 accepted it; the PR 41 head and the first revise build rejected it (E0507 [all]). Every change of a container is an occurrence the scan disqualifies, whatever the declaration says: ACCEPTED in default and strict mode.
+fn hello() -> str {
+    return "hello"
+}
+fn world() -> str {
+    return "world"
+}
+struct Registry {
+    items: [fn() -> str],
+}
+fn main() {
+    let mut reg = Registry { items: [hello, world] }
+    let id = |g: fn() -> str| { g }
+    deny!(fs:read) {
+        let h = id(reg.items[0])
+        println("item: " + h())
+    }
+}

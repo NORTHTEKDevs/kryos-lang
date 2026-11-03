@@ -1,0 +1,15 @@
+// Control (a natural neighbour of the verifier's P1): a registry of LOCAL closures that compute from literals (`let a = || "a"`) read through a local identity closure, inside deny!(fs:read).
+// Master 7cab5799 accepted it; the PR 41 head and the first revise build rejected it (E0507 [all]). A closure that calls nothing and captures nothing holds no authority and is a stable leaf of a pristine registry: ACCEPTED in default and strict mode.
+struct Registry {
+    items: [fn() -> str],
+}
+fn main() {
+    let a = || "a"
+    let b = || "b"
+    let reg = Registry { items: [a, b] }
+    let id = |g: fn() -> str| { g }
+    deny!(fs:read) {
+        let h = id(reg.items[0])
+        println("item: " + h())
+    }
+}
