@@ -1,80 +1,66 @@
 # Kryos benchmark suite
 
-Microbenchmarks comparing Kryos against equivalent Rust and C
-implementations of six standard programs.
+Seven programs, each written in Kryos and ported to the languages it is
+compared against. The published numbers, with the commit and machine they were
+measured on, are in [`../BENCHMARKS.md`](../BENCHMARKS.md).
 
 ## What's here
 
 ```
 benchmarks/
-  kryos/          Kryos sources (.kry)
-  rust/           Rust sources (.rs)
-  c/              C sources (.c)
-  run.sh          Build + time everything; writes RESULTS.md
-  RESULTS.md      Latest committed numbers
-  bin/            Build artifacts (gitignored)
+  kryos/             Kryos sources (.kry)
+  rust/ c/ cpp/      Rust, C and C++ ports (hashmap has no C port)
+  go/ python/        Go and Python ports
+  mojo/              Mojo ports of fib, mandelbrot and matmul (timed only when
+                     a `mojo` binary is on PATH)
+  measure.py         Builds and times every port; writes results.json and
+                     results_table.md
+  check_outputs.py   Runs every measured port once; fails unless all ports of
+                     a benchmark print the same output
+  results.json       Medians and min..max spreads from the last measure.py run
+  results_table.md   The table measure.py generates from results.json
+  RESULTS.md         Short summary of ../BENCHMARKS.md
+  run.sh             Deprecated runner, kept for reference
+  fib.* mandelbrot.* Older single-file copies of two benchmarks; measure.py
+                     does not use them
+  ai-codeability/    A separate benchmark of how well an AI model writes
+                     Kryos; see its README.md
+  bin/               Build artifacts (gitignored)
 ```
 
-Six programs:
+| Program        | What it tests                                                  |
+| -------------- | -------------------------------------------------------------- |
+| `fib`          | recursive function calls: fib(40)                              |
+| `mandelbrot`   | a tight floating-point loop: 1000x1000 points, 1000 iterations |
+| `nbody`        | floating-point math on arrays: 5 bodies, 2,000,000 steps       |
+| `binary_trees` | allocation and recursion: trees of depth 16                    |
+| `fannkuch`     | array permutation in nested loops: n = 10                      |
+| `matmul`       | nested-loop integer arithmetic: 512x512 matrices               |
+| `hashmap`      | map throughput: 1,000,000 inserts, then 1,000,000 lookups      |
 
-| Program        | What it tests                                  |
-| -------------- | ---------------------------------------------- |
-| `fib`          | recursive function-call overhead               |
-| `mandelbrot`   | tight floating-point loop                      |
-| `nbody`        | floating-point + indexed array mutation        |
-| `binary_trees` | deep recursion                                 |
-| `fannkuch`     | array mutation + nested loops                  |
-| `matmul`       | nested-loop integer arithmetic                 |
+The `strings` sources are not measured: the Kryos port builds its string with
+`s = s + token`, which is O(n^2), so it would not be a like-for-like comparison
+(see the comment at `BENCHES` in `measure.py`).
 
 ## Running
 
 ```bash
-cd benchmarks
-./run.sh
+python benchmarks/measure.py         # warmup + 5 timed runs per port; reports the median
+python benchmarks/check_outputs.py   # then check that every port printed the same output
 ```
 
-Requires: a `kryos` binary (the script looks at
-`../compiler/target/release/kryos`), `rustc`, and `cc`. Times are best of
-three runs, measured with Python's `time.monotonic()` for cross-platform
-millisecond resolution. Results are written to `RESULTS.md`.
-
-## How to read the numbers
-
-The default Kryos backend is **Cranelift** (fast compile, decent perf).
-The release backend is **LLVM** (slow compile, peer-to-rustc perf),
-gated by having `clang` on `PATH`. The numbers in `RESULTS.md` are
-Cranelift unless noted.
-
-For each benchmark we report:
-
-- **Kryos** wall-clock (best of 3).
-- **Rust** built with `rustc -O` (i.e. `--opt-level=3`).
-- **C** built with `cc -O2`.
-- **Kryos / C** ratio: how much slower Kryos is than C.
-
-A ratio of ~1.0 means Kryos is hitting peer-language perf on that
-workload. Ratios above ~10 usually indicate a missing optimization
-(inlining, register allocation, memcpy intrinsic, etc.) that we haven't
-implemented in Cranelift codegen yet.
-
-## Known gaps (May 2026)
-
-- **`fib(35)` is slow** (~100x). Cranelift does not currently inline
-  small recursive functions; this is the worst-case scenario.
-  `mandelbrot` and `nbody` show Cranelift can hit parity when the hot
-  path is a long loop instead of a deep call chain.
-- **`binary_trees`** suffers the same recursion penalty.
-- **`fannkuch`** spends time in array bounds checks and length reads;
-  loop-invariant code motion could remove much of this.
-
-These gaps are tracked separately. The benchmark suite's job is to make
-them visible and to catch regressions, not to mask them.
+`measure.py` uses the release build of the compiler at
+`compiler/target/release/kryos` (`cargo build --release` in `compiler/`), the
+Python interpreter that runs it, and whichever of `rustc`, `clang`, `clang++`,
+`go` and `mojo` it finds. A toolchain that is not found is reported as `n/a`,
+never estimated. `kryos-llvm` is `kryos build --release --backend llvm`;
+`kryos-cranelift` is `kryos build` (the dev backend).
 
 ## Adding a benchmark
 
-1.  Write `kryos/foo.kry`, `rust/foo.rs`, `c/foo.c` — all three should
-    compute the **same checksum or output** so we can verify correctness.
-2.  Add `foo` to the `BENCHES=(...)` array in `run.sh`.
-3.  Add an entry to the README and the `## Notes` block at the bottom of
-    `run.sh`.
-4.  Re-run `./run.sh` and commit the updated `RESULTS.md`.
+1. Write `kryos/foo.kry` and its ports (`rust/foo.rs`, `c/foo.c`,
+   `cpp/foo.cpp`, `go/foo.go`, `python/foo.py`). Every port must print the
+   same output.
+2. Add `foo` to `BENCHES` in `measure.py`.
+3. Run `measure.py`, then `check_outputs.py`, and update `../BENCHMARKS.md`
+   with the new table and the commit you measured.

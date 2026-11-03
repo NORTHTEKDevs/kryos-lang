@@ -32,12 +32,15 @@ else
         echo "        Re-run the benchmarks; the compiler moved since they were taken."
         fail=1
     fi
-    # The compiler must not have changed since the measurement.
-    if git diff --quiet "$sha" HEAD -- compiler/crates compiler/stdlib 2>/dev/null; then
-        echo "  ok   no compiler/stdlib change since the measurement"
+    # The compiler must not have changed since the measurement: its sources,
+    # its stdlib, and how it is built (the workspace manifest with the release
+    # profile, the lock file with the dependency versions, the cargo config).
+    compiler_paths="compiler/crates compiler/stdlib compiler/Cargo.toml compiler/Cargo.lock compiler/.cargo"
+    if git diff --quiet "$sha" HEAD -- $compiler_paths 2>/dev/null; then
+        echo "  ok   no compiler/stdlib/build-config change since the measurement"
     else
-        echo "  FAIL: compiler/ or stdlib/ changed after $sha -- benchmark numbers are stale"
-        git diff --stat "$sha" HEAD -- compiler/crates compiler/stdlib 2>/dev/null | tail -3 | sed 's/^/        /'
+        echo "  FAIL: the compiler, its stdlib or its build config changed after $sha -- benchmark numbers are stale"
+        git diff --stat "$sha" HEAD -- $compiler_paths 2>/dev/null | tail -3 | sed 's/^/        /'
         fail=1
     fi
 fi
