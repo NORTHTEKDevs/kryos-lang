@@ -57,7 +57,8 @@ $arch = if ([System.Environment]::Is64BitOperatingSystem) { "x86_64" } else {
 # actually cut AND published -- it is only used when the API is unreachable.
 # (2026-10-13: v1.1.0 published; the filter resolves to it live.)
 # (2026-10-31: v1.2.0 published; the filter resolves to it live.)
-$FALLBACK_VERSION = "v1.2.0"
+# (2026-11-03: v1.3.0 published; the filter resolves to it live.)
+$FALLBACK_VERSION = "v1.3.0"
 if ($env:KRYOS_VERSION) {
     $TAG = $env:KRYOS_VERSION
     Write-Host "Installing pinned version: $TAG"

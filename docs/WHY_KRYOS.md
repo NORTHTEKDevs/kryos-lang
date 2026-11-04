@@ -141,8 +141,8 @@ fn main() {
 Kryos is level with Rust (within 4%) on four of the 7 benchmarks and beats it
 outright on hashmap (0.59x). It trails on nbody (1.34x; level with clang and
 clang++ -O2 at 0.154s and 0.158s) and on binary_trees (1.88x; it was 1.42x at
-1.0.0-rc.2 and slowed in two steps, in 0.9.0 and in 1.1.0, for reasons not yet
-found, LEDGER item 137). Measured on 1.3.0, 2026-11-03. Full methodology,
+1.0.0-rc.2, and most of the slowdown is a memory leak: its `shared` nodes are
+never freed, LEDGER item 137). Measured on 1.3.0, 2026-11-03. Full methodology,
 spreads, and the per-benchmark analysis: [BENCHMARKS.md](../BENCHMARKS.md).
 
 The compiler applies five MIR-level optimization passes before handing off to the backend:

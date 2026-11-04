@@ -8599,18 +8599,80 @@ printed by `kryos build --help`) predates the fix of bypass B8: the cache is con
 the program in that build's mode, and its key covers the mode and every module file read (docs/STDLIB.md, `KRYOS_CACHE=1`). The
 help text understates the checking, it does not overstate it. Not changed in 1.3.0 because the release changes no compiler source. Closing: rewrite the doc comment.
 
-### 137. PERF -- binary_trees (`kryos build --release`) is 1.88x of Rust on 1.3.0; it was 1.42x at 1.0.0-rc.2 and slowed in two steps, in 0.9.0 and in 1.1.0 -- NOT FIXED
+### 137. LEAK + PERF -- values linked through `shared` pointers are never freed (release builds since 1.1.0, debug builds on every version), which also makes binary_trees 1.88x of Rust -- NOT FIXED
 
-Found by the 1.3.0 benchmark run (2026-11-03, BENCHMARKS.md, measured at `cbd88996`): binary_trees (depth 16) takes 1.455 s, median
-of 5, against Rust's 0.772 s; the rc.2 table (2026-07-10) had 1.097 s against 0.773 s. The other six benchmarks keep their rc.2
-ratios to within 3%, except hashmap (0.65x -> 0.59x, because Rust's time rose from 0.127 s to 0.147 s). Timed side by side in one
-session (interleaved, 7 runs each after a warmup), `benchmarks/kryos/binary_trees.kry` (unchanged since 2026-06-14) built by each
-release's own Windows compiler (`kryos build --release --backend llvm`; every zip's sha256 matches its published .sha256 file):
-1.0.0-rc.2 1.065 s, 0.9.0 1.223 s, 1.0.0 1.250 s, 1.0.1 1.217 s, 1.1.0 1.387 s, 1.2.0 1.392 s, 1.3.0 1.436 s; the Rust build in
-`benchmarks/bin/` 0.742 s. Every build printed the same checksum (14723759). So it slowed in two steps of about 15% each: between
-rc.2 (tag 2026-07-09) and 0.9.0 (2026-08-20), and between 1.0.1 (2026-10-06) and 1.1.0 (2026-10-13). 1.3.0 is within 4% of 1.1.0
-and 1.2.0, inside run-to-run spread. No correctness effect. Closing: bisect `v1.0.0-rc.2..v0.9.0` and `v1.0.1..v1.1.0` with this
-benchmark, then fix each cause or document what it buys.
+Found by the 1.3.0 benchmark run (2026-11-03, BENCHMARKS.md, measured at `cbd88996`); investigated the same day after the v1.3.0 tag
+was prepared (workflows `ledger137-binary-trees` and `shared-leak-fix-design`: investigators plus adversarial verifiers; their
+outputs are summarized here, and every number below was re-measured by hand unless marked as code reading).
+
+Timing. binary_trees (depth 16) takes 1.455 s, median of 5, against Rust's 0.772 s; the rc.2 table (2026-07-10) had 1.097 s against
+0.773 s. Built by each release's own Windows compiler (`kryos build --release --backend llvm`; every zip's sha256 matches its
+published .sha256 file) and timed side by side (interleaved, 7 runs each after a warmup): 1.0.0-rc.2 1.065 s, 0.9.0 1.223 s, 1.0.0
+1.250 s, 1.0.1 1.217 s, 1.1.0 1.387 s, 1.2.0 1.392 s, 1.3.0 1.436 s; Rust 0.742 s.
+
+Memory (peak working set, one run each, PowerShell PeakWorkingSet64 polling; every build prints the same output):
+- binary_trees: rc.2 24.4 MB; 0.9.0 1,125.5 MB; 1.0.1 1,115.0 MB; 1.1.0 1,125.0 MB; 1.2.0 1,124.0 MB; 1.3.0 1,104.9 MB; Rust 12.0 MB.
+- Repro r1, a depth-10 `struct Tree { left: Option<shared Tree>, right: Option<shared Tree> }` built and let go out of scope, 3000
+  times, release builds: rc.2 4.7 MB, 0.9.0 4.6, 1.0.0 4.8, 1.0.1 4.7, 1.1.0 461.5, 1.2.0 454.8, 1.3.0 459.6.
+- Repro r7, a 2000-node `shared` singly linked list built and dropped 3000 times: release rc.2 4.9 MB, 1.3.0 464.7 MB; debug
+  (`kryos build` without `--release`) rc.2 741.3 MB, 1.3.0 726.2 MB.
+- Repro r3, the r1 tree passed as `sum = sum + check(t)`, release: rc.2 4.7 MB, 0.9.0 475.0, 1.0.0 468.1, 1.0.1 475.0, 1.1.0 458.8,
+  1.2.0 463.6, 1.3.0 475.1.
+- Not affected on 1.3.0: a plain struct with a `str` field passed as `sum = sum + f(p)` 1,000,000 times (4.5 MB); a recursive struct
+  built from arrays (`struct Node { kids: [Node], v: i64 }`, depth 10, 3000 times) on both backends (4.8 MB; it leaked 1,317.9 MB on
+  rc.2, so the 1.1.0 ownership work fixed that shape).
+
+Causes (code reading plus MIR/LLVM IR diffs; not yet confirmed by building a commit and its parent):
+- A, release builds since 1.1.0 (r1, r7): the MIR of r1 and r7 is byte-identical between rc.2 and 1.3.0; what changed is LLVM codegen.
+  81c61df6 (first in 1.1.0) made the LLVM struct-literal lowering take its own reference to the payload of a shareable enum field
+  (`kryos-codegen-llvm/src/codegen.rs` ~10316-10330, `emit_enum_share_payload` ~12479), on the contract that MIR drops the source temp.
+  MIR does not: `infer_expr_type` (`kryos-mir/src/lower.rs` ~13401-14497) has no arm for `shared X`, so `Some(shared X)` keeps the
+  generic template type `Option` (`infer_generic_variant_instance` ~20436 returns None on a Void argument), which is not an owned enum,
+  so no `drop(tmp)` follows the literal. Each child arc ends at count 2, the parent's drop brings it to 1, and `__kryos_arc_drop_<T>`
+  never runs. Giving the temp its real type (an annotated local, or a call returning `shared T`) makes MIR emit the drop and measures
+  flat (4.4-5.0 MB).
+- B, the r3 shape since 1.1.0: `fn check(t: Tree)` is a callee-owned struct param (entry share, aefc3b6d/81c61df6), and
+  `match t.left` is a field read of an enum that marks the param partially moved (the retained-read exemption, `lower.rs` ~16243,
+  lists only Str/Array/Map/DynTrait), so the param gets no scope-end or return drop and its entry share is never released. On
+  0.9.0-1.0.1 the r3 leak came instead from 1a23fab2 (an embedded call consumed its struct argument; main lost `drop(t)`).
+- C, debug builds on every version: Cranelift `RValue::ArcAlloc` (`kryos-codegen-cranelift/src/codegen.rs` ~6378-6389) stores the
+  struct box pointer in an 8-byte arc slot and never calls `kryos_arc_set_drop`, so the inner box is never released.
+
+Fixing this is NOT a one-line change. Both adversarial reviews of the first fix design (2026-11-03) judged it unsound: today a
+`shared` payload bind that escapes a match arm (`Some(s) => return s`) takes no reference of its own and is kept alive only by the
+leaked references; fixing A and B alone turns that into a use-after-free. Order of work: (1) give a `shared` payload bind its own
+reference (or retain at every escape), pinned by a value-asserting test that reuses freed memory between the escape and the use;
+(2) fix A by typing the `Some(shared X)` temp (narrowly, in `infer_generic_variant_instance`); (3) fix B by giving a field-read match
+subject its own short-lived reference and keeping the param's drop; (4) fix C or record it as expected-red. Regression pins: r1, r3,
+r7 and binary_trees (peak at two scales, the binary_trees ceiling 40 MB with checksum 14723759), a live-arc counter if the runtime
+can expose one, and real-free runs with exit-code and heap-corruption checks. Related: items 138 and 139.
+
+### 138. MEMORY SAFETY -- `return shared x` for a by-value struct param, linked into a list, corrupts the heap in release builds since 1.1.0 -- NOT FIXED
+
+Found 2026-11-03 while investigating item 137. Repro:
+
+    struct L { next: Option<shared L>, v: i64 }
+    fn wrap(x: L) -> shared L { return shared x }
+    fn chain(n: i64) -> L {
+        if n == 0 { return L { next: None(), v: 0 } }
+        return L { next: Some(wrap(chain(n - 1))), v: n }
+    }
+    // main: build chain(50) three times
+
+(one statement per line in the real file). Release builds (`kryos build --release`) of 1.1.0, 1.2.0 and 1.3.0 exit with
+`0xC0000374` (STATUS_HEAP_CORRUPTION) and no output; 0.9.0, 1.0.0 and 1.0.1 print `done`, and so does the 1.3.0 debug build. A smaller
+shape (wrap one value, link it once, match it) runs on 1.3.0 and aborts on rc.2 with `0x80000003`. Not yet root-caused (the item-137
+fix design guesses a double release of the param, from the crash alone). A memory-safety defect in code with no `unsafe` and no capability.
+Closing: root-cause, fix, and pin both shapes on both backends with real frees and an exit-code check.
+
+### 139. LEAK -- a `match` on an `Option` field of a struct passed by value does not free the field's payload, on every version -- NOT FIXED
+
+Found 2026-11-03 while investigating item 137 (item 137's cause B, which is not specific to `shared`). Repro:
+`struct In { s: str }`, `struct Hold { o: Option<In>, n: i64 }`, `fn f(h: Hold) -> i64 { match h.o { Option.Some(x) => return len(x.s), Option.None => return 0 } }`,
+called as `sum = sum + f(h)` with a fresh `Hold` 1,000,000 times. Peak working set, release builds: rc.2 97.1 MB, 1.0.1 125.0 MB,
+1.1.0 127.7 MB, 1.3.0 127.7 MB (a non-leaking loop of this size peaks at about 4.5 MB): about 100 bytes per call, on every version
+measured. Cause (code reading, item 137 B): the field read marks the param partially moved, so the param is not dropped. Closing: fix
+with item 137 step (3), and pin it at two scales.
 
 ---
 

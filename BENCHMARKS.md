@@ -30,8 +30,10 @@ on two.
   1.0.0 1.250 s, 1.0.1 1.217 s, 1.1.0 1.387 s, 1.2.0 1.392 s, 1.3.0 1.436 s,
   against Rust's 0.742 s. It slowed in two steps of about 15% each: between
   rc.2 and 0.9.0, and between 1.0.1 and 1.1.0. 1.3.0 is within 4% of 1.1.0 and
-  1.2.0, inside run-to-run spread. The causes are not yet known:
-  [LEDGER item 137](./tools/loop/LEDGER.md).
+  1.2.0, inside run-to-run spread. Found after this run: most of it is a memory
+  leak. The tree's `shared` nodes are never freed (since 0.9.0 in this program,
+  since 1.1.0 for any `shared` structure), and the run peaks at 1.1 GB, against
+  24 MB at rc.2: [LEDGER item 137](./tools/loop/LEDGER.md).
 - **Level with Rust (0.96x to 1.04x, inside run-to-run spread):** fib 1.01x,
   mandelbrot 1.00x, fannkuch 1.04x, matmul 0.96x. On matmul Go is faster than
   all of them (0.561 s against Kryos's 0.620 s).
@@ -97,8 +99,9 @@ the run is **leak-free: 24 MB peak** (was 1.1 GB while the teardown was
 missing), an apples-to-apples comparison against the freeing C/Rust/Go ports.
 The residual 1.45x vs Rust is mostly Rc refcount traffic vs Rust's `Box`
 unique-ownership; Go (0.488s) wins via its GC bump allocator. checksum
-14723759, identical on both backends. (Measured 2026-06. On 1.3.0 binary_trees
-is 1.88x: see the headline and LEDGER item 137.)
+14723759, identical on both backends. (Measured 2026-06. It is no longer true:
+since 1.1.0 the `shared` nodes are never freed, the run peaks at 1.1 GB, and on
+1.3.0 binary_trees is 1.88x. See the headline and LEDGER item 137.)
 
 ## Methodology
 
@@ -171,10 +174,10 @@ bootstrap (stage-2 == stage-3 == stage-4, fixed point held):
 
 ## Still planned
 
-- binary_trees: find what slowed it down between rc.2 and 0.9.0 and between
-  1.0.1 and 1.1.0 (LEDGER item 137). Beyond that, a unique-ownership `Box` (no
-  refcount) or an arena would close most of the remaining gap to Rust; Rc-like
-  `Shared` is the idiomatic, safe default.
+- binary_trees: fix the `shared` leak and the extra reference counting behind
+  most of its slowdown (LEDGER item 137), then re-measure. Beyond that, a
+  unique-ownership `Box` (no refcount) or an arena would close most of the
+  remaining gap to Rust.
 - nbody's residual 1.34x: fair loop unroll/vectorize hints (the trip count is a
   runtime `let n = 5`, blocking full unroll).
 - A liveness-gated consuming string-append intrinsic (the sound version of the

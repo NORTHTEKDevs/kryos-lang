@@ -120,3 +120,40 @@ planned unified ownership pass lands.
 - The vsix is still `1.0.0` (no extension change since v1.0.1), and
   `publish-vscode.yml` is dispatch-only; the Marketplace publish stays the
   OPEN owner action above (`VSCE_PAT` expired).
+
+## v1.3.0 (2026-11-03)
+
+- Capability-boundary release: the capability fixes of PRs #18 and #38 to
+  #40, docs/THREAT-MODEL.md with the escape corpus frozen and documented
+  (PR #42), and the benchmarks re-measured on this compiler (PR #43). Tagged
+  on the merge commit `64510429`.
+- Release check: every node of `tools/loop/GRAPH.md` is green at
+  `64510429` (`graph-run.sh status`: 8/8, "DONE"), and release-ready's
+  `verify-all --except release-ready` ran GREEN in one uninterrupted pass.
+  Claude Code's memory guard stopped two background runs on the way, so the
+  nodes before release-ready were verified one at a time, all at the same
+  commit.
+- Release workflow 41771740062 green on all 7 jobs. v1.3.0 is Latest, with
+  all four platform archives and their `.sha256`, the vsix (now `1.3.0`) and
+  the zed wasm. Downloaded and checked:
+  - every checksum matches;
+  - the Windows binary reports `kryos 1.3.0` and runs a smoke program
+    identically on JIT and AOT;
+  - it runs the fresh-user flow (`new` -> `run` -> `test` ->
+    `build --release` -> run the binary, plus a stdlib import);
+  - the Linux binary reports `kryos 1.3.0` in an ubuntu:24.04 container;
+  - the live install.ps1 installs `v1.3.0`.
+  Installer fallback floor bumped to `v1.3.0`.
+- Found during the release check and disclosed on the release page. All of
+  these are already in 1.2.0:
+  - values linked through `shared` pointers are never freed;
+  - `return shared <param>`, linked into a list, corrupts the heap in
+    release builds;
+  - a `match` on an `Option` field of a by-value struct param leaks its
+    payload.
+  They are LEDGER items 137 to 139, and fixing them is the next release.
+  Item 137 summarizes the fix design and its two adversarial reviews. Both
+  reviews judged the naive fix unsound until a `shared` payload bind takes
+  its own reference.
+- OPEN (owner): the Marketplace publish (not attempted for 1.3.0; see
+  v1.0.1) and the announcement.

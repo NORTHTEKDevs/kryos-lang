@@ -21,8 +21,8 @@ Medians of 5 runs, seconds (lower is better). Last refresh: **1.3.0,
 
 Kryos is level with Rust (within 4%) on four of the 7 benchmarks and beats it
 outright on hashmap. It trails on nbody (1.34x) and binary_trees (1.88x).
-binary_trees was 1.42x at 1.0.0-rc.2: it slowed in two steps, in 0.9.0 and in
-1.1.0, for reasons not yet found (LEDGER item 137).
+binary_trees was 1.42x at 1.0.0-rc.2: most of the slowdown is a memory leak,
+because its `shared` nodes are never freed (LEDGER item 137).
 
 See [`../BENCHMARKS.md`](../BENCHMARKS.md) for full methodology, per-benchmark
 analysis, spreads, the Cranelift column, and startup floors.

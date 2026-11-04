@@ -77,7 +77,8 @@ echo "Installing Kryos ($PLATFORM-$ARCH)..."
 # actually cut AND published -- it is only used when the API is unreachable.
 # (2026-10-13: v1.1.0 published; the filter resolves to it live.)
 # (2026-10-31: v1.2.0 published; the filter resolves to it live.)
-FALLBACK_VERSION="v1.2.0"
+# (2026-11-03: v1.3.0 published; the filter resolves to it live.)
+FALLBACK_VERSION="v1.3.0"
 if [ -n "${KRYOS_VERSION:-}" ]; then
     TAG="$KRYOS_VERSION"
     echo "Installing pinned version: $TAG"
