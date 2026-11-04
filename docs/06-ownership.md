@@ -1,6 +1,6 @@
 # Ownership
 
-> **Implementation Status:** Kryos uses ARC (automatic reference counting) for heap-backed values (`str`, `[T]`, `map<K, V>`, structs/enums) and `Copy` semantics for primitives (`i64`, `f64`, `bool`, ...). Passing a value to a function **shares** it (a refcount bump), not a destructive move — reusing the original binding afterward is safe and compiles cleanly on both backends. The compiler runs an advisory ownership/borrow analyzer that surfaces move/borrow *diagnostics* (`E0300` and friends) for signal, but it does **not** block reuse of ARC-backed values. Shared references (`&T`) and mutable references (`&mut T`) are parsed and type-checked; full borrow-checking enforcement (preventing overlapping `&mut`) is not yet implemented.
+> **Implementation Status:** Kryos uses ARC (automatic reference counting) for heap-backed values (`str`, `[T]`, `map<K, V>`, structs/enums) and `Copy` semantics for primitives (`i64`, `f64`, `bool`, ...). Passing a value to a function **shares** it (a refcount bump), not a destructive move - reusing the original binding afterward is safe and compiles cleanly on both backends. The compiler runs an advisory ownership/borrow analyzer that surfaces move/borrow *diagnostics* (`E0300` and friends) for signal, but it does **not** block reuse of ARC-backed values. Shared references (`&T`) and mutable references (`&mut T`) are parsed and type-checked; full borrow-checking enforcement (preventing overlapping `&mut`) is not yet implemented.
 
 This chapter explains how Kryos manages memory without a garbage collector and without forcing you to think about destructive moves the way Rust does.
 
@@ -227,6 +227,8 @@ Kryos's memory model is inspired by Rust's ownership vocabulary but lands closer
 | `Rc`, `Arc`, `Box` | Smart pointer types you opt into | Every heap-backed value is ARC'd by default; no wrapper types needed |
 
 The core guarantee is the same: no use-after-free, no double-free, no dangling pointers. Kryos gets there with refcounting plus deep-copy-on-assign instead of a borrow checker, which trades some of Rust's zero-copy guarantees for a model where "just reuse the value" always works.
+
+Known exceptions on 1.3.0 (open defects in `tools/loop/LEDGER.md`): values linked through `shared` pointers, such as the `Option<shared T>` fields of a tree or a list, are never freed (item 137); in release builds, wrapping a struct parameter with `shared` and returning it, then linking the results, corrupts the heap (item 138); and a `match` on an `Option` field of a struct passed by value does not free the field's payload (item 139). Recursive structures built from arrays (`kids: [Node]`) are freed normally.
 
 ## Coming from Rust
 

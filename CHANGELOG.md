@@ -278,6 +278,23 @@ is pinned by the new `tests/bypass_gate.sh` (programs in `tests/bypass/`).
   0.9.0 and in 1.1.0; 1.3.0 is within run-to-run spread of 1.1.0 and 1.2.0.
   The causes are not known yet (LEDGER item 137).
 
+Known memory issues, found during the 1.3.0 release check and recorded here
+after the tag (they are on the v1.3.0 release page too). Every one is also in
+1.2.0. The binary_trees slowdown above is mostly the first of them.
+
+- **Values linked through `shared` pointers are never freed** (LEDGER item
+  137): the `Option<shared T>` fields of a tree or a list, in release builds
+  since 1.1.0 (since 0.9.0 when the value is passed to a function inside a
+  larger expression), and in debug builds on every version. binary_trees
+  peaks at 1.1 GB, against 24 MB at 1.0.0-rc.2. Recursive structures built
+  from arrays (`struct Node { kids: [Node] }`) are freed normally.
+- **Heap corruption** (LEDGER item 138): in release builds since 1.1.0,
+  `fn wrap(x: L) -> shared L { return shared x }` used to link a list aborts
+  the process with `0xC0000374`.
+- **A `match` on an `Option` field of a struct passed by value does not free
+  the field's payload** (LEDGER item 139), about 100 bytes per call, on every
+  version.
+
 ## [1.2.0] - 2026-10-31
 
 Correctness and memory-safety release. It fixes a silent miscompile, five
