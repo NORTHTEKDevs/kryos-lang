@@ -151,6 +151,7 @@ pub extern "C" fn kryos_exception_report_thread_fatal_if_pending() -> i64 {
     if !printed {
         eprintln!("kryos: uncaught exception in spawned thread (value: {value})");
     }
+    crate::allocstats::report();
     std::process::exit(UNCAUGHT_EXCEPTION_EXIT_CODE);
 }
 
@@ -208,6 +209,7 @@ pub extern "C" fn kryos_actor_report_exception(label: i64, exc_val: i64) -> i64 
     if !printed {
         eprintln!("[actor error] {label_text}: uncaught exception (value: {exc_val})");
     }
+    crate::allocstats::report();
     std::process::exit(UNCAUGHT_EXCEPTION_EXIT_CODE);
 }
 
@@ -243,6 +245,7 @@ pub extern "C" fn kryos_exception_report_uncaught_if_pending() {
     if !printed {
         eprintln!("kryos: uncaught exception (value: {value})");
     }
+    crate::allocstats::report();
     std::process::exit(UNCAUGHT_EXCEPTION_EXIT_CODE);
 }
 

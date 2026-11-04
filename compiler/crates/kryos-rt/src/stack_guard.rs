@@ -66,6 +66,9 @@ pub extern "C" fn kryos_rt_init() {
     // kryos-codegen-llvm's emit_main_wrapper), before any user code runs,
     // so this now covers every AOT program regardless of allocator path.
     crate::fault::install();
+    // KRYOS_ALLOC_STATS: decide now so even an allocation-free program
+    // registers its exit-time report.
+    crate::allocstats::init();
 }
 
 // ---------------------------------------------------------------------------

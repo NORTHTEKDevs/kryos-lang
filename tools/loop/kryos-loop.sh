@@ -210,6 +210,9 @@ cmd_gates() {
     run "strict_caps"         bash tests/strict_caps_examples.sh
     run "examples_e2e"        bash tests/run_examples_e2e.sh
     run "ir_signatures"       bash tests/ir_signature_gate.sh
+    # Arc/box balance counts (KRYOS_ALLOC_STATS) pinned exactly per row:
+    # fails on a regression AND when a fix lands without the table edit.
+    run "mem_balance" bash tests/mem_balance_gate.sh
     # Whole-program check of the self-host compiler under a time ceiling.
     # Tier 2 rather than tier 1: it costs ~50s, and it is a behaviour gate
     # (does the front end still SCALE), not a fast correctness one. See the
