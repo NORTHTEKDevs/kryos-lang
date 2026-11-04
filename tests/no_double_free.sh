@@ -476,6 +476,11 @@ no_df_both result_inline_match "$ROOT/tests/conformance/conf_result_inline_match
 no_df_both readonly_builtin_args "$ROOT/tests/conformance/conf_readonly_builtin_args.kry"
 no_df_both array_contains "$ROOT/tests/conformance/conf_array_contains.kry"
 no_df_both empty_string_and_tuple_pop "$ROOT/tests/conformance/conf_empty_string_and_tuple_pop.kry"
+# `shared` structure ownership (1.3.1 memory-fix wave): trees, lists and one
+# shared leaf aliased by two parents. Green today only because the shared arcs
+# are never freed (LEDGER item 137); it is the use-after-free tripwire for the
+# fix, which turns those arcs into real frees.
+no_df_both shared_ownership "$ROOT/tests/mem/shared_ownership.kry"
 
 if [ "$fail" -eq 0 ]; then
   echo "no-double-free: all programs clean (no rc-0 frees)"

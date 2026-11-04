@@ -134,6 +134,8 @@ pub extern "C" fn kryos_arc_alloc(size: usize, align: usize) -> *mut u8 {
         std::ptr::write_bytes(base.add(offset), 0, size);
     }
 
+    crate::allocstats::note_arc_alloc();
+
     // Return pointer to user data (base + offset).
     unsafe { base.add(offset) }
 }
@@ -231,6 +233,7 @@ pub extern "C" fn kryos_arc_release(ptr: *mut u8) {
             if prev == 1 {
                 // Quarantine: poison the magic, skip drop_fn + dealloc.
                 std::ptr::write_unaligned(&mut (*header).magic as *mut u64, ARC_FREED_MAGIC);
+                crate::allocstats::note_arc_free();
             } else if prev == 0 || prev > usize::MAX / 2 {
                 crate::diag_report(&format!("arc UNDERFLOW-RELEASE prev={prev} ptr={ptr:p}"));
             }
@@ -259,6 +262,7 @@ pub extern "C" fn kryos_arc_release(ptr: *mut u8) {
             }
 
             // Deallocate the entire block.
+            crate::allocstats::note_arc_free();
             let (combined, _) = arc_layout(size, align).unwrap();
             std::alloc::dealloc(header as *mut u8, combined);
         }

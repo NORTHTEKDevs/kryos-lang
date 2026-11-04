@@ -46,6 +46,7 @@ pub extern "C" fn kryos_panic(msg_ptr: *const u8, msg_len: usize) -> ! {
     }
     let _ = writeln!(std::io::stderr(), "{}{}", formatted, stack);
     let _ = std::io::stderr().flush();
+    crate::allocstats::report();
     std::process::exit(98);
 }
 
