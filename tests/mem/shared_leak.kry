@@ -1,0 +1,118 @@
+// Leak / balance probe for `shared` structures and by-value struct params
+// (LEDGER items 137 and 139). Each mode builds and drops a structure
+// LEAK_ITERS times. Two readers:
+//   tests/mem_balance_gate.sh  runs it with KRYOS_ALLOC_STATS=1 and a small
+//                              LEAK_ITERS and checks the exit-time live counts.
+//   a peak-RSS poller          a leak grows RSS linearly with LEAK_ITERS.
+// Modes (LEAK_MODE):
+//   tree_drop      r1: depth-10 Option<shared Tree> built with `make`, dropped
+//   tree_let_call  r2: same tree, `let c = check(t)`
+//   tree_embedded  r3: same tree, `sum = sum + check(t)` (embedded call)
+//   list_drop      r7: 2000-node Option<shared L> singly linked list, dropped
+//   match_field    item 139: `match h.o` on an Option<In> field of a by-value
+//                  struct param, In holding a str
+//   shared_scalar  control: `let a = shared <int>`
+//   plain_embedded control: plain struct with a str field, `sum = sum + f(p)`
+//   array_tree     control: recursive struct built from arrays
+// Every mode prints one deterministic line: `mode <mode> sum <n>`.
+use std::option::{Option}
+
+struct Tree { left: Option<shared Tree>, right: Option<shared Tree> }
+struct L { next: Option<shared L>, v: i64 }
+struct P { name: str, n: i64 }
+struct Node { kids: [Node], v: i64 }
+struct In { s: str }
+struct Hold { o: Option<In>, n: i64 }
+
+fn make(depth: i64) -> Tree {
+    if depth == 0 {
+        return Tree { left: None(), right: None() }
+    }
+    return Tree {
+        left: Some(shared make(depth - 1)),
+        right: Some(shared make(depth - 1)),
+    }
+}
+
+fn check(t: Tree) -> i64 {
+    match t.left {
+        Option.None => return 1,
+        Option.Some(s) => {
+            match t.right {
+                Option.None => return 1,
+                Option.Some(r) => return 1 + check(*s) + check(*r),
+            }
+        },
+    }
+}
+
+fn chain(n: i64) -> L {
+    if n == 0 {
+        return L { next: None(), v: 0 }
+    }
+    return L { next: Some(shared chain(n - 1)), v: n }
+}
+
+fn f(p: P) -> i64 { return p.n + len(p.name) }
+
+fn hold_len(h: Hold) -> i64 {
+    match h.o {
+        Option.Some(x) => return len(x.s),
+        Option.None => return 0,
+    }
+}
+
+fn mk_node(depth: i64) -> Node {
+    if depth == 0 {
+        let empty: [Node] = []
+        return Node { kids: empty, v: 1 }
+    }
+    let mut ks: [Node] = []
+    ks = push(ks, mk_node(depth - 1))
+    ks = push(ks, mk_node(depth - 1))
+    return Node { kids: ks, v: depth }
+}
+
+fn count(n: Node) -> i64 {
+    let mut c = 1
+    for k in n.kids { c = c + count(k) }
+    return c
+}
+
+@capabilities(process)
+fn main() {
+    let n = parse_int(env_get("LEAK_ITERS"))
+    let mode = env_get("LEAK_MODE")
+    let mut i = 0
+    let mut sum = 0
+    while i < n {
+        if mode == "tree_drop" {
+            let t = make(10)
+            sum = sum + 1
+        } elif mode == "tree_let_call" {
+            let t = make(10)
+            let c = check(t)
+            sum = sum + c
+        } elif mode == "tree_embedded" {
+            let t = make(10)
+            sum = sum + check(t)
+        } elif mode == "list_drop" {
+            let c = chain(2000)
+            sum = sum + 1
+        } elif mode == "shared_scalar" {
+            let a = shared i
+            sum = sum + *a
+        } elif mode == "plain_embedded" {
+            let p = P { name: "name-" + to_string(i) + "-padding-padding-padding", n: i }
+            sum = sum + f(p)
+        } elif mode == "match_field" {
+            let h = Hold { o: Some(In { s: "payload-" + to_string(i) + "-pad" }), n: i }
+            sum = sum + hold_len(h)
+        } elif mode == "array_tree" {
+            let t = mk_node(10)
+            sum = sum + count(t)
+        }
+        i = i + 1
+    }
+    println("mode " + mode + " sum " + to_string(sum))
+}

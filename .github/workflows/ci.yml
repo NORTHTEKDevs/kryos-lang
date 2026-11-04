@@ -390,6 +390,21 @@ jobs:
         # PeakWorkingSet64 polling) -- SKIPs cleanly elsewhere.
         run: bash tests/mem_enum_overwrite_gate.sh
 
+      - name: Alloc/free balance gate (KRYOS_ALLOC_STATS counts) -- Linux, NOT YET BLOCKING
+        # Builds tests/mem/shared_leak.kry on both backends and compares the
+        # exit-time arc/box live counts (arc/box balance only; strings, arrays
+        # and maps are not counted) with the pinned table in the script.
+        # The table was measured on WINDOWS ONLY (e.g. plain_embedded/llvm
+        # allocates no box there because LLVM keeps the struct inline; other
+        # platforms may inline differently). Until a CI run on this runner
+        # confirms the numbers, a red result must not break master:
+        # continue-on-error. TODO: once the first CI run shows this step green
+        # (or the table is corrected from its output), delete the
+        # continue-on-error line so it becomes blocking. The Windows job below
+        # is already blocking.
+        continue-on-error: true
+        run: bash tests/mem_balance_gate.sh
+
       - name: Backend parity matrix (Cranelift vs LLVM)
         shell: bash
         # Runs every tests/smoke/*.kry under both backends; classifies LLVM
@@ -779,6 +794,14 @@ jobs:
           printf "Hello, Kryos!\n" > hello_expected.txt
           diff hello_expected.txt hello_output.txt
 
+      - name: Alloc/free balance gate (KRYOS_ALLOC_STATS counts) -- macOS, NOT YET BLOCKING
+        shell: bash
+        # Same pinned table as the Linux job (arc/box balance only), measured
+        # on Windows only. continue-on-error until a CI run on this runner
+        # confirms the numbers; then delete the line to make it blocking.
+        continue-on-error: true
+        run: bash tests/mem_balance_gate.sh
+
       - name: Backend parity matrix
         shell: bash
         # Re-runs all smoke tests under both backends; the Darwin port
@@ -955,6 +978,13 @@ jobs:
           KRYOS: ${{ github.workspace }}/compiler/target/release/kryos.exe
           KRYOS_STDLIB_DIR: ${{ github.workspace }}/compiler/stdlib
         run: bash tests/repl_capability_gate.sh
+
+      - name: Alloc/free balance gate (KRYOS_ALLOC_STATS counts) -- Windows (blocking; the table was measured here)
+        shell: bash
+        env:
+          KRYOS_BIN: ${{ github.workspace }}/compiler/target/release/kryos.exe
+          KRYOS_STDLIB_DIR: ${{ github.workspace }}/compiler/stdlib
+        run: bash tests/mem_balance_gate.sh
 
       - name: Stdlib compiles + CLI smoke -- Windows
         shell: bash
