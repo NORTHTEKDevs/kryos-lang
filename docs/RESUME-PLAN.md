@@ -146,12 +146,12 @@ planned unified ownership pass lands.
   Installer fallback floor bumped to `v1.3.0`.
 - Found during the release check and disclosed on the release page. All of
   these are already in 1.2.0:
-  - values linked through `shared` pointers are never freed;
+  - values linked through `shared` pointers are never freed (item 137, fixed in the 1.3.1 mem wave);
   - `return shared <param>`, linked into a list, corrupts the heap in
-    release builds;
+    release builds (item 138, no longer reproduces after the item 137 fix);
   - a `match` on an `Option` field of a by-value struct param leaks its
-    payload.
-  They are LEDGER items 137 to 139, and fixing them is the next release.
+    payload (item 139, fixed in the 1.3.1 mem wave).
+  They are LEDGER items 137 to 139.
   Item 137 summarizes the fix design and its two adversarial reviews. Both
   reviews judged the naive fix unsound until a `shared` payload bind takes
   its own reference.

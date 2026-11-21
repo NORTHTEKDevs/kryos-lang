@@ -101,7 +101,8 @@ The residual 1.45x vs Rust is mostly Rc refcount traffic vs Rust's `Box`
 unique-ownership; Go (0.488s) wins via its GC bump allocator. checksum
 14723759, identical on both backends. (Measured 2026-06. It is no longer true:
 since 1.1.0 the `shared` nodes are never freed, the run peaks at 1.1 GB, and on
-1.3.0 binary_trees is 1.88x. See the headline and LEDGER item 137.)
+1.3.0 binary_trees is 1.88x. See the headline and LEDGER item 137, which
+frees them: peak 24 MB after the fix, wall time within about 6% of 1.3.0.)
 
 ## Methodology
 

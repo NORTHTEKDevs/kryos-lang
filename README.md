@@ -46,7 +46,7 @@ kryos run hello.kry
 ## In one minute
 
 - **It's fast.** Native binaries via LLVM. On 1.3.0 Kryos takes 0.59x to 1.04x of Rust's time on five of seven benchmarks and 1.34x and 1.88x on the other two, and is 32x to 307x faster than Python on five of them. Measured medians, methodology, and where Kryos loses (and why) in [BENCHMARKS.md](BENCHMARKS.md).
-- **It's safe.** Memory safety by construction (ARC + move semantics), no `'a` lifetime annotations, no GC pauses. This is a Swift-like ownership model - simpler than Rust's borrow checker, and not equivalent to its compile-time guarantees (no data-race freedom proofs). Known exceptions on 1.3.0: values linked through `shared` pointers are never freed and one `shared` shape corrupts the heap in release builds (LEDGER items 137 and 138). Capability-typed effects catch I/O leaks at compile time.
+- **It's safe.** Memory safety by construction (ARC + move semantics), no `'a` lifetime annotations, no GC pauses. This is a Swift-like ownership model - simpler than Rust's borrow checker, and not equivalent to its compile-time guarantees (no data-race freedom proofs). Known exceptions: `let x = *s` of a `shared` struct yields an alias, not an owner, and `cur = (*n).next` list traversal crashes on the Cranelift backend (LEDGER item 137, residuals). Capability-typed effects catch I/O leaks at compile time.
 - **It's small.** One binary, no LLVM dependency for development, ~20 MB compiler, ~700 MB to build from source.
 - **It runs anywhere.** Native (Linux / macOS / Windows / Intel / Apple Silicon) from the same source, plus an explicit-subset WebAssembly target (scalars, strings, closures, host-import I/O - anything outside the subset is a clear compile error, never a miscompile; see [docs/wasm-contract.md](docs/wasm-contract.md)).
 - **Both backends are held to the same answer.** A differential fuzzer generates random type-correct programs (structs, enums, closures, loops, containers, exception paths) and diffs the JIT's output against the AOT binary's - 14,000+ programs, zero divergences, and a smoke run repeats on every CI push. An ICE-hunt harness additionally mutates valid programs into garbage and requires diagnostics, never a compiler panic - 1,168 mutants, zero ICEs ([tools/diff-fuzz/](tools/diff-fuzz/)).
@@ -242,7 +242,7 @@ Medians of 5 runs on Kryos 1.3.0, in seconds (lower is better). [BENCHMARKS.md](
 | matmul | 0.620 | 0.645 | 0.645 | 0.643 | 0.561 | 34.818 | 0.96x |
 | hashmap | 0.086 | 0.147 | n/a | 0.487 | 0.159 | 0.671 | 0.59x |
 
-Kryos is level with Rust (within 4%) on recursion and on floating-point and integer loops (fib, mandelbrot, fannkuch, matmul), and faster on map-heavy code (hashmap). It trails on nbody (1.34x) and on allocation-heavy recursion (binary_trees, 1.88x). binary_trees was 1.42x at 1.0.0-rc.2; most of the slowdown is a memory leak: its `shared` nodes are never freed (LEDGER item 137). The per-benchmark analysis, "where we lose and why", is in [BENCHMARKS.md](BENCHMARKS.md).
+Kryos is level with Rust (within 4%) on recursion and on floating-point and integer loops (fib, mandelbrot, fannkuch, matmul), and faster on map-heavy code (hashmap). It trails on nbody (1.34x) and on allocation-heavy recursion (binary_trees, 1.88x). binary_trees was 1.42x at 1.0.0-rc.2; most of the slowdown was a memory leak: its `shared` nodes were never freed (LEDGER item 137, fixed after the 1.3.0 measurement; the number below is the 1.3.0 one). The per-benchmark analysis, "where we lose and why", is in [BENCHMARKS.md](BENCHMARKS.md).
 
 ---
 

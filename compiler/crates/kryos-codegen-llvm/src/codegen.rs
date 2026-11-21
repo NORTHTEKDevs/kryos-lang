@@ -4089,6 +4089,18 @@ impl LlvmCodegen {
     // Instruction emission
     // -----------------------------------------------------------------------
 
+    /// The SSA value of an arc-pointer local: a mutable local lives in an
+    /// alloca (`%_N.addr`) and is loaded; an immutable one is `%_N`.
+    fn arc_ptr_value(&mut self, ptr: LocalId) -> String {
+        if self.mutable_locals.contains(&ptr.0) {
+            let tmp = self.next_temp();
+            self.emit_line(&format!("  {tmp} = load ptr, ptr %_{}.addr", ptr.0));
+            tmp
+        } else {
+            format!("%_{}", ptr.0)
+        }
+    }
+
     fn emit_instruction(
         &mut self,
         inst: &Instruction,
@@ -4113,13 +4125,15 @@ impl LlvmCodegen {
             Instruction::ArcRetain { ptr } => {
                 // Stack-promoted arrays must not be retain'd (they are not refcounted).
                 if !self.stackable_locals.contains(&ptr.0) {
-                    self.emit_line(&format!("  call void @kryos_arc_retain(ptr %_{})", ptr.0));
+                    let v = self.arc_ptr_value(*ptr);
+                    self.emit_line(&format!("  call void @kryos_arc_retain(ptr {v})"));
                 }
             }
             Instruction::ArcRelease { ptr } => {
                 // Stack-promoted arrays must not be release'd (they are stack memory).
                 if !self.stackable_locals.contains(&ptr.0) {
-                    self.emit_line(&format!("  call void @kryos_arc_release(ptr %_{})", ptr.0));
+                    let v = self.arc_ptr_value(*ptr);
+                    self.emit_line(&format!("  call void @kryos_arc_release(ptr {v})"));
                 }
             }
             Instruction::Drop { local } => {

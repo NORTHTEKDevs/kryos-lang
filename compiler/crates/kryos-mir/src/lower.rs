@@ -349,6 +349,11 @@ pub struct LoweringContext {
     /// defaulted to `List___i64` while the chained `.push("a")` wanted
     /// `List___str`: JIT printed raw pointers, AOT failed the build.
     pending_let_expected: Option<MirType>,
+    /// Hidden match-subject local name -> the named place the subject was
+    /// read from (`Some(root)`), or `None` when the hidden local itself owns
+    /// the subject for the whole match. Lets a `shared` payload bind decide
+    /// whether the subject can be released under it (`shared_bind_needs_ref`).
+    match_subject_roots: HashMap<String, Option<String>>,
     /// Set by `Stmt::Return` immediately before lowering a directly-returned
     /// Lambda literal, when the ENCLOSING function's return type
     /// (`current_ret_ty`) is a concrete `Function` type of matching arity.
@@ -562,6 +567,7 @@ impl LoweringContext {
             pending_let_share: false,
             pending_let_fn_retain: false,
             pending_let_expected: None,
+            match_subject_roots: HashMap::new(),
             pending_lambda_ret_hint: None,
         }
     }
@@ -4412,6 +4418,9 @@ fn drop_unescaped_str_temps(
             // value itself is handled by the per-candidate walk below, which
             // treats it as the escape it is.
             | Instruction::StoreField { .. }
+            // A `shared` handle copied into a variant takes an arc reference
+            // (`Some(s)`): it touches no candidate temp.
+            | Instruction::ArcRetain { .. }
             | Instruction::Nop
             | Instruction::DebugLine(_) => {}
             _ => return,
@@ -6637,9 +6646,6 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             });
                         }
                     }
-                }
-                if is_shared {
-                    ctx.emit(Instruction::ArcRetain { ptr: local });
                 }
             }
         }
@@ -11812,10 +11818,83 @@ fn infer_one_arm_type(
 /// releases it through the ordinary return-path drops). Not when an arm binds
 /// the WHOLE subject (`other => other` would alias what is released) or for a
 /// struct/tuple subject (their pattern bindings alias fields).
+/// The named local a place expression is rooted at (`t` for `t.left`,
+/// `xs[i].a`, `t`), if any.
+fn place_root_name(e: &ast::Expr) -> Option<String> {
+    match e {
+        ast::Expr::Identifier { name, .. } => Some(name.clone()),
+        ast::Expr::FieldAccess { object, .. } | ast::Expr::IndexAccess { object, .. } => {
+            place_root_name(object)
+        }
+        _ => None,
+    }
+}
+
+/// Does a `shared` payload bind `name` need its OWN arc reference in the arm
+/// `body`? Not when every use of `name` is a dereference (`*s`, `(*s).f`) and
+/// the subject it aliases cannot be released while the arm runs: the arm does
+/// not assign the named place the subject was read from, which is a struct
+/// local or param (not a reference, a global or a call result's alias). Such
+/// a bind borrows the subject's reference and skips an atomic retain/release
+/// pair per match -- binary_trees' `check` ran 15% slower with them. Anything
+/// else (passed, returned, stored, captured, shadowed, any doubt) retains.
+fn shared_bind_needs_ref(
+    ctx: &LoweringContext,
+    subject: &ast::Expr,
+    name: &str,
+    body: &ast::Expr,
+    guard: Option<&ast::Expr>,
+) -> bool {
+    let root = match subject {
+        ast::Expr::Identifier { name: sn, .. } if sn.starts_with("__match_subj_") => {
+            match ctx.match_subject_roots.get(sn.as_str()) {
+                Some(Some(r)) => Some(r.clone()),
+                // The hidden local owns the subject for the whole match.
+                Some(None) => None,
+                None => return true,
+            }
+        }
+        other => match place_root_name(other) {
+            Some(r) => Some(r),
+            None => return true,
+        },
+    };
+    if let Some(r) = &root {
+        let ok = find_local_by_name(ctx, r)
+            .and_then(|l| ctx.locals.iter().find(|x| x.id == l).map(|x| x.ty.clone()))
+            .is_some_and(|t| matches!(t, MirType::Struct(_) | MirType::Enum(_)))
+            && !ctx.mutable_globals.contains_key(r.as_str());
+        if !ok {
+            return true;
+        }
+        let names: std::collections::HashSet<&str> = std::iter::once(r.as_str()).collect();
+        let mut out = std::collections::HashSet::new();
+        expr_mutates_names(body, &names, &mut out);
+        if let Some(g) = guard {
+            expr_mutates_names(g, &names, &mut out);
+        }
+        if !out.is_empty() {
+            return true;
+        }
+        // The root may only be READ through its fields in the arm: a method
+        // call or a `&mut t` argument could release the subject.
+        let text = format!("{body:?}{guard:?}");
+        let all = text.matches(&format!("Identifier {{ name: {r:?}, ")).count();
+        let fields = text.matches(&format!("FieldAccess {{ object: Identifier {{ name: {r:?}, ")).count();
+        if all != fields {
+            return true;
+        }
+    }
+    let text = format!("{body:?}{guard:?}");
+    let any = text.matches(&format!("Identifier {{ name: {name:?}, ")).count();
+    let deref = text.matches(&format!("Deref {{ inner: Identifier {{ name: {name:?}, ")).count();
+    any != deref
+}
+
 /// True when every payload of every variant of the enum `ty` either is a
 /// scalar or gets its OWN reference at a match payload bind (str/array/map,
-/// an owned struct/enum): a bind of any other payload is a bare alias of the
-/// subject, so the subject must outlive the arm.
+/// an owned struct/enum, a `shared` pointer): a bind of any other payload is
+/// a bare alias of the subject, so the subject must outlive the arm.
 fn enum_payloads_own_refs(ctx: &LoweringContext, ty: &MirType) -> bool {
     let MirType::Enum(name) = ty else { return false };
     let Some(variants) = ctx.enum_defs.get(name.as_str()) else { return false };
@@ -11827,6 +11906,7 @@ fn enum_payloads_own_refs(ctx: &LoweringContext, ty: &MirType) -> bool {
                     MirType::Str
                         | MirType::Array(_, _)
                         | MirType::Map { .. }
+                        | MirType::Shared(_)
                         | MirType::I8
                         | MirType::I16
                         | MirType::U16
@@ -11838,6 +11918,44 @@ fn enum_payloads_own_refs(ctx: &LoweringContext, ty: &MirType) -> bool {
                 || is_owned_enum_ty(ctx, f)
         })
     })
+}
+
+/// A bare generic variant (`None()`: no payload binds the type parameter)
+/// keeps the erased template enum type, which is not an owned enum, so the
+/// temp is never released after the struct literal that took its own
+/// reference -- a leaked box per literal on the Cranelift backend (LEDGER
+/// item 137). The literal's declared field type names the instance: give the
+/// temp that type so the ordinary owned-enum temp cleanup applies.
+fn retype_bare_variant_temp(
+    ctx: &mut LoweringContext,
+    struct_name: &str,
+    field: &str,
+    expr: &ast::Expr,
+    op: &Operand,
+) {
+    let Operand::Local(id) = op else { return };
+    let ast::Expr::FnCall { callee, .. } = expr else { return };
+    let ast::Expr::Identifier { name: callee_name, .. } = callee.as_ref() else { return };
+    let Some((tmpl, _)) = find_enum_variant(ctx, callee_name) else { return };
+    if !ctx.generic_enum_templates.contains_key(tmpl.as_str()) {
+        return;
+    }
+    let Some(field_ty) = ctx
+        .struct_defs
+        .get(struct_name)
+        .and_then(|fs| fs.iter().find(|(n, _)| n == field).map(|(_, t)| t.clone()))
+    else {
+        return;
+    };
+    let MirType::Enum(inst) = &field_ty else { return };
+    if !inst.starts_with(&format!("{tmpl}___")) || !is_owned_enum_ty(ctx, &field_ty) {
+        return;
+    }
+    if let Some(l) = ctx.locals.iter_mut().find(|l| l.id == *id) {
+        if l.name.is_none() && matches!(&l.ty, MirType::Enum(t) if *t == tmpl) {
+            l.ty = field_ty;
+        }
+    }
 }
 
 fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::MatchArm]) -> Operand {
@@ -11876,6 +11994,7 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
                 ctx.partial_moved_locals.remove(&id);
             }
             let hidden = format!("__match_subj_{}", ctx.locals.len());
+            ctx.match_subject_roots.insert(hidden.clone(), place_root_name(subject));
             let subj = ctx.alloc_local(Some(hidden.clone()), sty, false);
             ctx.borrowed_locals.insert(subj.0);
             ctx.emit(Instruction::Assign { dest: subj, value: RValue::Use(op) });
@@ -11902,6 +12021,7 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
         if owned && !binds_whole {
             let n = ctx.locals.len();
             let hidden = format!("__match_subj_{n}");
+            ctx.match_subject_roots.insert(hidden.clone(), None);
             // A call's result goes straight into the hidden local, which then
             // owns it (as a copy of a temp, the tuple escape analysis saw an
             // un-owned alias and never released a tuple subject).
@@ -12803,11 +12923,25 @@ fn lower_match_inner(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast
                     // see below) and dropped per-arm like a str -- the old
                     // field-by-field rebuild was never dropped (`Some(s) =>`
                     // on an Option<S> leaked ~340MB per 1M matches).
+                    // A `shared` payload bind owns its own arc reference
+                    // (taken below), released at the arm's end unless it
+                    // escapes (LEDGER item 137 step 1) -- except a bind the
+                    // arm only dereferences while the subject provably stays
+                    // alive, which borrows the subject's reference.
+                    let shared_own_ref = matches!(&field_type, MirType::Shared(_))
+                        && shared_bind_needs_ref(
+                            ctx,
+                            subject,
+                            ident_bind_name.as_deref().unwrap_or(""),
+                            body,
+                            arm_guards.get(&arm_bb.0).copied(),
+                        );
                     let field_gets_independent_ref = matches!(
                         &field_type,
                         MirType::Str | MirType::Array(_, _) | MirType::Map { .. }
                     ) || is_owned_struct_ty(ctx, &field_type)
-                        || is_owned_enum_ty(ctx, &field_type);
+                        || is_owned_enum_ty(ctx, &field_type)
+                        || shared_own_ref;
                     if !is_copy_type(ctx, &field_type) {
                         if field_gets_independent_ref {
                             arm_owned_payload_locals.push(local);
@@ -12874,6 +13008,21 @@ fn lower_match_inner(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast
                                     args: vec![Operand::Local(dest)],
                                 },
                             });
+                        }
+                    }
+                    // The bind aliases the subject's arc handle: it takes its
+                    // own reference, so it stays valid when the subject (a
+                    // temp, a param) is dropped while the bind escapes the
+                    // arm (`Some(s) => return s`).
+                    MirType::Shared(_) if ident_bind_name.is_some() => {
+                        if shared_bind_needs_ref(
+                            ctx,
+                            subject,
+                            ident_bind_name.as_deref().unwrap_or(""),
+                            body,
+                            arm_guards.get(&arm_bb.0).copied(),
+                        ) {
+                            ctx.emit(Instruction::ArcRetain { ptr: dest });
                         }
                     }
                     _ if is_owned_struct_ty(ctx, &field_type) || is_owned_enum_ty(ctx, &field_type) => {
@@ -14161,6 +14310,18 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
             }
         }
         ast::Expr::MoveExpr { inner, .. } => infer_expr_type(ctx, inner),
+        // `shared X` is an arc handle to an X. It had no arm and typed Void:
+        // `Some(shared X)` kept the generic template type (no drop after the
+        // literal, LEDGER item 137 cause A) and `let a = shared X` held an
+        // untyped handle that was never released.
+        ast::Expr::SharedExpr { inner, .. } => {
+            let inner_ty = infer_expr_type(ctx, inner);
+            if matches!(inner_ty, MirType::Void) {
+                MirType::Void
+            } else {
+                MirType::Shared(Box::new(inner_ty))
+            }
+        }
         ast::Expr::WeakExpr { inner, .. } => {
             let inner_ty = infer_expr_type(ctx, inner);
             MirType::Shared(Box::new(inner_ty))
@@ -15203,6 +15364,7 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                                             | MirType::Map { .. }
                                             | MirType::Struct(_)
                                             | MirType::Enum(_)
+                                            | MirType::Shared(_)
                                     )
                                 })
                             });
@@ -16061,6 +16223,7 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                         None
                     };
                     let op = lower_expr_to_operand(ctx, e);
+                    retype_bare_variant_temp(ctx, &effective_name, n, e, &op);
                     // A refcounted value (str/array/map) read out of ANOTHER
                     // struct's field and stored into this literal creates a
                     // second independent owner: both drops decrement a count
@@ -16532,7 +16695,33 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
         }
 
         ast::Expr::SharedExpr { inner, .. } => {
+            let partial_before = ctx.partial_moved_locals.clone();
             let inner_op = lower_expr_to_operand(ctx, inner);
+            // `shared x` of a value that something else still owns (a named
+            // local or param, a field or element read) copies it into the arc
+            // block, which then holds the SAME heap leaves/box: the arc takes
+            // its own owner and the source keeps and drops its own. As an
+            // alias the source's scope-end drop freed what the arc still
+            // pointed at (LEDGER items 137, 138). A fresh temp (`shared
+            // make(..)`) hands over its own reference.
+            if matches!(
+                inner.as_ref(),
+                ast::Expr::Identifier { .. } | ast::Expr::FieldAccess { .. } | ast::Expr::IndexAccess { .. }
+            ) {
+                if let Operand::Local(l) = &inner_op {
+                    let lty = ctx.locals.iter().find(|x| x.id == *l).map(|x| x.ty.clone());
+                    if lty.as_ref().is_some_and(|t| {
+                        is_owned_struct_ty(ctx, t) || is_owned_enum_ty(ctx, t)
+                    }) {
+                        emit_value_share(ctx, *l);
+                        let added: Vec<u32> =
+                            ctx.partial_moved_locals.difference(&partial_before).copied().collect();
+                        for id in added {
+                            ctx.partial_moved_locals.remove(&id);
+                        }
+                    }
+                }
+            }
             RValue::ArcAlloc { inner: inner_op }
         }
 
@@ -18244,6 +18433,12 @@ fn suppress_enum_field_arg_drops(
                             value: RValue::Call { func: rf.to_string(), args: vec![Operand::Local(id)] },
                         });
                     }
+                } else if matches!(lty, MirType::Shared(_)) {
+                    // A `shared` handle is copied, not moved: the enum takes
+                    // its own arc reference and the source keeps (and drops)
+                    // its own. `Tree { left: Some(lf), right: Some(lf) }`
+                    // builds two owners of one arc (LEDGER item 137).
+                    ctx.emit(Instruction::ArcRetain { ptr: id });
                 } else if matches!(
                     lty,
                     MirType::Str
@@ -18251,7 +18446,6 @@ fn suppress_enum_field_arg_drops(
                         | MirType::Map { .. }
                         | MirType::Struct(_)
                         | MirType::Enum(_)
-                        | MirType::Shared(_)
                 ) {
                     ctx.dropped_locals.insert(id.0);
                 }
