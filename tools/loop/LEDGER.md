@@ -10,7 +10,7 @@ green CI) > (leak) > (papercut). A silent wrong answer outranks a crash - a
 crash announces itself. A trust-model hole outranks both: nothing above it in
 the stack can be sound if the boundary leaks.
 
-## Wave: undeclared payload type -- a `Result` / `Option` constructor used as a `match` scrutinee, an interpolated part or a `to_string` argument printed a raw pointer (A2 closed; bare-result-option and M1-to_array-direct-index follow in this wave) (2026-11-21)
+## Wave: undeclared payload type -- a `Result` / `Option` constructor used as a `match` scrutinee and an unbound return-only generic printed a raw pointer (A2 and M1-to_array-direct-index closed; bare-result-option follows in this wave) (2026-11-21)
 
 Silent wrong answer on both backends, exit 0, no diagnostic: a payload or element type that is never declared was treated as
 i64 and a `str` printed as a raw pointer (a struct field read as `0`, an `f64` as `0`). Master `dd637a90`, `kryos run` and
@@ -38,9 +38,17 @@ i64 and a `str` printed as a raw pointer (a struct field read as `0`, an `f64` a
   unique across modules (every module is lexed with file id 0), so two records at one span that resolve differently are exported
   as neither. A module that declares its own `enum Result` / `Option` is untouched (the exported type is used only when the
   builtin enum is the all-i64 stub).
+- M1-to_array-direct-index. `println(to_array(r)[0])` (also `for x in to_array(r)`, `"{to_array(r)[0]}"`,
+  `result::to_array(r)[0]`) printed a pointer: item 40c/48 rejected only a `let`. `to_array<T>(r: Result) -> [T]` can never bind
+  `T` from its argument. Fix: every call of a generic free function whose type parameter appears only in its return type is
+  tracked (`unbindable_calls`), and at end-of-check one whose parameter is still an unresolved var is E0110 at the call (the
+  existing message's sibling; `let` forms keep their own earlier report and are not reported twice). `show(to_array(r))` with a typed
+  parameter and `let a: [str] = to_array(r)` still bind it; `len(to_array(r))` never observes the element and stays accepted.
+  Inside a generic declaration nothing is reported (the var may be a type parameter).
 - Pins. `tests/conformance/conf_ctor_scrutinee.kry` (both backends; fails on master: JIT `CONF FAIL: Ok scrutinee`, AOT clang
-  build error).
-- Docs. CLAUDE.md gotcha 13 (a constructor used directly carries its argument's type).
+  build error) and 6 probes in `tests/type_soundness.sh` (`want_reject_e0110` x 4, `want_pass` x 2; the 4 reject probes print
+  `HOLE` on the master binary).
+- Docs. CLAUDE.md gotcha 13, docs/stdlib/result.md `to_array`, book chapters 12 and 20 (the `to_array` paragraphs).
 
 ## Wave: release freeze -- the findings of the item-77 wave and its two verifiers recorded on master, the fix deferred past 1.3.0 (items 124-134 open; 70 repros added: 80 escaping of 260) (2026-11-02)
 

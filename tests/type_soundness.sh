@@ -72,6 +72,19 @@ want_reject_e0100() {
   fi
 }
 
+# want_reject_e0110 <name> <source> : must be rejected with a real E0110 (the
+# diagnostic names the missing annotation), not merely fail to compile.
+want_reject_e0110() {
+  local name="$1" src="$2" f="$TMP/$1.kry"
+  printf '%s' "$src" > "$f"
+  local out
+  out="$(timeout 30 "$KRYOS" check "$f" 2>&1)"
+  if ! grep -q '\[E0110\]' <<<"$out"; then
+    echo "  HOLE  $name -- expected E0110, got:"
+    sed 's/^/         /' <<<"$out"
+    fail=$((fail+1))
+  fi
+}
 
 # --- #13/#19: Result/Option annotated payloads must be checked -------------
 
@@ -1548,6 +1561,50 @@ fn main() { let m: map<str, i64> = {"a": 1}
 want_reject_e0100 contains_int_map_str_needle '
 fn main() { let m: map<i64, i64> = {1: 2}
   println("{contains(m, "a")}") }'
+
+# --- undeclared payload type (wave: undeclared-payload-type) -----------------
+# M1 (item 40c/48 residual): an UNBOUND return-only generic reaching an index,
+# a `for`, or an interpolation (no `let`) printed a raw pointer on both
+# backends. Every position where nothing binds it is E0110 now; the forms
+# something DOES bind (an annotation, a typed parameter) and `len` (which never
+# observes the element) stay accepted.
+want_reject_e0110 to_array_index_in_println '
+use std::result::{Result, Ok, to_array}
+fn main() {
+    let r: Result<str, str> = Ok("hi")
+    println(to_array(r)[0])
+}'
+want_reject_e0110 to_array_for_loop '
+use std::result::{Result, Ok, to_array}
+fn main() {
+    let r: Result<str, str> = Ok("hi")
+    for x in to_array(r) { println(x) }
+}'
+want_reject_e0110 to_array_interpolated_index '
+use std::result::{Result, Ok, to_array}
+fn main() {
+    let r: Result<str, str> = Ok("hi")
+    println("{to_array(r)[0]}")
+}'
+want_reject_e0110 to_array_qualified_index '
+use std::result::{Result, Ok, to_array}
+fn main() {
+    let r: Result<str, str> = Ok("hi")
+    println(result::to_array(r)[0])
+}'
+want_pass to_array_typed_param_still_binds '
+use std::result::{Result, Ok, to_array}
+fn show(a: [str]) { println(a[0]) }
+fn main() {
+    let r: Result<str, str> = Ok("hi")
+    show(to_array(r))
+}'
+want_pass to_array_len_never_observes_element '
+use std::result::{Result, Ok, to_array}
+fn main() {
+    let r: Result<str, str> = Ok("hi")
+    if len(to_array(r)) != 1 { exit(1) }
+}'
 
 if [ "$fail" -eq 0 ]; then
   echo "type-soundness: all probes correct (unsound rejected, correct accepted)"

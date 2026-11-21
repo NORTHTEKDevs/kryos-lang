@@ -265,13 +265,15 @@ erasure CLAUDE.md's gotcha #13 documents for `Option`), and printing an
 `i64`-erased `str` prints the bit pattern instead of the text. The fix is
 the annotated signature from the top of this chapter: `Result<i64, str>`.
 
-A related shape, `std::result::to_array<T>`, does NOT reproduce this
-silent failure -- it fails louder instead. `to_array`'s `T` has nothing to
+A related shape, `std::result::to_array<T>`, is rejected the same way. `to_array`'s `T` has nothing to
 bind against on the argument side (its parameter is the untyped `Result`
 enum, not a real `Result<T, E>`), so it can only be resolved from an
-explicit annotation on the binding. Leaving the binding bare is a clean
-`E0110` at check time (not a runtime raw-pointer output -- this was fixed
-as [LEDGER item 40c](../../../tools/loop/LEDGER.md)):
+explicit annotation on the binding, or from a typed parameter the result is
+passed to. Leaving it unbound -- a bare `let`, or an index / `for` / interpolation
+position such as `println(to_array(r)[0])` -- is a clean
+`E0110` at check time (not a runtime raw-pointer output -- fixed
+as [LEDGER item 40c](../../../tools/loop/LEDGER.md), and for the index / argument
+positions in the undeclared-payload-type wave):
 
 <!-- docs-example: skip -->
 ```kryos
@@ -361,9 +363,9 @@ the recoverable one.
 - Always write the full `Result<T, E>` on a signature -- a bare `Result`
   erases its payload to `i64` and silently corrupts a `str`/struct value on
   read-back. `std::result::to_array<T>` needs the same explicit annotation
-  on its binding, but fails differently: leaving it bare is a clean
-  `E0110` compile error, not a silent wrong answer (LEDGER item 40c,
-  fixed).
+  on its binding: leaving it unbound (bare `let`, index, `for`) is a clean
+  `E0110` compile error, not a silent wrong answer (LEDGER items 40c, 48 and
+  the undeclared-payload-type wave).
 - `?` on a `Result`-returning call unwraps `Ok` or returns the `Err` early;
   it only works inside a function that itself returns a compatible
   `Result`.

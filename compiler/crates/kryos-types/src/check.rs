@@ -99,6 +99,20 @@ pub struct TypeChecker {
     /// it sits in a generic declaration), so an argument's type can be read
     /// back by span after the call that consumes it has been checked.
     call_types: std::collections::HashMap<Span, (Type, bool)>,
+    /// Call sites of a generic free function with a type parameter that
+    /// appears only in its RETURN type (`to_array<T>(r: Result) -> [T]`), as
+    /// `(key span, callee, the call site's fresh var for that parameter,
+    /// inside a generic declaration)`. Nothing at the call can ever bind such
+    /// a parameter except the surrounding context; when none does (a
+    /// `println(to_array(r)[0])`, `for x in to_array(r)`) the element type is
+    /// unknown to the MIR and a `str` prints as a raw pointer. Swept at
+    /// end-of-check by `report_unbound_generic_calls`.
+    unbindable_calls: Vec<(Span, String, u32, bool)>,
+    /// Spans of identifiers that are the callee of a call expression.
+    call_callee_spans: std::collections::HashSet<Span>,
+    /// Key spans `report_unbindable_generic_call` (the `let`-binding check)
+    /// already reported, so the end-of-check sweep does not report them twice.
+    unbindable_reported: std::collections::HashSet<Span>,
     /// Number of enclosing generic declarations (fn / impl / trait): inside
     /// one, an unresolved var may be a type parameter, never defaulted.
     generic_scope_depth: u32,
@@ -253,6 +267,9 @@ impl TypeChecker {
             resolved_let_types: std::collections::HashMap::new(),
             exported_expr_types: Vec::new(),
             call_types: std::collections::HashMap::new(),
+            unbindable_calls: Vec::new(),
+            call_callee_spans: std::collections::HashSet::new(),
+            unbindable_reported: std::collections::HashSet::new(),
             resolved_result_lets: std::collections::HashMap::new(),
             bridge_open_vars: Vec::new(),
             generic_scope_depth: 0,
@@ -3994,6 +4011,57 @@ impl TypeChecker {
         }
     }
 
+    /// Remember each call-site var of a generic parameter that appears only in
+    /// the callee's return type (see `unbindable_calls`).
+    fn track_unbindable_generics(
+        &mut self,
+        sig: &FunctionSig,
+        var_map: &std::collections::HashMap<u32, u32>,
+        key: Span,
+    ) {
+        for gid in &sig.generic_var_ids {
+            if type_mentions_var(&sig.ret, *gid)
+                && !sig.params.iter().any(|(_, pty)| type_mentions_var(pty, *gid))
+            {
+                if let Some(new_id) = var_map.get(gid) {
+                    self.unbindable_calls.push((
+                        key,
+                        sig.name.clone(),
+                        *new_id,
+                        self.generic_scope_depth > 0,
+                    ));
+                }
+            }
+        }
+    }
+
+    /// End-of-check: a call whose return-only generic parameter was never
+    /// bound by ANY context (not an annotation, not a typed parameter it was
+    /// passed to) is rejected with the same E0110 the `let`-binding form gets.
+    fn report_unbound_generic_calls(&mut self) {
+        let calls = std::mem::take(&mut self.unbindable_calls);
+        let mut seen: std::collections::HashSet<Span> = std::collections::HashSet::new();
+        for (key, name, var, in_generic) in calls {
+            if in_generic
+                || !self.call_callee_spans.contains(&key)
+                || self.unbindable_reported.contains(&key)
+                || !seen.insert(key)
+            {
+                continue;
+            }
+            if !matches!(self.engine.resolve(&Type::Var(var)), Type::Var(_)) {
+                continue;
+            }
+            self.error_with_code(
+                format!(
+                    "cannot infer the generic type parameter of `{name}(..)` from this call -- `{name}`'s generic type does not appear in any of its parameter types, so no argument can ever bind it, and nothing around this call (an annotation, or a typed parameter it is passed to) does either. Left unbound the element type is lost and a `str` prints as a raw pointer instead of text. Bind the result to an annotated `let`, e.g. `let x: [str] = {name}(..)`, and use `x`"
+                ),
+                key,
+                kryos_errors::codes::E0110,
+            );
+        }
+    }
+
     /// If `value` is a direct call to a free function whose own generic type
     /// parameter never appears in its own parameter list (so it can never be
     /// inferred from any argument, ever -- see `type_mentions_var`), emit
@@ -4019,9 +4087,9 @@ impl TypeChecker {
         // return. Erring toward NOT reporting is the safe direction for a
         // name collision here -- a missed diagnostic on an exotic shape beats
         // rejecting sound code.
-        let (callee_name, span) = match value {
+        let (callee_name, span, key_span) = match value {
             Expr::FnCall { callee, span, .. } => match callee.as_ref() {
-                Expr::Identifier { name, .. } => (name, span),
+                Expr::Identifier { name, span: cspan } => (name, span, *cspan),
                 _ => return,
             },
             Expr::StaticMethodCall {
@@ -4036,7 +4104,7 @@ impl TypeChecker {
                 {
                     return;
                 }
-                (method, span)
+                (method, span, *span)
             }
             _ => return,
         };
@@ -4048,6 +4116,7 @@ impl TypeChecker {
                 })
         });
         if unbindable {
+            self.unbindable_reported.insert(key_span);
             self.error_with_code(
                 format!(
                     "cannot infer the generic type parameter of `{callee_name}(..)` from this unannotated binding -- `{callee_name}`'s generic type does not appear in any of its parameter types, so it can never be inferred from an argument here or at any call site. Left unannotated this would silently default to the raw erased representation at runtime (e.g. printing a pointer instead of a string). Add an explicit type annotation on the binding, e.g. `let x: [str] = {callee_name}(..)`"
@@ -4910,6 +4979,7 @@ impl TypeChecker {
                     // generic type pinning across call sites).
                     let sig = sig.clone();
                     let (params, ret, var_map, cap_var_map) = self.engine.instantiate_sig(&sig);
+                    self.track_unbindable_generics(&sig, &var_map, *span);
                     // Carry the sig's trait bounds onto the fresh call-site
                     // vars so unify can enforce them (backlog #89).
                     for (old_id, new_id) in &var_map {
@@ -5304,6 +5374,24 @@ impl TypeChecker {
 
             // Function call.
             Expr::FnCall { callee, args, span } => {
+                if let Expr::Identifier { span: cspan, name: cname } = callee.as_ref() {
+                    self.call_callee_spans.insert(*cspan);
+                    // `len(f(..))` never observes the element type, so an
+                    // unbound return-only generic of `f` cannot misprint there.
+                    if cname == "len" && args.len() == 1 {
+                        match &args[0] {
+                            Expr::FnCall { callee: inner, .. } => {
+                                if let Expr::Identifier { span: ispan, .. } = inner.as_ref() {
+                                    self.unbindable_reported.insert(*ispan);
+                                }
+                            }
+                            Expr::StaticMethodCall { span: ispan, .. } => {
+                                self.unbindable_reported.insert(*ispan);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
                 // Extract callee name for attribute checks.
                 let callee_name_str = match callee.as_ref() {
                     Expr::Identifier { name, .. } => Some(name.clone()),
@@ -6359,6 +6447,8 @@ impl TypeChecker {
                     self.check_pure_free_call(method, *span);
                     let sig = self.env.lookup_function(method).cloned().unwrap();
                     let (params, ret, var_map, cap_var_map) = self.engine.instantiate_sig(&sig);
+                    self.call_callee_spans.insert(*span);
+                    self.track_unbindable_generics(&sig, &var_map, *span);
                     for (old_id, new_id) in &var_map {
                         if let Some(bounds) = self.generic_var_bounds.get(old_id).cloned() {
                             self.engine.set_var_bounds(*new_id, bounds);
@@ -10143,6 +10233,7 @@ fn type_check_with_lambda_params_inner(
     });
 
     checker.check_module(module);
+    checker.report_unbound_generic_calls();
 
     // `KRYOS_DUMP_FN_EFFECTS=1` debug dump (Stage 1 -- capability-typed fn
     // values, docs/capability-effects-spec.md): print every logged
