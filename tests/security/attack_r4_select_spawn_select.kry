@@ -1,0 +1,43 @@
+// LEDGER root R4 (kryos-types check.rs walks every select arm and spawn lambda body): deny! in a select inside a spawn lambda inside a select arm
+// Master dd637a90: kryos check rc=0 in default and strict mode (the row layer never walks the select arm / spawn body), kryos run prints TOPSECRET-CLOSURE-9f8e7d6c5b4a.
+// Must be REJECTED with E0110 in both modes; kryos run must not print the secret.
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+fn wrap_once(inner: fn() -> str) -> fn() -> str {
+    return || inner()
+}
+
+fn host(reader: fn() -> str) {
+    let ch = chan()
+    select {
+        v ch => { println("recv") }
+        timeout 10 => {
+            spawn fn() {
+                let wrapped = wrap_once(reader)
+                let go = || wrapped()
+                let ch2 = chan()
+                select {
+                    w ch2 => { println("recv2") }
+                    timeout 10 => {
+                        deny!(fs:read) {
+                            println("LEAK: " + go())
+                        }
+                    }
+                }
+            }
+            sleep(300)
+        }
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    host(secret())
+}

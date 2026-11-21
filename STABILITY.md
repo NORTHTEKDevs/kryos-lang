@@ -147,7 +147,7 @@ in the next paragraph.
   `--strict-capabilities`, with known exceptions: the capability escapes listed
   one per row in [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md) section 4.1 are
   accepted in the default mode and under `--strict-capabilities` and leak when
-  run (80 of the 260 escape repros on 1.3.0).**
+  run (23 of the 260 escape repros on the R4 wave's branch; 80 on 1.3.0).**
   A struct/array/map value that CONTAINS a closure is traced back to its
   construction site (a struct field precisely, an array/map value
   conservatively across all elements), so a zero-capability function that

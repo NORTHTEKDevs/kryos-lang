@@ -3735,9 +3735,45 @@ impl TypeChecker {
                 self.env.pop_scope();
             }
             Stmt::Spawn { expr, .. } => {
-                self.infer_expr(expr);
+                let spawned = self.infer_expr(expr);
+                // LEDGER root R4. `spawn <lambda>` RUNS the lambda body on
+                // the new thread (MIR `lower_spawn` Case 3), but inferring the
+                // literal only yields a closure VALUE whose row was never
+                // charged to the enclosing frame, so a `deny!` around the
+                // spawn judged nothing. Charge the body's row here, from the
+                // literal's own type. (A spawned call or block is charged by
+                // the ordinary call/block path.)
+                if matches!(expr, Expr::Lambda { .. }) {
+                    if let Type::Function { caps, .. } = self.engine.resolve(&spawned) {
+                        self.accumulate_caps(&caps);
+                    }
+                }
             }
-            Stmt::Break { .. } | Stmt::Continue { .. } | Stmt::Select { .. } => {}
+            // LEDGER root R4. Every select arm is an ordinary block: its
+            // channel expression is inferred, its binder is in scope in its
+            // body, and the body goes through `check_block` like any other, so
+            // rows, `deny!` verdicts and every nested construct are judged by
+            // the one code path. The timeout duration and body likewise. MIR
+            // lowers the binder as an `i64` (the channel carries i64-shaped
+            // values: `chan()` is `i64`), so that is the type it gets here.
+            Stmt::Select {
+                branches, timeout, ..
+            } => {
+                for branch in branches {
+                    self.infer_expr(&branch.channel);
+                    self.env.push_scope();
+                    self.env.define_var(branch.pattern.clone(), Type::I64);
+                    self.check_block(&branch.body);
+                    self.env.pop_scope();
+                }
+                if let Some(t) = timeout {
+                    self.infer_expr(&t.duration_ms);
+                    self.env.push_scope();
+                    self.check_block(&t.body);
+                    self.env.pop_scope();
+                }
+            }
+            Stmt::Break { .. } | Stmt::Continue { .. } => {}
             // deny!(...) { body } is a compile-time capability-narrowing wrapper;
             // for type-checking it is just a scoped block of statements.
             Stmt::DenyBlock { denied, body, span } => {
