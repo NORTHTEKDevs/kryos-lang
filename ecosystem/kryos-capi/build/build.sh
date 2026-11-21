@@ -37,7 +37,7 @@ ST="$TOOLDIR/kryos_stdlib_native.lib"
 
 LIBNAME="csvlib"
 EXPORTS="csv_field_count,csv_row_count,csv_to_json_file"
-WINLIBS="-lntdll -luserenv -lws2_32 -ldbghelp -luser32 -lbcrypt -ladvapi32"
+WINLIBS="-lntdll -luserenv -lws2_32 -ldbghelp -luser32 -lbcrypt -ladvapi32 -lsynchronization"
 
 command -v "$KRYOS" >/dev/null || { echo "FATAL: kryos not found (set KRYOS=/path/to/kryos)" >&2; exit 1; }
 command -v zig >/dev/null || { echo "FATAL: zig not on PATH (needed to assemble the DLL)" >&2; exit 1; }

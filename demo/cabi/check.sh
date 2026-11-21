@@ -49,7 +49,7 @@ fi
 # --- Step 3: link DLL ---
 if zig cc -target x86_64-windows-msvc -shared -o "$AGENT_DLL" "$AGENT_LL_EXP" \
         "$KRYOS_RT" "$KRYOS_STD" \
-        -lntdll -luserenv -lws2_32 -ldbghelp -luser32 -lbcrypt -ladvapi32 \
+        -lntdll -luserenv -lws2_32 -ldbghelp -luser32 -lbcrypt -ladvapi32 -lsynchronization \
         -Wno-override-module >/dev/null 2>&1; then
     pass "cabi-link-dll"
 else
