@@ -204,3 +204,15 @@ jobs:
           draft: false
           # -beta. / -rc. tags publish as prereleases automatically.
           prerelease: ${{ contains(github.ref_name, '-beta.') || contains(github.ref_name, '-rc.') }}
+
+  publish-vscode:
+    # Marketplace publish. A separate workflow cannot be triggered by the
+    # release created above (GITHUB_TOKEN events start no workflows), so it
+    # is called directly once the release holds kryos-vscode.vsix.
+    needs: create-release
+    if: ${{ !contains(github.ref_name, '-beta.') && !contains(github.ref_name, '-rc.') }}
+    uses: ./.github/workflows/publish-vscode.yml
+    with:
+      tag: ${{ github.ref_name }}
+    secrets:
+      VSCE_PAT: ${{ secrets.VSCE_PAT }}

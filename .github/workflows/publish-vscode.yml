@@ -7,43 +7,63 @@ name: Publish VS Code extension
 #      Scopes: Marketplace -> Manage. Copy it.
 #   3. gh secret set VSCE_PAT -R NORTHTEKDevs/kryos-lang
 # Then run this workflow (Actions tab -> Publish VS Code extension -> Run),
-# or it fires automatically when a release is published.
+# or it runs automatically at the end of release.yml: release.yml's
+# `publish-vscode` job calls this file (`workflow_call`) once the GitHub
+# Release exists and carries kryos-vscode.vsix. Prerelease tags (-beta. /
+# -rc.) are skipped there.
+#
+# Why not `on: release: types: [published]`: release.yml creates the release
+# with the default GITHUB_TOKEN, and GitHub never starts a workflow from an
+# event raised by GITHUB_TOKEN (loop prevention), so that trigger never fired
+# for any release this repo cut itself (A23).
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag whose .vsix to publish"
-        default: "v1.0.0"
+        description: "Release tag whose .vsix to publish (e.g. v1.3.0)"
         required: true
       verify_only:
         description: "Only verify the stored VSCE_PAT (no publish) -- use after rotating the token"
         default: "false"
         required: false
-  release:
-    types: [published]
+  workflow_call:
+    inputs:
+      tag:
+        description: "Release tag whose .vsix to publish"
+        type: string
+        required: true
+      verify_only:
+        type: string
+        default: "false"
+        required: false
+    secrets:
+      VSCE_PAT:
+        required: false
 
 jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
       - name: Verify stored PAT only (rotation check)
-        if: ${{ github.event.inputs.verify_only == 'true' }}
+        if: ${{ inputs.verify_only == 'true' }}
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
         run: |
           npx --yes @vscode/vsce verify-pat northtekdevs -p "$VSCE_PAT" \
             && echo "VSCE_PAT is valid for publisher northtekdevs"
       - name: Resolve tag
-        if: ${{ github.event.inputs.verify_only != 'true' }}
+        if: ${{ inputs.verify_only != 'true' }}
         id: tag
-        run: echo "tag=${{ github.event.inputs.tag || github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+        env:
+          TAG: ${{ inputs.tag }}
+        run: echo "tag=$TAG" >> "$GITHUB_OUTPUT"
       - name: Download .vsix from the release
-        if: ${{ github.event.inputs.verify_only != 'true' }}
+        if: ${{ inputs.verify_only != 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release download "${{ steps.tag.outputs.tag }}" -R "${{ github.repository }}" -p "kryos-vscode.vsix"
       - name: Publish to the marketplace
-        if: ${{ github.event.inputs.verify_only != 'true' }}
+        if: ${{ inputs.verify_only != 'true' }}
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
         run: |
