@@ -10,6 +10,37 @@ green CI) > (leak) > (papercut). A silent wrong answer outranks a crash - a
 crash announces itself. A trust-model hole outranks both: nothing above it in
 the stack can be sound if the boundary leaks.
 
+## Wave: ci-windows -- master CI red on build-and-test-windows (rustc 1.100 needs synchronization.lib), and the VS Code publish trigger that never fired (CI-WIN-1 and A23 CLOSED) (2026-11-21)
+
+Branch `closeout/misc` off master `dd637a90`. Two commits, one per item.
+
+- CI-WIN-1 CLOSED (commit `60071762`). Mechanism: `kryos-driver/src/runtime.rs` `system_libs` listed ntdll, userenv, ws2_32,
+  dbghelp, user32, bcrypt, advapi32 for Windows. rustc 1.100.0 std (GitHub `windows-latest` picked it up on 2026-11-21) parks
+  threads with `WaitOnAddress` / `WakeByAddressSingle` / `WakeByAddressAll`, exported by `synchronization.lib`, so every AOT link
+  of the runtime staticlib failed. Reproduced with the master binary (`dd637a90`) against libs built by rustc 1.100.0 (isolated
+  rustup home): `kryos build --release actor_basic.kry` ends `LNK2019 unresolved external symbol __imp_WaitOnAddress`,
+  `__imp_WakeByAddressAll`, `__imp_WakeByAddressSingle` (+ LNK2001), `exit code: 1120`. This is a user-facing break for anyone
+  who builds Kryos with a current Rust, not only CI. Fix: `synchronization` added to both the MSVC and the GNU list, and to every
+  other place that spells out the Windows link line (self-host `kryos-build.bat`, `link_kry.bat`, `link_stage2.bat`,
+  `linkmap_stage2.bat`, `build_stage2_extlink.sh`; `demo/cabi/check.sh` and `NOTES.md`; `ecosystem/kryos-capi/build/build.sh`;
+  `ecosystem/kryos-embed/build.sh`; `link-win.ps1` already had it). Pin: `kryos-driver` unit test
+  `system_libs_tests::windows_link_line_has_synchronization`. Evidence: the fixed binary built with rustc 1.100.0 AOT-builds and
+  runs `actor_basic.kry` (`total: 5 / total: 15 / log: hello / total: 12`, exit 0); the same with rustc 1.95.0 and on the JIT;
+  GitHub Actions run 44951808664 (ci.yml, workflow_dispatch at `3a34ec83`) green on all 9 jobs including build-and-test-windows.
+- A23 CLOSED (commit `3a34ec83`). Mechanism: `publish-vscode.yml` listened to `release: published`, but `release.yml` creates the
+  release with the default `GITHUB_TOKEN`, and GitHub starts no workflow from an event that token raised; the live history had 4
+  runs, all `workflow_dispatch`, none for v1.0.0, v1.1.0, v1.2.0 or v1.3.0. Fix (the first of the two options the 2026-09 entry
+  above listed): `publish-vscode.yml` is now also `workflow_call`, and `release.yml` has a `publish-vscode` job that calls it after
+  `create-release` (needs: create-release; skipped for `-beta.` / `-rc.` tags), passing `github.ref_name` and `VSCE_PAT`. The
+  stale `default: "v1.0.0"` dispatch input and the false header comment are gone. NOT proven end to end: the chain only runs on a
+  `v*` tag push, and cutting a tag was out of scope; both files parse as YAML and the reusable-workflow call shape is the
+  documented one. The first tag after merge is the proof (watch the `publish-vscode` job of the Release run).
+- Not green, by construction: `tools/loop/check-bench-current.sh` FAILS on this branch (it passes on master). It fails on ANY
+  change under `compiler/crates` after the benchmark commit `cbd88996`, and this wave touches `kryos-driver/src/runtime.rs` (a
+  link-line list and a test; no code generation or runtime behavior). Clearing it means re-running `benchmarks/measure.py` (a 17
+  minute run that needs a quiet machine) and re-stamping BENCHMARKS.md; four tracks share this machine, so that run is left to
+  the merge. The check was not edited or bypassed. The other five `check-*.sh` pass.
+
 ## Wave: release freeze -- the findings of the item-77 wave and its two verifiers recorded on master, the fix deferred past 1.3.0 (items 124-134 open; 70 repros added: 80 escaping of 260) (2026-11-02)
 
 Record-only change on branch `fin/v1.3-finish` off master `7cab5799` (PR #40). No compiler change. Every number below is the
