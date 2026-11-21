@@ -9,6 +9,26 @@
 [![Ecosystem check](https://img.shields.io/badge/ecosystem_deny--by--default-259%2F259-brightgreen.svg)](tests/ecosystem_check.sh)
 [![VS Code](https://img.shields.io/badge/VS_Code-marketplace-blue.svg)](https://marketplace.visualstudio.com/items?itemName=northtekdevs.kryos)
 
+## Why Kryos?
+
+**Short answer:** when an AI agent writes or runs code, you need to know what that code is allowed to touch. No mainstream language tells you.
+
+In most languages, any function can read your files, open a network connection, or run a shell command, and nothing in the code says so. The only way to find out is to read every line. That was manageable when people wrote all the code. It stops being manageable when an AI agent writes the code and runs it.
+
+Kryos puts that permission into the code itself. A function says what it needs, for example `@capabilities(net, io)`, and the compiler refuses to build the program if anything reaches for more than it declared. You can see what a program is allowed to do before you run it.
+
+**Why not use a language that already exists?**
+
+- **Rust** is safe and fast, but hard to learn, and it does not track what a function is allowed to do.
+- **Go and Python** are easy to read, but any line can touch the file system or the network without saying so.
+- **A permission library added to an existing language** only covers the calls it knows about, and code can route around it. Following authority through every call, closure and data structure takes the compiler.
+
+So Kryos aims for the middle: memory-safe without Rust's learning curve, readable like Go, compiled to fast native binaries, plus the permission tracking none of them have.
+
+**Honest caveat:** today this is a strong check while you develop, not a security sandbox. Do not run code you do not trust behind it alone. [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md) lists the known gaps, and [docs/WHY_KRYOS.md](docs/WHY_KRYOS.md) has the longer design story.
+
+---
+
 **Kryos is a compiled, general-purpose programming language: memory-safe without lifetime annotations (ARC + move semantics - a Swift-like trade-off, not Rust's borrow checker), with native binaries and the clarity of Go.** It ships a complete toolchain: compiler, formatter, LSP, package manager, debug info, and editor extensions - 30+ subcommands, 15 LSP capabilities, 60+ stdlib modules, and a cookbook of recipes.
 
 ```kryos
