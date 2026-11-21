@@ -484,6 +484,7 @@ no_df_both match_field_ownership "$ROOT/tests/conformance/conf_match_field_owner
 # use-after-free probe that reuses the freed blocks before reading what a
 # payload bind escaped with (it fails with the bind's own reference removed).
 no_df_both shared_ownership_reuse "$ROOT/tests/conformance/conf_shared_ownership.kry"
+no_df_both shared_deref_ownership "$ROOT/tests/conformance/conf_shared_deref_ownership.kry"
 no_df_both shared_ownership "$ROOT/tests/mem/shared_ownership.kry"
 
 if [ "$fail" -eq 0 ]; then
