@@ -1606,6 +1606,66 @@ fn main() {
     if len(to_array(r)) != 1 { exit(1) }
 }'
 
+# A2 / bare-result-option: the payload of a BARE `Result` / `Option` (no type
+# arguments) is erased to i64, so binding it printed a raw pointer on both
+# backends. Binding a payload out of one is E0110 (annotate `Result<T, E>` /
+# `Option<T>`); matching it without binding, and the annotated twins, are fine.
+want_reject_e0110 bare_result_return_bind '
+use std::result::{Result, Ok, Err}
+fn get(s: str) -> Result { return Ok(s) }
+fn main() {
+    match get("hello") {
+        Ok(v) => println(v),
+        Err(e) => println("err"),
+    }
+}'
+want_reject_e0110 bare_result_return_bind_via_let '
+use std::result::{Result, Ok, Err}
+fn get(s: str) -> Result { return Ok(s) }
+fn main() {
+    let r = get("hello")
+    match r {
+        Ok(v) => println(v),
+        Err(e) => println("err"),
+    }
+}'
+want_reject_e0110 bare_option_return_bind '
+use std::option::{Option}
+fn get(s: str) -> Option { return Some(s) }
+fn main() {
+    match get("hello") {
+        Some(v) => println(v),
+        None => println("none"),
+    }
+}'
+want_reject_e0110 bare_result_param_bind '
+use std::result::{Result, Ok, Err}
+fn show(r: Result) {
+    match r {
+        Ok(v) => println(v),
+        Err(e) => println(e),
+    }
+}
+fn main() { show(Ok("x")) }'
+want_pass bare_result_param_no_payload_bind '
+use std::result::{Result, Ok, Err}
+fn is_good(r: Result) -> bool {
+    match r {
+        Ok(_) => return true,
+        Err(_) => return false,
+    }
+}
+fn main() { if not is_good(Ok("x")) { exit(1) } }'
+want_pass annotated_result_return_bind '
+use std::result::{Result, Ok, Err}
+fn get(s: str) -> Result<str, str> { return Ok(s) }
+fn main() {
+    match get("hello") {
+        Ok(v) => println(v),
+        Err(e) => println(e),
+    }
+}'
+
 if [ "$fail" -eq 0 ]; then
   echo "type-soundness: all probes correct (unsound rejected, correct accepted)"
 else

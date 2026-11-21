@@ -4256,6 +4256,44 @@ impl TypeChecker {
             } => {
                 // Resolve the subject first so type variables don't slip through.
                 let resolved_subject = self.engine.resolve(subject_ty);
+                // A BARE `Result` / `Option` (written without type arguments in
+                // a signature, field or annotation) erases its payload to i64:
+                // binding `Ok(v)` out of one types `v` as `any`, so a `str`
+                // payload printed as a raw pointer on both backends with no
+                // diagnostic (CLAUDE.md gotcha 13). Where the argument-built
+                // constructor carries its generics, the payload type is known;
+                // a bare scrutinee carries none, so it cannot be known here.
+                // Only the stdlib's own erased `any` API (see `is_stdlib_fn`) may
+                // bind through one.
+                if let Type::Enum { name: en, generics } = &resolved_subject {
+                    let binds_payload = matches!(variant.as_str(), "Ok" | "Err" | "Some")
+                        && fields.iter().any(|f| !matches!(f, Pattern::Wildcard { .. }));
+                    if generics.is_empty()
+                        && binds_payload
+                        && (en == "Result" || en == "Option")
+                        && !self
+                            .current_function_name
+                            .as_deref()
+                            .is_some_and(is_stdlib_fn)
+                        && self.env.lookup_enum(en).is_some_and(|e| {
+                            e.generic_var_ids.is_empty()
+                                && e.variants.iter().all(|(_, tys)| tys.iter().all(|t| *t == Type::Error))
+                        })
+                    {
+                        let (ann, art) = if en == "Result" {
+                            ("Result<T, E>", "a")
+                        } else {
+                            ("Option<T>", "an")
+                        };
+                        self.error_with_code(
+                            format!(
+                                "cannot bind the payload `{variant}(..)` of a bare `{en}` -- {art} `{en}` written without type arguments erases its payload type to i64, so a `str` (or any non-i64) payload would print as a raw pointer. Annotate the type with its parameters, e.g. `{ann}`, in the signature or binding this value comes from"
+                            ),
+                            *enum_pat_span,
+                            kryos_errors::codes::E0110,
+                        );
+                    }
+                }
                 // Option<T> / Result<T,E> are DISTINCT Type variants from
                 // Type::Enum - derive their payload types directly from the
                 // generic arguments. Without this they fall to the enum-name
@@ -7809,6 +7847,31 @@ fn concrete_type_to_type_expr(ty: &Type) -> Option<TypeExpr> {
         },
         _ => return None,
     })
+}
+
+thread_local! {
+    /// Names (as merged into the compiled module) of the functions that came
+    /// from the stdlib, filled by the driver's import resolution. Spans cannot
+    /// tell stdlib code from user code (every module is lexed with file id 0).
+    static STDLIB_FNS: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
+/// Forget the stdlib function names of the previous compile.
+pub fn reset_stdlib_fns() {
+    STDLIB_FNS.with(|s| s.borrow_mut().clear());
+}
+
+/// Record that the merged function `name` was imported from the stdlib.
+pub fn mark_stdlib_fn(name: &str) {
+    STDLIB_FNS.with(|s| {
+        s.borrow_mut().insert(name.to_string());
+    });
+}
+
+/// Was the merged function `name` imported from the stdlib?
+pub fn is_stdlib_fn(name: &str) -> bool {
+    STDLIB_FNS.with(|s| s.borrow().contains(name))
 }
 
 pub fn type_check(module: &Module) -> Vec<Diagnostic> {

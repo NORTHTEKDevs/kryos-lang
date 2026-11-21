@@ -10,7 +10,7 @@ green CI) > (leak) > (papercut). A silent wrong answer outranks a crash - a
 crash announces itself. A trust-model hole outranks both: nothing above it in
 the stack can be sound if the boundary leaks.
 
-## Wave: undeclared payload type -- a `Result` / `Option` constructor used as a `match` scrutinee and an unbound return-only generic printed a raw pointer (A2 and M1-to_array-direct-index closed; bare-result-option follows in this wave) (2026-11-21)
+## Wave: undeclared payload type -- a `Result` / `Option` constructor as a `match` scrutinee, a bare `Result` / `Option` in a signature and an unbound return-only generic printed a raw pointer (A2, bare-result-option and M1-to_array-direct-index closed) (2026-11-21)
 
 Silent wrong answer on both backends, exit 0, no diagnostic: a payload or element type that is never declared was treated as
 i64 and a `str` printed as a raw pointer (a struct field read as `0`, an `f64` as `0`). Master `dd637a90`, `kryos run` and
@@ -38,6 +38,22 @@ i64 and a `str` printed as a raw pointer (a struct field read as `0`, an `f64` a
   unique across modules (every module is lexed with file id 0), so two records at one span that resolve differently are exported
   as neither. A module that declares its own `enum Result` / `Option` is untouched (the exported type is used only when the
   builtin enum is the all-i64 stub).
+- bare-result-option. `fn get(s: str) -> Result { return Ok(s) }` then `match get("hello") { Ok(v) => println(v), .. }` (or
+  `let r = get(..)` then `match r`, a bare `Option`, a bare `Result` parameter) printed a pointer. A bare `Result` / `Option`
+  is the stdlib's hand-rolled `enum Result { Ok(any), Err(any) }`; the payload of a bare scrutinee is `any`, so it cannot be known.
+  Decision by measurement (criterion C): 1858 programs of tests/ examples/ ecosystem/ packages/ compiler/stdlib/ and the
+  test-runner corpus were checked on the master binary and on this one (`kryos check`, code and rc compared): the only difference is
+  `compiler/stdlib/result.kry` itself (the stdlib declares its erased API bare, so it is exempt, see below); no shipped program
+  and no stdlib API a program calls is rejected, and the one user-visible bare spelling (`fn f() -> Result`) has no inferable
+  alternative for the stdlib's own `any` returns (`unwrap`, `map` ...). So the rule is: BINDING a payload (`Ok(v)`, `Err(e)`, `Some(v)`;
+  not `_`) out of a bare-typed scrutinee is E0110 `cannot bind the payload .. of a bare Result -- annotate Result<T, E>` (check.rs,
+  `bind_pattern_with_mut`, Enum arm). By construction it covers a call result, a local, a parameter, a field, a `?` and an
+  `if let`. `Ok(_)`, `is_ok(r)`-style use and every annotated form are unchanged. The stdlib's own bodies and a stdlib file
+  checked directly are exempt: spans cannot tell stdlib code from user code, so the driver tells the checker which merged
+  functions came from the trusted stdlib (`kryos_types::mark_stdlib_fn`, kryos-driver/src/resolve.rs; the trusted dir ignores
+  `KRYOS_STDLIB_DIR`, like the raw-memory gate). Not done: inferring a bare return type from the function body. The stdlib's
+  `unwrap` / `map` / `unwrap_or` return `any` (item 6) and `println(unwrap(Ok("a")))` still prints a pointer: that is the `any`
+  hole, not this one.
 - M1-to_array-direct-index. `println(to_array(r)[0])` (also `for x in to_array(r)`, `"{to_array(r)[0]}"`,
   `result::to_array(r)[0]`) printed a pointer: item 40c/48 rejected only a `let`. `to_array<T>(r: Result) -> [T]` can never bind
   `T` from its argument. Fix: every call of a generic free function whose type parameter appears only in its return type is
@@ -46,9 +62,10 @@ i64 and a `str` printed as a raw pointer (a struct field read as `0`, an `f64` a
   parameter and `let a: [str] = to_array(r)` still bind it; `len(to_array(r))` never observes the element and stays accepted.
   Inside a generic declaration nothing is reported (the var may be a type parameter).
 - Pins. `tests/conformance/conf_ctor_scrutinee.kry` (both backends; fails on master: JIT `CONF FAIL: Ok scrutinee`, AOT clang
-  build error) and 6 probes in `tests/type_soundness.sh` (`want_reject_e0110` x 4, `want_pass` x 2; the 4 reject probes print
+  build error) and 12 probes in `tests/type_soundness.sh` (`want_reject_e0110` x 8, `want_pass` x 4; the 8 reject probes print
   `HOLE` on the master binary).
-- Docs. CLAUDE.md gotcha 13, docs/stdlib/result.md `to_array`, book chapters 12 and 20 (the `to_array` paragraphs).
+- Docs. CLAUDE.md gotcha 13, docs/stdlib/result.md `to_array`, book chapters 2 and 12 (the chapter-12 bare-`Result` example printed
+  `err: 140697634537472`; it is now an error demo), book chapter 20, docs/glossary.md.
 
 ## Wave: release freeze -- the findings of the item-77 wave and its two verifiers recorded on master, the fix deferred past 1.3.0 (items 124-134 open; 70 repros added: 80 escaping of 260) (2026-11-02)
 
