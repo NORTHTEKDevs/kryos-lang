@@ -1,0 +1,129 @@
+// Conformance: a Result / Option constructor used DIRECTLY where no `let`
+// gives it a type -- as a `match` scrutinee, nested, qualified, inside a
+// closure, with the unbound slot used as a str -- binds its payload with the
+// type the constructor's own argument has. The payload of `match Ok("v1") {
+// Ok(p) => .. }` was typed i64 (the other slot of `Ok(..)` is not bound by its
+// argument, so the MIR kept the payload-less stub), and a str payload printed
+// as a raw pointer on both backends with exit 0.
+use std::result::{Result, Ok, Err}
+use std::option::{Option, Some, None}
+
+struct P { name: str, n: i64 }
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn inner(s: str) -> Result<str, str> { return Ok(s) }
+fn try_inner(s: str) -> str {
+    let r: Result<str, str> = outer(s)
+    match r { Ok(v) => return v, Err(e) => return e }
+}
+fn outer(s: str) -> Result<str, str> {
+    let v = inner(s)?
+    return Ok(v + "!")
+}
+
+fn main() {
+    match Ok("v1") {
+        Ok(p) => expect(p == "v1" and "{p}" == "v1" and len(p) == 2, "Ok scrutinee"),
+        Err(e) => expect(false, "Ok took Err")
+    }
+    match Err("bad") {
+        Ok(p) => expect(false, "Err took Ok"),
+        Err(e) => expect(e == "bad" and "{e}" == "bad", "Err scrutinee")
+    }
+    // the slot the argument does not bind is used as a str by the other arm
+    match Ok("v2") {
+        Ok(p) => expect(p == "v2", "Ok with str-used Err slot"),
+        Err(e) => expect(e + "!" == "x!", "unreachable Err arm")
+    }
+    let s = match Ok("v3") { Ok(p) => p, Err(e) => e }
+    expect(s == "v3", "match value of Ok scrutinee")
+    match Some("o1") {
+        Some(v) => expect(v == "o1" and "{v}" == "o1", "Some scrutinee"),
+        None => expect(false, "Some took None")
+    }
+    match Some(Ok("n1")) {
+        Some(r) => match r {
+            Ok(p) => expect(p == "n1" and "{p}" == "n1", "Some(Ok) scrutinee"),
+            Err(e) => expect(false, "Some(Ok) took Err")
+        },
+        None => expect(false, "Some(Ok) took None")
+    }
+    match Some(Err("n2")) {
+        Some(r) => match r {
+            Ok(p) => expect(false, "Some(Err) took Ok"),
+            Err(e) => expect(e == "n2", "Some(Err) scrutinee")
+        },
+        None => expect(false, "Some(Err) took None")
+    }
+    match Result.Ok("q1") {
+        Ok(p) => expect(p == "q1" and "{p}" == "q1", "qualified Result.Ok"),
+        Err(e) => expect(false, "qualified took Err")
+    }
+    match Result.Err("q2") {
+        Ok(p) => expect(false, "qualified Err took Ok"),
+        Err(e) => expect(e == "q2", "qualified Result.Err")
+    }
+    let f = |x: str| Ok(x)
+    match f("c1") {
+        Ok(p) => expect(p == "c1" and "{p}" == "c1", "closure result"),
+        Err(e) => expect(false, "closure took Err")
+    }
+    match Ok(Some("os")) {
+        Ok(a) => match a {
+            Some(b) => expect(b == "os", "Ok(Some) scrutinee"),
+            None => expect(false, "Ok(Some) took None")
+        },
+        Err(e) => expect(false, "Ok(Some) took Err")
+    }
+    let pp = P { name: "pp", n: 3 }
+    match Ok(pp) {
+        Ok(p) => expect(p.name == "pp" and p.n == 3, "Ok(struct) scrutinee"),
+        Err(e) => expect(false, "Ok(struct) took Err")
+    }
+    match Ok(2.5) {
+        Ok(f) => expect(f * 2.0 == 5.0, "Ok(f64) scrutinee"),
+        Err(e) => expect(false, "Ok(f64) took Err")
+    }
+    match Ok([1, 2, 3]) {
+        Ok(a) => expect(len(a) == 3 and a[2] == 3, "Ok(array) scrutinee"),
+        Err(e) => expect(false, "Ok(array) took Err")
+    }
+    // a tuple scrutinee, `if let`, `while let`, and `?` over a constructor
+    match (Ok("t1"), 1) {
+        (Ok(p), n) => expect(p == "t1" and n == 1, "tuple scrutinee"),
+        (Err(e), n) => expect(false, "tuple took Err")
+    }
+    if let Ok(p) = Ok("il") { expect(p == "il", "if let") } else { expect(false, "if let took else") }
+    let mut w = 0
+    while let Some(x) = Some("wl") {
+        expect(x == "wl", "while let")
+        w = w + 1
+        if w > 1 { break }
+    }
+    expect(try_inner("q") == "q!", "? over a call")
+    // a constructor consumed by its TYPE with no `let`: interpolation / to_string
+    expect("{Ok("b")}" == "Ok(\"b\")", "interpolated Ok")
+    expect(to_string(Ok("a")) == "Ok(\"a\")", "to_string(Ok)")
+    expect(to_string(Some(Err("x"))) == "Some(Err(\"x\"))", "to_string(Some(Err))")
+    // churn the allocator, then read again: a mistyped (stub) scrutinee temp
+    // dropped the payload as an i64, a retained one frees it twice
+    let mut i = 0
+    while i < 200 {
+        match Ok("loop") {
+            Ok(p) => expect(p == "loop", "loop Ok"),
+            Err(e) => expect(false, "loop Err")
+        }
+        match Some("l{i}") {
+            Some(v) => expect(len(v) >= 2, "loop Some"),
+            None => expect(false, "loop None")
+        }
+        i = i + 1
+    }
+    println("PASS")
+}

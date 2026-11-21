@@ -83,6 +83,22 @@ pub struct TypeChecker {
     /// ever constrains one, no code can read it typed, so the export gives it
     /// the same i64 slot the MIR gives an unbound enum parameter.
     bridge_open_vars: Vec<u32>,
+    /// The type of every call-, tuple- or array-literal-shaped expression that is
+    /// consumed by its TYPE with no `let` to retype it: a `match` scrutinee (`match Ok("v1") {..}`,
+    /// `match f(x) {..}`, and the `?` / `if let` / `while let` desugars), an
+    /// interpolated part (`"{Ok("v1")}"`) and an argument of `to_string` /
+    /// `println` / `print` / `format`. Keyed by the expression's span, with
+    /// whether it sits inside a generic declaration. Resolved at end-of-check
+    /// and exported next to `let_types`: the MIR types a call from its
+    /// arguments or the callee alone, so a constructor or an unannotated
+    /// closure result in such a position lost the payload type the checker
+    /// already knew and bound `Ok(p)` as an i64 (a `str` printed as a raw
+    /// pointer).
+    exported_expr_types: Vec<(Span, Type, bool)>,
+    /// The latest inferred type of every call-shaped expression (and whether
+    /// it sits in a generic declaration), so an argument's type can be read
+    /// back by span after the call that consumes it has been checked.
+    call_types: std::collections::HashMap<Span, (Type, bool)>,
     /// Number of enclosing generic declarations (fn / impl / trait): inside
     /// one, an unresolved var may be a type parameter, never defaulted.
     generic_scope_depth: u32,
@@ -235,6 +251,8 @@ impl TypeChecker {
             lambda_expected_types: std::collections::HashMap::new(),
             resolved_lambda_params: std::collections::HashMap::new(),
             resolved_let_types: std::collections::HashMap::new(),
+            exported_expr_types: Vec::new(),
+            call_types: std::collections::HashMap::new(),
             resolved_result_lets: std::collections::HashMap::new(),
             bridge_open_vars: Vec::new(),
             generic_scope_depth: 0,
@@ -4781,6 +4799,39 @@ impl TypeChecker {
     }
 
     pub fn infer_expr(&mut self, expr: &Expr) -> Type {
+        let ty = self.infer_expr_inner(expr);
+        let call_shaped = |e: &Expr| {
+            matches!(
+                e,
+                Expr::FnCall { .. }
+                    | Expr::MethodCall { .. }
+                    | Expr::StaticMethodCall { .. }
+                    | Expr::TupleLiteral { .. }
+                    | Expr::ArrayLiteral { .. }
+            )
+        };
+        if call_shaped(expr) {
+            self.call_types
+                .insert(expr.span(), (ty.clone(), self.generic_scope_depth > 0));
+            // Arguments of a formatting builtin are consumed by their type.
+            if let Expr::FnCall { callee, args, .. } = expr {
+                if matches!(callee.as_ref(), Expr::Identifier { name, .. }
+                    if matches!(name.as_str(), "to_string" | "println" | "print" | "format"))
+                {
+                    for arg in args {
+                        if call_shaped(arg) {
+                            if let Some((aty, in_generic)) = self.call_types.get(&arg.span()).cloned() {
+                                self.exported_expr_types.push((arg.span(), aty, in_generic));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        ty
+    }
+
+    fn infer_expr_inner(&mut self, expr: &Expr) -> Type {
         match expr {
             // Literals.
             Expr::IntLiteral { .. } => Type::I64,
@@ -4793,6 +4844,9 @@ impl TypeChecker {
                 for part in parts {
                     if let kryos_ast::StringPart::Expr(e) = part {
                         let ty = self.infer_expr(e);
+                        if let Some((cty, in_generic)) = self.call_types.get(&e.span()).cloned() {
+                            self.exported_expr_types.push((e.span(), cty, in_generic));
+                        }
                         // Only scalars and `str` have a built-in string form.
                         // Interpolating an AGGREGATE (struct/enum/array/tuple/
                         // map/set/Option/Result/fn) fell through to the i64/
@@ -6773,6 +6827,20 @@ impl TypeChecker {
                 span,
             } => {
                 let subject_ty = self.infer_expr(subject);
+                if matches!(
+                    subject.as_ref(),
+                    Expr::FnCall { .. }
+                        | Expr::MethodCall { .. }
+                        | Expr::StaticMethodCall { .. }
+                        | Expr::TupleLiteral { .. }
+                        | Expr::ArrayLiteral { .. }
+                ) {
+                    self.exported_expr_types.push((
+                        subject.span(),
+                        subject_ty.clone(),
+                        self.generic_scope_depth > 0,
+                    ));
+                }
                 if arms.is_empty() {
                     return Type::Void;
                 }
@@ -10121,6 +10189,40 @@ fn type_check_with_lambda_params_inner(
         }
         if let Some(te) = concrete_type_to_type_expr(&resolved) {
             let_types.insert(*span, te);
+        }
+    }
+    // Every module is lexed with file id 0, so a scrutinee in an imported module
+    // can share a span with one in the user's file. Two records at one span that
+    // resolve to different types are ambiguous: export neither.
+    {
+        let mut seen: std::collections::HashMap<Span, (String, Option<TypeExpr>)> =
+            std::collections::HashMap::new();
+        let mut ambiguous: std::collections::HashSet<Span> = std::collections::HashSet::new();
+        for (span, ty, in_generic) in checker.exported_expr_types.iter() {
+            let mut resolved = checker.engine.resolve(ty);
+            if !*in_generic {
+                resolved = default_open_vars(&resolved, &open_roots);
+            }
+            let key = format!("{resolved:?}");
+            let te = if type_mentions_result(&resolved) {
+                concrete_type_to_type_expr(&resolved)
+            } else {
+                None
+            };
+            match seen.get(span) {
+                Some((k, _)) if *k != key => {
+                    ambiguous.insert(*span);
+                }
+                Some(_) => {}
+                None => {
+                    seen.insert(*span, (key, te));
+                }
+            }
+        }
+        for (span, (_, te)) in seen {
+            if let (Some(te), false) = (te, ambiguous.contains(&span)) {
+                let_types.entry(span).or_insert(te);
+            }
         }
     }
     (

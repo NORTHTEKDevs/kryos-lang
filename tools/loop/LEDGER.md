@@ -10,6 +10,38 @@ green CI) > (leak) > (papercut). A silent wrong answer outranks a crash - a
 crash announces itself. A trust-model hole outranks both: nothing above it in
 the stack can be sound if the boundary leaks.
 
+## Wave: undeclared payload type -- a `Result` / `Option` constructor used as a `match` scrutinee, an interpolated part or a `to_string` argument printed a raw pointer (A2 closed; bare-result-option and M1-to_array-direct-index follow in this wave) (2026-11-21)
+
+Silent wrong answer on both backends, exit 0, no diagnostic: a payload or element type that is never declared was treated as
+i64 and a `str` printed as a raw pointer (a struct field read as `0`, an `f64` as `0`). Master `dd637a90`, `kryos run` and
+`kryos build --release`, every program below.
+- A2. `match Ok("v1") { Ok(p) => println(p), Err(e) => println("err") }` printed `140697043910656` (JIT; AOT a stable pointer
+  per binary). The same shape with `Err("bad")` (`Err(e) => println(e)`), `let s = match Ok("v2") { Ok(p) => p, Err(e) => e }`,
+  `Some(Ok("n1"))`, `Ok(Some("os"))`, `Ok(P { .. })` (field read as a pointer), `Ok(2.5)` (printed `0`), `Result.Ok("q1")` and an
+  unannotated closure `let f = |x: str| Ok(x)  match f("c1") { .. }` all printed a pointer / wrong value; `match Ok("v1")` on AOT
+  also failed to build with a clang `'%_30' defined with type 'ptr' but expected 'i64'`. The annotated twin printed `v1`.
+  Cause: `Ok("v1")` binds only `T`; `E` is open, so `infer_generic_variant_instance` (kryos-mir/src/lower.rs) returned None and the
+  MIR typed the scrutinee as the payload-less `Result` stub whose payload is the erased i64 slot. The previous wave
+  (2026-10-30 residual 1) fixed a `let` only, because the checker had no per-expression export. The same stub typing made
+  `println(to_string(Ok("a")))` and `"{Ok("b")}"` print `Ok(140697890639872)` and `match (Ok("t1"), 1) { (Ok(p), n) => .. }`
+  print a pointer (a tuple / array literal of constructors). Fix (structural, not one more shape): the checker records the type
+  of every call-, tuple- or array-literal-shaped expression that is CONSUMED BY ITS TYPE with no `let` to retype it (`exported_expr_types`,
+  check.rs): a `match` scrutinee (the `?`, `if let` and `while let` desugars are `MatchExpr` too), an interpolated part, and an
+  argument of `to_string` / `println` / `print` / `format`. It resolves each at end-of-check, giving the never-constrained `Ok` /
+  `Err` slot the i64 slot the MIR gives an unbound parameter (`default_open_vars`), and exports it in the existing `let_types` map; the
+  MIR (`exported_subject_type`, consulted at the top of `infer_expr_type` for a call, tuple or array literal) types the expression as
+  that instance, so every consumer of the type (the pattern binders, the match value type, the hidden subject local, the
+  `to_string` / interpolation formatter) agrees. Only those spans are exported: a constructor in any other position (an
+  argument, a field) keeps the type, and the build, it always had. A first version typed and BUILT every constructor as the
+  instance; it cloned an array payload, so it closed capability-escape row 119b `attack_slot_param_container_in_result` at run
+  time (the oracle reports that as CLOSED-RUNTIME) and moved ownership in argument positions; it was dropped. Spans are not
+  unique across modules (every module is lexed with file id 0), so two records at one span that resolve differently are exported
+  as neither. A module that declares its own `enum Result` / `Option` is untouched (the exported type is used only when the
+  builtin enum is the all-i64 stub).
+- Pins. `tests/conformance/conf_ctor_scrutinee.kry` (both backends; fails on master: JIT `CONF FAIL: Ok scrutinee`, AOT clang
+  build error).
+- Docs. CLAUDE.md gotcha 13 (a constructor used directly carries its argument's type).
+
 ## Wave: release freeze -- the findings of the item-77 wave and its two verifiers recorded on master, the fix deferred past 1.3.0 (items 124-134 open; 70 repros added: 80 escaping of 260) (2026-11-02)
 
 Record-only change on branch `fin/v1.3-finish` off master `7cab5799` (PR #40). No compiler change. Every number below is the
@@ -1426,7 +1458,7 @@ crash (`kryos: stack overflow (unbounded recursion?)`, rc=132/253, free diag
   included) x 6 legs: 0 with a problem; gen1 + gen2 + gen3 together (206
   programs, 6 legs, same-named programs from later generators overwrite earlier
   ones): 0 with a problem.
-- Residual. (1) A variant constructor used DIRECTLY as the `match` scrutinee,
+- Residual. (1) [CLOSED 2026-11-21, wave "undeclared payload type" at the top of this file.] A variant constructor used DIRECTLY as the `match` scrutinee,
   `match Ok("v1") { Ok(p) => println(p), .. }`, still prints a raw pointer on all
   three backends (re-measured after the fix): the MIR types the temporary with
   the stub, there is no `let` to retype, and the checker has no per-expression
