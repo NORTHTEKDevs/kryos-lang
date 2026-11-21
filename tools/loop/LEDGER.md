@@ -8667,14 +8667,27 @@ shape (wrap one value, link it once, match it) runs on 1.3.0 and aborts on rc.2 
 fix design guesses a double release of the param, from the crash alone). A memory-safety defect in code with no `unsafe` and no capability.
 Closing: root-cause, fix, and pin both shapes on both backends with real frees and an exit-code check.
 
-### 139. LEAK -- a `match` on an `Option` field of a struct passed by value does not free the field's payload, on every version -- NOT FIXED
+### 139. LEAK -- a `match` on an `Option` field of a struct passed by value does not free the field's payload, on every version -- CLOSED (1.3.1 mem wave)
 
 Found 2026-11-03 while investigating item 137 (item 137's cause B, which is not specific to `shared`). Repro:
 `struct In { s: str }`, `struct Hold { o: Option<In>, n: i64 }`, `fn f(h: Hold) -> i64 { match h.o { Option.Some(x) => return len(x.s), Option.None => return 0 } }`,
 called as `sum = sum + f(h)` with a fresh `Hold` 1,000,000 times. Peak working set, release builds: rc.2 97.1 MB, 1.0.1 125.0 MB,
 1.1.0 127.7 MB, 1.3.0 127.7 MB (a non-leaking loop of this size peaks at about 4.5 MB): about 100 bytes per call, on every version
-measured. Cause (code reading, item 137 B): the field read marks the param partially moved, so the param is not dropped. Closing: fix
+measured. Cause (confirmed): the field read marks the param partially moved, so the param is not dropped. Closing: fix
 with item 137 step (3), and pin it at two scales.
+
+CLOSED. Root cause (`lower_match`, `kryos-mir/src/lower.rs`): a `match` whose subject is a FIELD read (`h.o`) lowered the read as a
+bit-copy alias and left the `partial_moved_locals` mark the read put on `h`, so `h` (a callee-owned param, or a local) lost its
+scope-end drop for every path, the whole struct leaking. Fix: when the subject is a field read of an owned enum whose every payload
+gets its own reference at a payload bind (`enum_payloads_own_refs`: scalars, str/array/map, owned struct/enum), the match undoes the
+read's partial-move mark and reads the field through a hidden borrowed alias; the struct keeps its field and its drop, and each
+payload bind already takes its own reference, so a payload that escapes the arm (`Some(x) => return x`) outlives the struct. Enums with
+any other payload kind (tuple, closure, trait object) keep the old behavior. Proof both ways (instrument of PR 45): on the master
+binary `KRYOS_ALLOC_STATS` for `tests/mem/shared_leak.kry` mode `match_field` at 3 iterations reports box live=3 (LLVM) and 9
+(Cranelift); with the fix 0 and 0, and the gate rows are flipped (and a balanced row is now also run at 10x the iterations).
+Peak working set of docs/r139b.kry (release AOT, string payload built per call), master vs fix at 100k, 1M and 10M iterations: 15.8,
+112.4, 1078.2 MB vs 4.5, 4.6, 4.6 MB (output identical). Safety pin: `tests/conformance/conf_match_field_ownership.kry` (value asserts
+after the struct died and the allocator reused its blocks, returned, stored and enum-payload shapes) in `tests/no_double_free.sh`.
 
 ---
 
