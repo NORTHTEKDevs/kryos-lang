@@ -10,9 +10,9 @@ green CI) > (leak) > (papercut). A silent wrong answer outranks a crash - a
 crash announces itself. A trust-model hole outranks both: nothing above it in
 the stack can be sound if the boundary leaks.
 
-## Wave: ci-windows -- master CI red on build-and-test-windows (rustc 1.100 needs synchronization.lib), and the VS Code publish trigger that never fired (CI-WIN-1 and A23 CLOSED) (2026-11-21)
+## Wave: ci-windows -- master CI red on build-and-test-windows (rustc 1.100 needs synchronization.lib), and the VS Code publish trigger that never fired (CI-WIN-1 CLOSED, A23 NOT-FIXED) (2026-11-21)
 
-Branch `closeout/misc` off master `dd637a90`. Two commits, one per item.
+Branch `closeout/misc` off master `dd637a90`.
 
 - CI-WIN-1 CLOSED (commit `60071762`). Mechanism: `kryos-driver/src/runtime.rs` `system_libs` listed ntdll, userenv, ws2_32,
   dbghelp, user32, bcrypt, advapi32 for Windows. rustc 1.100.0 std (GitHub `windows-latest` picked it up on 2026-11-21) parks
@@ -27,14 +27,7 @@ Branch `closeout/misc` off master `dd637a90`. Two commits, one per item.
   `system_libs_tests::windows_link_line_has_synchronization`. Evidence: the fixed binary built with rustc 1.100.0 AOT-builds and
   runs `actor_basic.kry` (`total: 5 / total: 15 / log: hello / total: 12`, exit 0); the same with rustc 1.95.0 and on the JIT;
   GitHub Actions run 44951808664 (ci.yml, workflow_dispatch at `3a34ec83`) green on all 9 jobs including build-and-test-windows.
-- A23 CLOSED (commit `3a34ec83`). Mechanism: `publish-vscode.yml` listened to `release: published`, but `release.yml` creates the
-  release with the default `GITHUB_TOKEN`, and GitHub starts no workflow from an event that token raised; the live history had 4
-  runs, all `workflow_dispatch`, none for v1.0.0, v1.1.0, v1.2.0 or v1.3.0. Fix (the first of the two options the 2026-09 entry
-  above listed): `publish-vscode.yml` is now also `workflow_call`, and `release.yml` has a `publish-vscode` job that calls it after
-  `create-release` (needs: create-release; skipped for `-beta.` / `-rc.` tags), passing `github.ref_name` and `VSCE_PAT`. The
-  stale `default: "v1.0.0"` dispatch input and the false header comment are gone. NOT proven end to end: the chain only runs on a
-  `v*` tag push, and cutting a tag was out of scope; both files parse as YAML and the reusable-workflow call shape is the
-  documented one. The first tag after merge is the proof (watch the `publish-vscode` job of the Release run).
+- A23 NOT-FIXED (the workflow_call fix is in history, commit `3a34ec83`, and was reverted in this wave). Mechanism, confirmed: `publish-vscode.yml` listened to `release: published`, but `release.yml` creates the release with the default `GITHUB_TOKEN`, and GitHub starts no workflow from an event that token raised; `gh run list --workflow publish-vscode.yml` shows 4 runs, all `workflow_dispatch`, none for v1.0.0 to v1.3.0. The fix written (publish-vscode.yml also `workflow_call`, a `publish-vscode` job in release.yml after `create-release`) could not be executed: it only runs on a `v*` tag push, and cutting a tag on the public repo was out of scope, so it never met landing rule A. Two walls found while checking it: (1) the stored `VSCE_PAT` (set 2026-07-07) is expired (`gh run view 37545182927 --log`: "You're using an expired Personal Access Token"), so the first stable tag after the chain is wired would end its Release run red after the release is already created; only the owner can mint a new PAT (`publish-vscode.yml` `verify_only` checks it). (2) `editors/vscode/package.json` is hardcoded `1.3.0`, so a later tag would publish a duplicate marketplace version unless the version is tied to the tag. What landed instead: only the false claim is removed from the `publish-vscode.yml` header (it said the workflow "fires automatically when a release is published"; it now says publishing is manual and why) and the stale `default: "v1.0.0"` dispatch tag is gone. To finish: rotate `VSCE_PAT`, tie the extension version to the tag, `git revert` the revert of `3a34ec83`, cut a tag and watch the `publish-vscode` job of the Release run.
 - Not green, by construction: `tools/loop/check-bench-current.sh` FAILS on this branch (it passes on master). It fails on ANY
   change under `compiler/crates` after the benchmark commit `cbd88996`, and this wave touches `kryos-driver/src/runtime.rs` (a
   link-line list and a test; no code generation or runtime behavior). Clearing it means re-running `benchmarks/measure.py` (a 17
