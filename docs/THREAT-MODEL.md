@@ -40,7 +40,7 @@ searches that were run", and the searches were run by the same people who wrote
 the checker.
 
 "Known" has two precise meanings here. Section 4.1 is the escape corpus: 260
-repros listed by name in `tools/loop/escape_status.sh`, 23 of them still accepted (80 on 1.3.0; the 57 rows of items 126 to 134 were closed by the R4 wave of 2026-11-21).
+repros listed by name in `tools/loop/escape_status.sh`, 22 of them still accepted (80 on 1.3.0; the 57 rows of items 126 to 134 were closed by the R4 wave of 2026-11-21, row 121 by the coarse-family wave of 2026-11-22).
 Section 4.5 lists accepted zero-authority shapes (B5, B6, B7 and B9) that are
 not in that corpus; five more (B1 to B4 and B8) were listed in the first version
 of this document and are closed in this build (PR #40). Both tables are checked
@@ -166,8 +166,8 @@ permissive for the direct case (claims.tsv G3-deny-direct-*). For closures
 reaching the block through parameters, locals, containers, struct fields, actor
 state, `spawn`, generics, `dyn` and the other shapes in section 2 of
 [10-capabilities.md](10-capabilities.md): gate `tests/security_gate.sh`
-(gate, run for the 1.3.0 revision: PASS, 342 `ok` lines, 0 FAIL) and `tools/loop/escape_status.sh` (237 of 260 repros rejected,
-executed 2026-11-21 on the R4 wave's branch). **Exceptions: the 23 rows in 4.1, all of which defeat
+(gate, run for the 1.3.0 revision: PASS, 342 `ok` lines, 0 FAIL) and `tools/loop/escape_status.sh` (238 of 260 repros rejected,
+executed 2026-11-22 on the `closeout/cap` branch). **Exceptions: the 22 rows in 4.1, all of which defeat
 `deny!`.** `deny!` does not bound a callee that is handed a closure (N16, B6).
 
 **G4. `@pure` functions call no gated or impure builtin.**
@@ -458,8 +458,8 @@ header: "DELEGATION, not an escape").
 ### 4.1 Capability escapes known and still accepted
 
 Measured 2026-11-21 with `bash tools/loop/escape_status.sh` on the in-place build
-of the R4 wave's branch (`closeout/cap`): **`STILL ESCAPING: 23    now-rejected: 237    missing: 0`**, 260
-repros (on the 1.3.0 build of 2026-11-02 the same corpus read 80 / 180; the 57 rows of items 126 to 134 are the difference). Each row below is a program that `kryos check` accepts in default **and**
+of the R4 wave's branch (`closeout/cap`): **`STILL ESCAPING: 22    now-rejected: 238    missing: 0`**, 260
+repros (on the 1.3.0 build of 2026-11-02 the same corpus read 80 / 180; the 57 rows of items 126 to 134 and row 121 are the difference). Each row below is a program that `kryos check` accepts in default **and**
 `--strict-capabilities` mode and whose `kryos run` printed the secret (executed;
 `tools/loop/check-escapes-documented.sh` re-runs every row and fails if one is no
 longer accepted in either mode, if its run prints no leak marker, or if this
@@ -483,7 +483,6 @@ blind (item 122, the forward-reference rows of items 124 and 125).
 | 119c | tests/security/attack_slot_param_array_of_option.kry | the same with an array of Option closures (a[0] = Some(g)) | R2 |
 | 119d | tests/security/attack_slot_param_option_of_nested_array.kry | the same with an Option holding a nested array | R2 |
 | 119e | tests/security/attack_slot_param_tuple_of_two_arrays.kry | the same with a tuple of two arrays, the store going to the second | R2 |
-| 121 | tests/security/attack_deny_coarse_family_row_blind.kry | deny!(fs), deny!(io) and deny!(all) do not reject a block whose closure reads a file; deny!(fs:read) does | row-layer deny matching |
 | 122 | tests/security/attack_deny_trait_default_method_unchecked.kry | the body of a trait default method is never checked, so a deny! block in it is never judged | R4 (missing walk) |
 | 123a | tests/security/attack_slot_param_fn_value_factory.kry | a store helper reached through a factory that returns the helper as a function value | R2 |
 | 123b | tests/security/attack_slot_param_trait_bound_dispatch.kry | a store helper reached through a generic function with a trait bound | R2 |
@@ -503,17 +502,18 @@ blind (item 122, the forward-reference rows of items 124 and 125).
 | 125f | tests/security/attack_fwd_fill_relay_struct_field_before_main.kry | the same with both helpers declared before `main` | F (forward reference) |
 <!-- known-escapes:end -->
 
-What the 23 have in common, as observed in the 23 repros (not a proof about
+What the 22 have in common, as observed in the 22 repros (not a proof about
 unknown ones): in every repro the program holds the capability (`main` declares
 `fs:read` and builds or receives the privileged closure itself), and what fails
 is the **narrowing**: the privileged closure runs where `deny!` says it must not.
-None of the 23 makes an unannotated, zero-authority program read a file
+None of the 22 makes an unannotated, zero-authority program read a file
 (section 4.5 lists shapes that do). They are all row-layer gaps.
 
-- **Row-layer gaps, 23 rows.** Items 119 and 123 (eight rows) are one mechanism:
+- **Row-layer gaps, 22 rows.** Items 119 and 123 (eight rows) are one mechanism:
   a helper stores a closure into a container it was handed and the caller's view
-  of that container is not updated. 121 is coarse `deny!` families, 122 the body
-  of a trait default method. 124 and 125 (13 rows) are forward references: a
+  of that container is not updated. 122 is the body
+  of a trait default method (121, coarse `deny!` families, was closed 2026-11-22: the verdict now judges a denied
+  coarse family by overlap, `denied_caps_used` in `kryos-types/src/ty.rs`). 124 and 125 (13 rows) are forward references: a
   function declared above the callee it hands a closure to, or a store made by a
   callee declared below its caller.
 - **Closed since 1.3.0, and what that does and does not mean.** The R4 wave
@@ -547,10 +547,6 @@ it does not make the check sound.
   is rejected on this build (row 112). Pass the container itself, not a wrapper
   around it, or have the helper return the new container and assign it at the
   call site (not executed for these shapes).
-- **121** (item 121, row-layer deny matching). Write the precise capability in
-  `deny!` (`deny!(fs:read)`, not `deny!(fs)`, `deny!(io)` or `deny!(all)`). The
-  precise form of the same program is rejected (pinned: claims.tsv
-  S41-121-fine-grained-deny-default).
 - **122** (item 122, root R4). Do not put a `deny!` block in the default method of
   a trait; put it in an `impl` method, which is checked (the second half is not
   executed). A type error in a default method body is also accepted (section 4.4).
@@ -606,7 +602,7 @@ Both programs are accepted today in default and strict (pinned for
 pinned by `tests/security_gate.sh`, carried). The row layer (R2, R3) is the
 intended way to close the same items without that cost; both waves are merged
 (PR #38 as `732714ab`, PR #39 as `e2fbc46c`) and what remains of the row layer is
-items 119, 121, 122 and 123 (4.1).
+items 119, 122 and 123 (4.1).
 
 ### 4.4 Other limitations verified for this document
 

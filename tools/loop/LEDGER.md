@@ -10,6 +10,10 @@ green CI) > (leak) > (papercut). A silent wrong answer outranks a crash - a
 crash announces itself. A trust-model hole outranks both: nothing above it in
 the stack can be sound if the boundary leaks.
 
+## Wave: coarse-family-deny -- the row layer's `deny!` verdict judges a denied coarse family by overlap (item 121 closed as an escape: 23 escaping of 260 -> 22) (2026-11-22)
+
+Branch `closeout/cap` off `c752e8c2`. Change: `compiler/crates/kryos-types/src/ty.rs`, `denied_caps_used` (one line plus doc). Evidence, pins and the oracle diff are in the item 121 entry in the CLOSED section. `escape_status.sh`: `STILL ESCAPING: 22    now-rejected: 238    missing: 0`. The 22 left: 119a-e, 122, 123a-c, 124a-g, 125a-f.
+
 ## Wave: R4 select arms and spawn bodies -- the row layer walks every `select` arm, the `timeout` arm with its duration, and every spawned lambda (items 126 to 134 closed as escapes: 80 escaping of 260 -> 23) (2026-11-21)
 
 Branch `closeout/cap` off master `dd637a90` (release 1.3.0). Change: `compiler/crates/kryos-types/src/check.rs`, `check_stmt`.
@@ -6447,7 +6451,7 @@ capability-escape item and every other OPEN item below remain untouched.
 > this section and the README were BOTH wrong in both directions at once: item
 > 10 was ranked the highest-priority OPEN escape but had actually been fixed,
 > while twelve others were open and the README claimed a single residual. As of
-> 2026-11-21 the true count is **23 escaping, 237 rejected**.
+> 2026-11-22 the true count is **22 escaping, 238 rejected**.
 >
 > **It happened again, and worse (2026-10-15).** The corpus was the 19 named
 > repros, and "0 escaping" was true OF THOSE 19 while eighteen other shapes
@@ -6501,28 +6505,23 @@ capability-escape item and every other OPEN item below remain untouched.
 >   catches it; `security_gate.sh` check 66 pins it.
 
 
-### Items 119 and 121-134: what is still open of the capability-escape waves of 2026-10-15 to 2026-11-02
+### Items 119 and 122-134: what is still open of the capability-escape waves of 2026-10-15 to 2026-11-02
 
 Items 55-72 are all closed (59 and 65-71 by the R2 wave of 2026-11-01; 64 and 72 by the R3 wave of
 2026-11-02, the second wave entry at the top of this file, which also closed items 77 (row layer), 114, 115, 116 and
 120 and four of the seven repros of 118); their entries are in the waves at the top of this file and
 in the CLOSED table. What is live: item 119 (item 112 where the handed container sits inside a Tuple,
-Option, Result or Enum parameter; root R2), item 121 (the row layer's deny! does not match a coarse
-family), item 122 (the body of a trait default method is never checked; found by the R3 wave), item
+Option, Result or Enum parameter; root R2), item 122 (the body of a trait default method is never checked; found by the R3 wave), item
 123 (what is left of 118: a store helper reached through a factory result, a trait bound or a dyn;
 root R2), and the findings of the item-77 wave and its two verifiers, recorded on master by the release
 freeze of 2026-11-02: items 124 and 125 (forward references, root F). Items 126 to 134 (57 repros, root R4 and the shape
 layer observable through it) were closed as escapes by the R4 wave of 2026-11-21 (the first wave entry at the top of this
 file; their entries are in the CLOSED section, the shape-layer defects of 127 to 134 stay as imprecision). `escape_status.sh`
-counts the live ones (23) and `ESCAPE-ROUTING.md` carries a routing row for each.
+counts the live ones (22) and `ESCAPE-ROUTING.md` carries a routing row for each.
 
 ### 119. LIVE CAPABILITY ESCAPE -- item 112 where the container the callee was handed sits inside a Tuple, Option, Result or Enum parameter: `storage_rows_in` does not walk them, so the callee's store is not input storage -- NOT FIXED
 
 Found by the independent verifier of the R2 wave (PR 38). Recorded first by the R3 wave, root R2, left open. Five probes, committed (escape_status.sh rows 119a-119e): tests/security/attack_slot_param_container_in_tuple.kry (`fn put_t(t: ([fn() -> str], i64), g) { t.0[0] = g }`, `put_t((fns, 1), r)`), attack_slot_param_container_in_result.kry (`fn put_r(o: Result<[fn() -> str], str>, g)` matching `Ok(arr) => { arr[0] = g }`), attack_slot_param_array_of_option.kry (`fn reg_opt(a: [Option<fn() -> str>], g) { a[0] = Some(g) }`) and the two variants the verifier reported with the same behaviour, written here from the description: attack_slot_param_option_of_nested_array.kry (`Option<[[fn() -> str]]>`) and attack_slot_param_tuple_of_two_arrays.kry (`([fn() -> str], [fn() -> str])`, the store goes to `t.1[0]`). Master 732714ab, re-run before any code was touched: check rc=0 in default and strict mode, and `kryos run` prints TOPSECRET-CLOSURE-9f8e7d6c5b4a in both modes (executed). `storage_rows_in` (infer.rs) walks Array, Map, Set, the generic arguments of a Struct, Reference and Shared, and nothing else, so the row of an element inside a Tuple, an Option, a Result or an Enum payload is not input storage: the body's store is not recorded and the caller's slot never learns it. Closing root (R2): walk Tuple, Option, Result and Enum payloads in `storage_rows_in`, then measure it against the corpus. The R3 wave measured the forward-order twin of each of the five (`main` moved above everything else): all five still leak. Control that must stay accepted: the same program with a pure `g`.
-
-### 121. LIVE CAPABILITY ESCAPE -- the row layer's `deny!` verdict does not match a COARSE family: `deny!(fs)`, `deny!(io)` and `deny!(all)` accept a block whose closure reads a file, `deny!(fs:read)` on the same program is rejected -- NOT FIXED
-
-Found by the independent verifier of the R2 wave (PR 38). Recorded first by the R3 wave; it is not a slot or a timing defect, so that wave leaves it open. Probe tests/security/attack_deny_coarse_family_row_blind.kry (escape_status.sh row 121): `let fns = [r]` with `r` an fs:read closure, `deny!(fs) { for f in fns { println(f()) } }` (an outer harmless `f` blinds the shape layer; no store is involved). Master 732714ab, re-run before any code was touched: check rc=0 in default and strict mode, `kryos run` prints TOPSECRET-CLOSURE-9f8e7d6c5b4a in both modes; the verifier measured the same with `deny!(io)` and `deny!(all)`, and `deny!(fs:read)` on the same program is rejected with E0110. Cause (read from the code, not yet measured with a trace): check.rs `Stmt::DenyBlock` asks whether the authority the block uses SATISFIES the denied capability (`CapabilitySet::satisfies_required`), which is containment in one direction: a used `fs:read` does not satisfy a denied coarse `fs`. `CapabilitySet::without` and `overlaps_capability` already take the symmetric reading for the shape layer. Closing root: judge the denied capability by overlap, not by satisfaction. Control that must stay accepted: a block that uses nothing in the denied family.
 
 ### 122. LIVE CAPABILITY ESCAPE -- the type checker never checks the BODY of a trait default method, so a `deny!` block there is never judged by the row layer -- NOT FIXED
 
@@ -8727,6 +8726,16 @@ Found by the item-77 wave (2026-11-02). Item 77's own repros (rows 77a and 77b) 
 
 
 **Closed as an escape 2026-11-21 (wave r4-select-spawn), by item 126's root (R4), not by a shape-layer change.** Every row of this item put its `deny!` block in a `select` arm (130h: the hidden `return` is in a `select` arm of the closure), and the row layer now walks every select arm, so each is rejected in default and `--strict-capabilities` mode with E0110 (executed on this branch's binary; master accepted all of them, rc=0/rc=0). The shape-layer defect described above is NOT fixed: `kryos-capabilities` still mis-charges the shapes of this item, which is non-escaping only while the row layer judges the enclosing `deny!`. It would still escape wherever the row layer is blind (item 122, a `deny!` in a trait default method; the forward-reference rows of items 124 and 125), so the repro stays in the corpus as a CLOSED row and the shape fix stays wanted.
+
+
+### 121. CLOSED 2026-11-22 (wave coarse-family-deny, branch closeout/cap) -- the row layer's `deny!` verdict did not match a COARSE family. Original title: the row layer's `deny!` verdict does not match a COARSE family: `deny!(fs)`, `deny!(io)` and `deny!(all)` accept a block whose closure reads a file, `deny!(fs:read)` on the same program is rejected -- NOT FIXED
+
+Found by the independent verifier of the R2 wave (PR 38). Recorded first by the R3 wave; it is not a slot or a timing defect, so that wave leaves it open. Probe tests/security/attack_deny_coarse_family_row_blind.kry (escape_status.sh row 121): `let fns = [r]` with `r` an fs:read closure, `deny!(fs) { for f in fns { println(f()) } }` (an outer harmless `f` blinds the shape layer; no store is involved). Master 732714ab, re-run before any code was touched: check rc=0 in default and strict mode, `kryos run` prints TOPSECRET-CLOSURE-9f8e7d6c5b4a in both modes; the verifier measured the same with `deny!(io)` and `deny!(all)`, and `deny!(fs:read)` on the same program is rejected with E0110. Cause (read from the code, not yet measured with a trace): check.rs `Stmt::DenyBlock` asks whether the authority the block uses SATISFIES the denied capability (`CapabilitySet::satisfies_required`), which is containment in one direction: a used `fs:read` does not satisfy a denied coarse `fs`. `CapabilitySet::without` and `overlaps_capability` already take the symmetric reading for the shape layer. Closing root: judge the denied capability by overlap, not by satisfaction. Control that must stay accepted: a block that uses nothing in the denied family.
+
+**CLOSED 2026-11-22 (wave coarse-family-deny).** `kryos-types/src/ty.rs`, `denied_caps_used` (the one place a `deny!` verdict is decided, shared by the check taken at the block and `settle_denies`): `have.satisfies_required(&dcap)` became `have.overlaps_capability(dcap)`. Measured cause, not only read: the same repro with `deny!(fs)`, `deny!(io)` and `deny!(all)` was rc=0/rc=0 on master `dd637a90` and on this branch's base `c752e8c2`, `kryos run` printed TOPSECRET-CLOSURE-9f8e7d6c5b4a in both modes; with `deny!(fs:read)` rc=1 E0110. The matrix shows the hole was wider than the three named spellings: `deny!(net)` also accepted a block using `net:http` or `net:tcp`. Rejected alternative: special-casing the three coarse names in `Stmt::DenyBlock`; the verdict function is shared, so the lattice is fixed there once and `CapabilitySet::without` (shape layer) already read it this way. Siblings are untouched: `deny!(fs:read)` still accepts fs:write-only code, `deny!(net:http)` still accepts net:tcp.
+- Pins, proven both ways. `tests/deny_lattice_gate.sh`: every (denied, used) pair over net, net:http, net:tcp, io, fs, fs:read, fs:write, ffi, compute, crypto, process, env, term, db, time, all (expected verdict written out in the script from the lattice, rejected iff the two overlap), direct shape (shape layer) and blinded shape (only the row layer can judge: closure from an array under a harmless outer `f`, charged by a real builtin so used is limited to fs:read, fs:write, net:http, net:tcp, net, process, crypto), default and strict: 736 verdicts, master binary 26 wrong (every one a coarse deny with a fine used capability: fs, io, all, net), this branch 0 wrong. Unit test `ty::deny_lattice_tests` (all 16x16 pairs on `denied_caps_used` plus siblings): with the one line reverted 21 wrong, fixed 0. `tests/threat_model/claims.tsv` S41-121-coarse-{fs,io,all}-deny-{default,strict} (six rows): master binary FAIL x6 (rc=0), here ok. The old workaround claim S41-121-fine-grained-deny-default stays (still true).
+- Oracle, master base_A.tsv vs this head: `SUMMARY closed=58 bad=0 diag-changed=5 slower=0 added=11 removed=0 closed-runtime=0 still-escaping=22`. The 58 closed are the 57 rows of the R4 wave plus `attack_deny_coarse_family_row_blind.kry` (check=1[E0110] strict=1[E0110]); zero SEC-REGRESSION, NEWLY-REJECTED, NEWLY-ACCEPTED, TIMEOUT-FLIP, SELFHOST-RC, SELFHOST-SLOW, REMOVED. The 5 DIAG-CHANGED and 11 ADDED rows are the R4 wave's (an already-rejected program gains E0110 next to its original code); none is from this change.
+- `escape_status.sh`: STILL ESCAPING 23 -> 22, now-rejected 237 -> 238. Counts updated in the README, the preamble, THREAT-MODEL 4.1 (row 121 removed, the workaround entry removed) and the ESCAPE-ROUTING row.
 
 
 | Item | Evidence |

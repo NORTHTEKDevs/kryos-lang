@@ -1,0 +1,22 @@
+// THREAT-MODEL.md 4.1, item 121 (closed 2026-11-22): the program of
+// tests/security/attack_deny_coarse_family_row_blind.kry with deny!(io) instead of deny!(fs).
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let r = secret()
+    let fns = [r]
+    deny!(io) {
+        for f in fns {
+            println(f())
+        }
+    }
+}
