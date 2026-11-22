@@ -251,22 +251,72 @@ pub extern "C" fn kryos_arc_release(ptr: *mut u8) {
             // Synchronize with all prior Release decrements.
             std::sync::atomic::fence(Ordering::Acquire);
 
-            // Read fields before deallocation.
-            let drop_fn = (*header).drop_fn;
-            let size = (*header).size;
-            let align = (*header).align;
-
-            // Call drop function if set.
-            if let Some(f) = drop_fn {
-                f(ptr);
-            }
-
-            // Deallocate the entire block.
-            crate::allocstats::note_arc_free();
-            let (combined, _) = arc_layout(size, align).unwrap();
-            std::alloc::dealloc(header as *mut u8, combined);
+            free_block_bounded(ptr);
         }
     }
+}
+
+/// How much native stack nested drops may use below the outermost free
+/// before a block whose count reached zero is queued instead of dropped in
+/// place.
+const MAX_DROP_STACK: usize = 32 * 1024;
+
+thread_local! {
+    /// Stack address of the outermost free in progress on this thread (0 when
+    /// none): one read per nested free, a write only at the outermost.
+    static DROP_BASE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static DROP_PENDING: std::cell::RefCell<Vec<*mut u8>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Free a block whose count just reached zero. A long `shared` chain (a list
+/// of a million nodes) frees node by node through the drop function, so the
+/// plain recursion overflows the stack: once the nested frees have used
+/// `MAX_DROP_STACK` bytes of stack the block is queued, and the outermost free
+/// drains the queue iteratively. The queued block's count is already zero and
+/// nothing else can reach it.
+///
+/// # Safety
+/// `ptr` is an arc block whose reference count this thread just took to zero.
+unsafe fn free_block_bounded(ptr: *mut u8) {
+    let here = &ptr as *const *mut u8 as usize;
+    let base = DROP_BASE.with(|b| b.get());
+    if base == 0 {
+        DROP_BASE.with(|b| b.set(here));
+        free_block(ptr);
+        loop {
+            let next = DROP_PENDING.with(|q| q.borrow_mut().pop());
+            match next {
+                Some(p) => free_block(p),
+                None => break,
+            }
+        }
+        DROP_BASE.with(|b| b.set(0));
+        return;
+    }
+    if base.abs_diff(here) > MAX_DROP_STACK {
+        DROP_PENDING.with(|q| q.borrow_mut().push(ptr));
+        return;
+    }
+    free_block(ptr);
+}
+
+/// Run the drop function and deallocate an arc block whose count is zero.
+unsafe fn free_block(ptr: *mut u8) {
+    let header = header_from_ptr(ptr);
+    // Read fields before deallocation.
+    let drop_fn = (*header).drop_fn;
+    let size = (*header).size;
+    let align = (*header).align;
+
+    // Call drop function if set.
+    if let Some(f) = drop_fn {
+        f(ptr);
+    }
+
+    // Deallocate the entire block.
+    crate::allocstats::note_arc_free();
+    let (combined, _) = arc_layout(size, align).unwrap();
+    std::alloc::dealloc(header as *mut u8, combined);
 }
 
 /// Set the drop function for an ARC-managed object.
