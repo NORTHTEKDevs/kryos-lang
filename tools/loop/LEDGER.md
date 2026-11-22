@@ -8686,6 +8686,38 @@ master). Pinned by `tests/conformance/conf_shared_deref_ownership.kry`: it fails
 item 138's repro (`fn wrap(x: L) -> shared L { return shared x }`, linked into a list) no longer corrupts the heap, because the
 arc now takes its own owner of `x` (master: 0xC0000374 / wrong values on every backend); the conformance probe above pins it.
 
+Revision round 1 (independent verifiers refuted the first landing; all of it fixed in this change). (a) USE-AFTER-FREE introduced by
+the first landing, absent on master because master leaked: a `shared` handle that a consumer KEEPS took no reference of its own --
+`Box1 { h: s }`, `r.h = s`, `[s, s]`, `let t = s` (named locals and match-arm payload binds alike, and plain `let a = shared x;
+Box1 { h: a }`). `retain_for_ty` now answers an arc retain for `MirType::Shared` (emitted as `ArcRetain` by `LoweringContext::emit`,
+so every site that retains a closure now retains a `shared` handle too), the struct-literal, array-literal and field-assign sites
+take the reference, and a field assignment releases the overwritten arc (`d.h = a` leaked the old one). Pinned by
+`tests/conformance/conf_shared_consumers.kry`: the 9844d7fc binary fails it (`lit_field v 39 want 100`), this tree passes it on
+the JIT, Cranelift AOT and release AOT. (b) STACK OVERFLOW introduced by real frees: dropping a long `shared` chain recursed through
+`kryos_arc_release` (JIT overflowed between 60000 and 100000 nodes, release AOT at 300000). `kryos-rt/src/arc.rs` now bounds the
+nesting (`free_block_bounded`): past 48 nested frees a block whose count reached zero is queued on a thread-local list and the
+outermost free drains it iteratively. Pinned by `tests/conformance/conf_shared_deep_drop.kry` (three 300000-node lists; the 9844d7fc
+binary reports `stack overflow`). (c) A user enum with `shared` payload variants (`enum Expr { Lit(i64), Add(shared Expr, shared
+Expr) }`) still never freed: LLVM registered no drop function for `shared <enum>` (new `__kryos_arc_drop_enum_<E>`), and the
+Cranelift enum payload read retained a `shared` payload that the MIR bind (which retains when it needs a reference) retained again.
+(d) `[shared N]` element reads: Cranelift retained the element, LLVM did not, so an escaping read on release AOT was a
+use-after-free once arcs are really freed and a read-only one leaked on the JIT. Both now retain, and the statement-end cleanup
+releases a `shared` element temp that is only dereferenced. Probe rows added to `tests/mem/shared_leak.kry` and the gate
+(`enum_shared`, `index_read`, `bind_consumers`; each fails on the master binary with live arcs, 22 rows). The conformance pin
+`conf_match_field_ownership.kry` of the first landing passed on master (it could not fail), so it was removed: item 139 is pinned by
+the `match_field` gate rows.
+RESIDUAL, not fixed (found by the verifiers, measured on this tree; none is a use-after-free): (1) a struct that holds a `shared`
+field and is READ through that field in the same function (`(*b.h).v` on a local `b`) is marked partially moved by the field read
+and never dropped, so its arc leaks (master leaks it too); the by-value PARAM shape of item 139 is fixed, this local shape is not.
+(2) `match h.o` where the Option payload is a tuple, closure or trait object keeps the old behavior (the struct leaks); a tuple
+payload bind takes no reference, and an Option<tuple> struct field also leaks one box per value on LLVM without any match.
+(3) A `shared` handle copied through globals, tuples, closures captured by `spawn`, and `weak` handles leaks one arc per use
+(`a07`, `a08`, `b02`, `b17`, `b18`, `b19`, `c11` of the verifier set); a recursion that passes a `shared` handle leaks one per level
+(`c09`). (4) `let b = a` where `a` came from an array element read leaks one arc. (5) `(*a).name = ...` after a copy of `*a` is lost on
+release AOT (`c06`; master release AOT does not compile that program). (6) A tuple built from `*s` and returned twice, and a closure
+capturing `(*s).f`, behave as on master (wrong value on the JIT; an LLVM build error). The 12 pinned shapes and every shape in the
+gate flip from leaking to balanced; the residual shapes are leaks of the same kind master has, not regressions.
+
 Instrument (1.3.1 wave 1, no ownership fix): `KRYOS_ALLOC_STATS=1` (explicit truthy only: 1/true/yes/on, any case; everything else is off) makes any compiled program print `[alloc-stats] arc allocs=N frees=M live=L` and `[alloc-stats] box ...` to stderr at exit (counters in `kryos-rt/src/allocstats.rs`; arc = `kryos_arc_alloc` vs a release reaching zero, box = `kryos_calloc` vs a `kryos_free` that really frees). It measures ARC/BOX BALANCE ONLY: strings, arrays, maps, raw `alloc()` and Range are not counted, so `live=0` does not mean "no leak" and the RSS-based `tests/mem_*_gate.sh` gates remain the proof for those. Limits: not valid under `KRYOS_FREE_DIAG` (the quarantine path skips drop_fn; the report prints a `free_diag=on` marker and the gate refuses to run); a hard fault exit prints no report; under `KRYOS_PLAIN_ALLOC` a double free counts twice (live goes negative, which the gate fails on); the disabled-path overhead (one relaxed load + branch per counted call) is NOT measured. `tests/mem_balance_gate.sh` runs `tests/mem/shared_leak.kry` on both backends and pins the exact arc and box live counts per (mode, backend) at ITERS=3: any difference fails (regression, a fix without the table edit, a partial fix or growing leak, any negative live, a leg that is not the backend it claims, a row-count mismatch). The table was measured on Windows only; the Linux and macOS CI steps are continue-on-error until a CI run confirms the numbers. The counter also shows that a bare `let a = shared <int>` leaks its arc block on both backends (3 allocs, 0 frees at 3 iterations), which RSS never showed; it is the same defect as above and is a pinned-leaking row in the table.
 
 ### 138. MEMORY SAFETY -- `return shared x` for a by-value struct param, linked into a list, corrupts the heap in release builds since 1.1.0 -- NOT FIXED
@@ -8727,8 +8759,10 @@ any other payload kind (tuple, closure, trait object) keep the old behavior. Pro
 binary `KRYOS_ALLOC_STATS` for `tests/mem/shared_leak.kry` mode `match_field` at 3 iterations reports box live=3 (LLVM) and 9
 (Cranelift); with the fix 0 and 0, and the gate rows are flipped (and a balanced row is now also run at 10x the iterations).
 Peak working set of docs/r139b.kry (release AOT, string payload built per call), master vs fix at 100k, 1M and 10M iterations: 15.8,
-112.4, 1078.2 MB vs 4.5, 4.6, 4.6 MB (output identical). Safety pin: `tests/conformance/conf_match_field_ownership.kry` (value asserts
-after the struct died and the allocator reused its blocks, returned, stored and enum-payload shapes) in `tests/no_double_free.sh`.
+112.4, 1078.2 MB vs 4.5, 4.6, 4.6 MB (output identical). The leak is pinned by the `match_field` rows of
+`tests/mem_balance_gate.sh`; the use-after-free side (an escaped payload outliving the struct) is covered by
+`conf_shared_ownership.kry`'s `from_holder` / `survivor_holder` probes. The first landing's separate conformance pin
+could not fail on master, so it was removed.
 
 ---
 

@@ -730,6 +730,20 @@ impl LoweringContext {
     // ----- block management -----
 
     fn emit(&mut self, inst: Instruction) {
+        // A `shared` handle is retained like a closure, through the common
+        // `retain_for_ty` call; the arc retain is an instruction, not a call.
+        let inst = match inst {
+            Instruction::Assign {
+                value: RValue::Call { ref func, ref args },
+                ..
+            } if func == ARC_RETAIN_CALL && matches!(args.as_slice(), [Operand::Local(_)]) => {
+                match &args[0] {
+                    Operand::Local(l) => Instruction::ArcRetain { ptr: *l },
+                    _ => unreachable!(),
+                }
+            }
+            other => other,
+        };
         // Inside a try block, every call that can carry a cross-function
         // `throw` is followed IMMEDIATELY by a pending-exception check that
         // routes to the enclosing catch. This covers calls at any nesting
@@ -2655,8 +2669,13 @@ fn struct_cleanly_clonable(ctx: &LoweringContext, name: &str) -> bool {
     walk(ctx, name, &mut visiting)
 }
 
+/// Pseudo callee `retain_for_ty` names for a `shared` handle; `emit` turns the
+/// call into an `ArcRetain` instruction.
+const ARC_RETAIN_CALL: &str = "__kryos_arc_retain_handle";
+
 fn retain_for_ty(ty: &MirType) -> Option<&'static str> {
     match ty {
+        MirType::Shared(_) => Some(ARC_RETAIN_CALL),
         MirType::Str => Some("kryos_string_retain_opt"),
         MirType::Array(_, _) => Some("kryos_array_retain_opt"),
         MirType::Map { .. } => Some("kryos_map_retain_opt"),
@@ -4386,7 +4405,10 @@ fn drop_unescaped_str_temps(
                 && (matches!(l.ty, MirType::Str | MirType::Array(_, _) | MirType::Map { .. } | MirType::Function { .. })
                     || is_owned_struct_ty(ctx, &l.ty)
                     || is_owned_enum_ty(ctx, &l.ty)
-                    || is_owned_tuple_ty(ctx, &l.ty))
+                    || is_owned_tuple_ty(ctx, &l.ty)
+                    // A `shared` element read (`(*arr[i]).f`): the read takes
+                    // an arc reference the statement end must release.
+                    || matches!(l.ty, MirType::Shared(_)))
                 && !l.mutable
                 && escaping != Some(l.id.0)
         })
@@ -4520,6 +4542,10 @@ fn drop_unescaped_str_temps(
                 // previously freed a still-shared element out from under the
                 // container (the split_join regression) and that path's
                 // retain/consume accounting has not been re-audited.
+                // Only an ELEMENT read hands a `shared` temp its own reference.
+                if matches!(cand_ty, MirType::Shared(_)) && !matches!(value, RValue::Index { .. }) {
+                    continue 'cand;
+                }
                 owns = match value {
                     RValue::StringConcat(_) => true,
                     // A fresh array/map LITERAL (`[i, i+1, i+2]`, `{}`) is a
@@ -4639,6 +4665,19 @@ fn drop_unescaped_str_temps(
                     }
                 }
                 continue; // its own definition consumes other values, not itself
+            }
+            // A `shared` temp read out of an array element is dropped when its
+            // only uses are dereferences; any other use may keep the handle.
+            if matches!(cand_ty, MirType::Shared(_)) {
+                if let RValue::Deref { operand } = value {
+                    if mentions(operand, id) {
+                        continue;
+                    }
+                }
+                if rvalue_mentions_local(value, id) {
+                    continue 'cand;
+                }
+                continue;
             }
             // A TUPLE temp is dropped only when every use is a borrowed
             // user-fn argument or a share: a user function copies a tuple it
@@ -6330,7 +6369,7 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                 }
             }
 
-            if let Some((mut rvalue, mark_non_owning, closure_info, is_shared)) = rvalue_and_meta {
+            if let Some((mut rvalue, mark_non_owning, closure_info, _is_shared)) = rvalue_and_meta {
                 if mark_non_owning {
                     ctx.borrowed_locals.insert(local.0);
                 }
@@ -7941,7 +7980,7 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             // way (read, store, guarded release), but only
                             // through a struct this function owns -- an alias
                             // of another binding's struct still belongs to it.
-                            let dyn_field_owned = matches!(field_ty, MirType::DynTrait(_)) && {
+                            let dyn_field_owned = matches!(field_ty, MirType::DynTrait(_) | MirType::Shared(_)) && {
                                 let mut root = object.as_ref();
                                 while let ast::Expr::FieldAccess { object: inner, .. } = root {
                                     root = inner.as_ref();
@@ -8148,6 +8187,12 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                     // that place still owns and releases.
                                     emit_value_share(ctx, *vl);
                                     val_shared = true;
+                                } else if matches!(field_ty, MirType::Shared(_))
+                                    && matches!(value, ast::Expr::FieldAccess { .. })
+                                {
+                                    // `y.h = x.h`: the source keeps its arc
+                                    // reference, so the stored one is a new owner.
+                                    ctx.emit(Instruction::ArcRetain { ptr: *vl });
                                 } else if matches!(field_ty, MirType::Function { .. })
                                     && matches!(value, ast::Expr::FieldAccess { .. })
                                     && !is_variant_expr(ctx, value)
@@ -13461,6 +13506,13 @@ fn consume_call_args(ctx: &mut LoweringContext, dest: LocalId, func: &str, args:
                     });
                     continue;
                 }
+                // A fresh or element-read `shared` temp already owns the
+                // reference the slot takes over.
+                if matches!(local_ty, MirType::Shared(_))
+                    && ctx.locals.iter().any(|l| l.id == *local_id && l.name.is_none())
+                {
+                    continue;
+                }
                 if let Some(rf) = retain_for_ty(&local_ty) {
                     let sink = ctx.alloc_temp(MirType::I64);
                     ctx.emit(Instruction::Assign {
@@ -16329,6 +16381,12 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                         // retains at construction, so they keep the retain.
                         let retain_fn = match ty {
                             MirType::Map { .. } => Some("kryos_map_retain"),
+                            // A `shared` handle: the struct's drop releases
+                            // it, so the literal takes its own reference.
+                            // (An element read `xs[i]` already retained.)
+                            MirType::Shared(_) if !matches!(e, ast::Expr::IndexAccess { .. }) => {
+                                Some(ARC_RETAIN_CALL)
+                            }
                             // A closure: the struct's drop releases a function
                             // field, so `H { f: f }` released f's env twice.
                             // (An array element read `fs[i]` is already
@@ -20595,6 +20653,14 @@ fn retain_or_move_literal_element(ctx: &mut LoweringContext, e: &ast::Expr, op: 
             value: RValue::Call { func: "kryos_fn_retain".to_string(), args: vec![op.clone()] },
         });
         return true;
+    }
+    // A `shared` handle (a named one, or a field read): the slot is a new
+    // owner, which takes its own arc reference.
+    if matches!(ty, MirType::Shared(_))
+        && matches!(e, ast::Expr::Identifier { .. } | ast::Expr::FieldAccess { .. })
+    {
+        ctx.emit(Instruction::ArcRetain { ptr: *id });
+        return false;
     }
     if !matches!(e, ast::Expr::Identifier { .. }) {
         return false;

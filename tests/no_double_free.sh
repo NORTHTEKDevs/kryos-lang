@@ -483,6 +483,7 @@ no_df_both shared_deep_drop "$ROOT/tests/conformance/conf_shared_deep_drop.kry"
 # leaf aliased by two parents, with the arcs now really freed. Plus the
 # use-after-free probe that reuses the freed blocks before reading what a
 # payload bind escaped with (it fails with the bind's own reference removed).
+no_df_both shared_consumers "$ROOT/tests/conformance/conf_shared_consumers.kry"
 no_df_both shared_ownership_reuse "$ROOT/tests/conformance/conf_shared_ownership.kry"
 no_df_both shared_deref_ownership "$ROOT/tests/conformance/conf_shared_deref_ownership.kry"
 no_df_both shared_ownership "$ROOT/tests/mem/shared_ownership.kry"
