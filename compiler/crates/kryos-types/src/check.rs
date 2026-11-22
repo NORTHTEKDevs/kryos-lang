@@ -3071,6 +3071,104 @@ impl TypeChecker {
                 }
                 self.current_self_type = prev_self;
             }
+            Decl::Trait {
+                name,
+                generics,
+                methods,
+                ..
+            } => {
+                // The BODY of a trait default method. `register_decl` records only
+                // the signatures ("bodies live in each impl"), and this match had
+                // no arm for the trait, so a default body was never checked: a
+                // type error in one was accepted and a `deny!` block in one was
+                // never judged by the row layer (LEDGER item 122). Check each body
+                // like an impl method body, with `Self` bound to the trait itself
+                // (the same `Self` its signatures were resolved with).
+                let prev_self = self.current_self_type.take();
+                let self_ty = Type::DynTrait {
+                    trait_name: name.clone(),
+                };
+                self.current_self_type = Some(self_ty.clone());
+                let trait_def = self.env.lookup_trait(name).cloned();
+                self.env.push_scope();
+                for gp in generics {
+                    let tv = self.engine.fresh_var();
+                    self.env.define_var(gp.name.clone(), tv);
+                }
+                for method in methods {
+                    let Decl::Function {
+                        name: mname,
+                        body: Some(body),
+                        params: m_params,
+                        ret_ty: m_ret,
+                        generics: m_generics,
+                        ..
+                    } = method
+                    else {
+                        continue;
+                    };
+                    self.env.push_scope();
+                    self.env.define_var("self".to_string(), self_ty.clone());
+                    for gp in m_generics {
+                        let tv = self.engine.fresh_var();
+                        self.env.define_var(gp.name.clone(), tv);
+                    }
+                    let sig = trait_def
+                        .as_ref()
+                        .and_then(|d| d.methods.iter().find(|s| &s.name == mname))
+                        .cloned();
+                    let prev_ret = self.current_return_type.take();
+                    let prev_fn = self.current_function_name.take();
+                    self.current_function_name = Some(mname.clone());
+                    if let Some(sig) = &sig {
+                        for (pname, pty) in &sig.params {
+                            if pname != "self" {
+                                self.env.define_var(pname.clone(), pty.clone());
+                            }
+                        }
+                        self.current_return_type = Some(sig.ret.clone());
+                        self.seed_tail_lambda_expected(body);
+                        self.engine.mark_slot_rows(&sig.ret, false);
+                        self.engine.begin_store_effects(&sig.generic_cap_var_ids);
+                        self.engine.set_effect_owner(sig.own_cap_var);
+                        // Reached through the trait's signature (a bound, a `dyn`).
+                        self.engine.mark_dispatch_owner(sig.own_cap_var);
+                        let param_tys: Vec<Type> =
+                            sig.params.iter().map(|(_, t)| t.clone()).collect();
+                        self.engine.mark_input_storage(&param_tys);
+                    } else {
+                        for param in m_params {
+                            if param.name == "self" {
+                                continue;
+                            }
+                            let ty = param
+                                .ty
+                                .as_ref()
+                                .map(|t| self.resolve_type_expr(t))
+                                .unwrap_or_else(|| self.engine.fresh_var());
+                            self.env.define_var(param.name.clone(), ty);
+                        }
+                        self.current_return_type =
+                            m_ret.as_ref().map(|t| self.resolve_type_expr(t));
+                        self.seed_tail_lambda_expected(body);
+                    }
+                    self.cap_accum_stack.push(crate::ty::CapRow::empty());
+                    self.check_block(body);
+                    let method_caps = self
+                        .cap_accum_stack
+                        .pop()
+                        .unwrap_or_else(crate::ty::CapRow::empty);
+                    if let Some(sig) = &sig {
+                        self.engine.bind_cap_var(sig.own_cap_var, method_caps);
+                        self.engine.end_store_effects(Some(sig.own_cap_var));
+                    }
+                    self.current_function_name = prev_fn;
+                    self.current_return_type = prev_ret;
+                    self.env.pop_scope();
+                }
+                self.env.pop_scope();
+                self.current_self_type = prev_self;
+            }
             _ => {}
         }
     }

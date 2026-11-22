@@ -466,14 +466,14 @@ longer accepted in either mode, if its run prints no leak marker, or if this
 table and the measurement disagree in either direction). The six rows of the
 first version (64, 72, 77a, 77b, 112, 114) are closed: PR #39 closed 64, 72, 77a,
 77b and 114, and 112 is rejected on this build. Items 119, 121, 122 and 123 (ten
-rows) were open on master before this revision. This revision records the other
+rows) were open on master (121 and 122 are closed on this branch since) before this revision. This revision records the other
 70 rows (items 124 to 134) on master. The R4 wave (2026-11-21) closed 57 of
 them, items 126 to 134, by making the row layer walk every `select` arm and every
 spawned lambda (LEDGER items 126 to 134 and the R4 wave entry at the top); the 13
 rows of items 124 and 125 remain. The shape-layer defects of items 127 to 134 are
 NOT fixed: those programs are rejected only because the row layer now judges the
 `deny!` block, and the same shapes would escape again wherever the row layer is
-blind (item 122, the forward-reference rows of items 124 and 125).
+blind (the forward-reference rows of items 124 and 125).
 
 <!-- known-escapes:begin -->
 | id | repro | shape | root |
@@ -483,7 +483,6 @@ blind (item 122, the forward-reference rows of items 124 and 125).
 | 119c | tests/security/attack_slot_param_array_of_option.kry | the same with an array of Option closures (a[0] = Some(g)) | R2 |
 | 119d | tests/security/attack_slot_param_option_of_nested_array.kry | the same with an Option holding a nested array | R2 |
 | 119e | tests/security/attack_slot_param_tuple_of_two_arrays.kry | the same with a tuple of two arrays, the store going to the second | R2 |
-| 122 | tests/security/attack_deny_trait_default_method_unchecked.kry | the body of a trait default method is never checked, so a deny! block in it is never judged | R4 (missing walk) |
 | 123a | tests/security/attack_slot_param_fn_value_factory.kry | a store helper reached through a factory that returns the helper as a function value | R2 |
 | 123b | tests/security/attack_slot_param_trait_bound_dispatch.kry | a store helper reached through a generic function with a trait bound | R2 |
 | 123c | tests/security/attack_slot_dyn_registrar_store.kry | a store helper reached through dyn dispatch | R2 |
@@ -511,9 +510,9 @@ None of the 22 makes an unannotated, zero-authority program read a file
 
 - **Row-layer gaps, 22 rows.** Items 119 and 123 (eight rows) are one mechanism:
   a helper stores a closure into a container it was handed and the caller's view
-  of that container is not updated. 122 is the body
-  of a trait default method (121, coarse `deny!` families, was closed 2026-11-22: the verdict now judges a denied
-  coarse family by overlap, `denied_caps_used` in `kryos-types/src/ty.rs`). 124 and 125 (13 rows) are forward references: a
+  of that container is not updated. (121, coarse `deny!` families, was closed 2026-11-22: the verdict now judges a denied
+  coarse family by overlap, `denied_caps_used` in `kryos-types/src/ty.rs`. 122, the body of a trait default method, was closed
+  2026-11-22: `check_decl_inner` has a `Decl::Trait` arm that checks each default body like an impl method body.) 124 and 125 (13 rows) are forward references: a
   function declared above the callee it hands a closure to, or a store made by a
   callee declared below its caller.
 - **Closed since 1.3.0, and what that does and does not mean.** The R4 wave
@@ -529,7 +528,7 @@ None of the 22 makes an unannotated, zero-authority program read a file
   a container element handed through a local closure (132). Those programs are
   rejected only because the row layer judges the `deny!` block; the shape-layer
   defects themselves are open imprecision (LEDGER items 127 to 134), and the same
-  shapes escape wherever the row layer is blind (items 122, 124 and 125).
+  shapes escape wherever the row layer is blind (items 124 and 125).
 
 A variant of a 119 or 123 repro that hands the closure to a callee declared
 `@capabilities()` instead of calling it inside `deny!` is accepted and runs, but
@@ -547,9 +546,6 @@ it does not make the check sound.
   is rejected on this build (row 112). Pass the container itself, not a wrapper
   around it, or have the helper return the new container and assign it at the
   call site (not executed for these shapes).
-- **122** (item 122, root R4). Do not put a `deny!` block in the default method of
-  a trait; put it in an `impl` method, which is checked (the second half is not
-  executed). A type error in a default method body is also accepted (section 4.4).
 - **123a-c** (item 123, root R2). Do not rely on `deny!` when the store helper is
   reached through a function returned by a factory, a trait-bound generic or a
   `dyn` value.
@@ -602,7 +598,7 @@ Both programs are accepted today in default and strict (pinned for
 pinned by `tests/security_gate.sh`, carried). The row layer (R2, R3) is the
 intended way to close the same items without that cost; both waves are merged
 (PR #38 as `732714ab`, PR #39 as `e2fbc46c`) and what remains of the row layer is
-items 119, 122 and 123 (4.1).
+items 119 and 123 (4.1).
 
 ### 4.4 Other limitations verified for this document
 
@@ -632,12 +628,13 @@ items 119, 122 and 123 (4.1).
   symbols (the self-hosted compiler's runtime does) would give a zero-capability
   program raw memory and syscalls, and the Rust toolchain's checker would still
   accept it. The other nine names were not executed.
-- **The body of a trait default method is not type-checked** (LEDGER item 122,
-  root of escape 122). `let x: i64 = "not an int"` in one is accepted in default
-  and strict (pinned: claims.tsv S44-trait-default-body-unchecked-default, -strict).
-  The capability checker does charge such a body: a default method calling
-  `env_get` made its caller need `process` (executed 2026-11-02 on a scratch
-  program, `E0507` in default and `E0505` in strict; not committed).
+- **The body of a trait default method is type-checked** (LEDGER item 122, CLOSED
+  2026-11-22; it was not before). `let x: i64 = "not an int"` in one is now rejected
+  (E0100) in default and strict (pinned: claims.tsv S44-trait-default-body-checked-default,
+  -strict, flipped from the S44-trait-default-body-unchecked pair that asserted acceptance).
+  The body is checked with `Self` bound to the trait (a `dyn` of it) and its capability
+  row is bound to the default method's signature, so a caller of an inherited default
+  method is charged what the body uses.
 
 ### 4.5 Accepted zero-authority shapes outside the escape corpus
 

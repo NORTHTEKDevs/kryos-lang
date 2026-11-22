@@ -378,7 +378,7 @@ returned value, and the rows of a lambda's annotated parameters.
   * The `deny!` verdict and the forward references: see 2.7. What 2.7 does not reach is a
     helper's stores followed through a factory result, a generic trait bound or a `dyn`
     (LEDGER item 123), a container inside a tuple / `Option` / `Result` / enum parameter
-    (item 119) and the body of a trait default method (item 122).
+    (item 119). The body of a trait default method is checked like an impl method body (item 122, closed 2026-11-22).
   * A store inside a lambda into a variable the lambda captured by move is a dead
     store at run time, but the slot is shared, so the program is rejected when the
     privileged closure reaches a `deny!` that reads the variable.
@@ -422,7 +422,7 @@ it) let a privileged closure reach the block in every one of those cases.
 - The verdict does not depend on the order of the declarations: a privileged closure stored into
   a slot below the block counts, as it did above it. That is the per-declaration slot cost of 2.6,
   now order-independent.
-- Not covered: the body of a trait default method is never checked (LEDGER item 122); a store
+- Not covered: a store
   helper reached through a factory result, a generic trait bound or a `dyn` (item 123), or a
   container inside a tuple / `Option` / `Result` / enum parameter (item 119), is not followed.
 

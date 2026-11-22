@@ -1365,7 +1365,7 @@ R3_ESCAPES="$R3_ESCAPES \
     attack_deny_param_in_nested_array \
     attack_deny_param_pick_passthrough \
     attack_deny_param_factory_guard \
-    attack_deny_late_if_branch_store"
+    attack_deny_late_if_branch_store \n    attack_deny_trait_default_method_unchecked \n    attack_deny_trait_default_generic_trait"
 for esc in $R3_ESCAPES; do
     esc_ok=1
     for mode in "" "--strict-capabilities"; do
@@ -1409,7 +1409,7 @@ R3_CONTROLS="ctl_deny_param_wrapper_pure \
     ctl_slot_param_fn_value_struct_field_pure \
     ctl_slot_param_fn_value_map_of_ops_pure \
     ctl_slot_lambda_wrapper_calls_put_pure \
-    ctl_deny_plugin_platform_pure"
+    ctl_deny_plugin_platform_pure \n    ctl_deny_trait_default_method_pure"
 for ctl in $R3_CONTROLS; do
     ctl_ok=1
     for mode in "" "--strict-capabilities"; do
