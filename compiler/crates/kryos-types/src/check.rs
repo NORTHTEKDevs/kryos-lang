@@ -5554,6 +5554,17 @@ impl TypeChecker {
                                     }
                                 }
                                 let arg_ty = self.infer_expr(arg);
+                                // LEDGER root R4 (spawn family). MIR `lower_coop_spawn` RUNS a
+                                // closure-literal argument's body on the cooperative task, so like
+                                // `spawn <lambda>` its row is charged to the enclosing frame (a plain
+                                // value argument is only a closure value and charges nothing).
+                                if matches!(&callee_name_str, Some(n) if n == "coop_spawn")
+                                    && matches!(arg, Expr::Lambda { .. })
+                                {
+                                    if let Type::Function { caps, .. } = self.engine.resolve(&arg_ty) {
+                                        self.accumulate_caps(&caps);
+                                    }
+                                }
                                 // LEDGER item 40: last point a concrete type exists before `any` erasure.
                                 self.reject_untagged_scalar_into_any(param_ty, &arg_ty, arg.span());
                                 if let Err(diag) = self.engine.unify(param_ty, &arg_ty, arg.span())
