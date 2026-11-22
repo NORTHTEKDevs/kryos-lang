@@ -1228,6 +1228,27 @@ R2_ESCAPES="$R2_ESCAPES \
     attack_slot_param_mut_ref \
     attack_slot_param_method \
     attack_slot_param_fn_value"
+# LEDGER item 119 (root R2): the handed container sits inside a Tuple, an Option or a
+# Result parameter. storage_rows_in walked Array / Map / Set / Struct / Reference /
+# Shared only, so the element row inside the others was not input storage and the
+# body's store was never recorded. Item 123: the store helper is reached through a
+# function value (a factory result), a generic trait bound or a dyn dispatch, none of
+# which names the callee, so nothing replayed its stores; such a call now widens every
+# container of closures among its arguments by every closure reachable from them.
+R2_ESCAPES="$R2_ESCAPES \
+    attack_slot_param_container_in_tuple \
+    attack_slot_param_container_in_result \
+    attack_slot_param_array_of_option \
+    attack_slot_param_option_of_nested_array \
+    attack_slot_param_tuple_of_two_arrays \
+    attack_slot_param_container_tuple_of_tuples \
+    attack_slot_param_container_in_option_of_tuple \
+    attack_slot_param_container_in_shared_tuple \
+    attack_slot_param_fn_value_factory \
+    attack_slot_param_fn_value_factory_lambda \
+    attack_slot_param_trait_bound_dispatch \
+    attack_slot_dyn_registrar_store \
+    attack_slot_dyn_copy_between_containers"
 # The lambda form of item 112: a LAMBDA with an annotated array parameter that stores
 # its closure parameter into it. A lambda is one monomorphic value, so there is no
 # per-call copy of the parameter row to replay; the stores are written into the slot
@@ -1283,6 +1304,11 @@ R2_CONTROLS="$R2_CONTROLS \
     ctl_slot_param_store_privileged_other_array"
 R2_CONTROLS="$R2_CONTROLS \
     ctl_slot_lambda_container_param_store_pure"
+R2_CONTROLS="$R2_CONTROLS \
+    ctl_slot_param_container_in_tuple_pure \
+    ctl_slot_param_fn_value_factory_pure \
+    ctl_slot_dyn_registrar_store_pure \
+    ctl_slot_param_fn_value_other_container"
 for ctl in $R2_CONTROLS; do
     ctl_ok=1
     for mode in "" "--strict-capabilities"; do

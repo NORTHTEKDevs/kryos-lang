@@ -5607,6 +5607,7 @@ impl TypeChecker {
                             // First argument's type, kept for the builtin
                             // `contains` shape gate after its needle is typed.
                             let mut contains_first: Option<Type> = None;
+                            let mut call_arg_tys: Vec<Type> = Vec::new();
                             for (i, (arg, param_ty)) in
                                 args.iter().zip(params.iter()).enumerate()
                             {
@@ -5658,6 +5659,7 @@ impl TypeChecker {
                                     }
                                 }
                                 let arg_ty = self.infer_expr(arg);
+                                call_arg_tys.push(arg_ty.clone());
                                 // LEDGER root R4 (spawn family). MIR `lower_coop_spawn` RUNS a
                                 // closure-literal argument's body on the cooperative task, so like
                                 // `spawn <lambda>` its row is charged to the enclosing frame (a plain
@@ -5771,6 +5773,17 @@ impl TypeChecker {
                                     }
                                 }
                             }
+                            // A call through a function VALUE: the callee is not a
+                            // declaration, so its stores are not replayed (item 123).
+                            let direct_decl = matches!(
+                                callee.as_ref(),
+                                Expr::Identifier { name, .. }
+                                    if self.env.lookup_var(name).is_none()
+                                        && self.env.lookup_function(name).is_some()
+                            );
+                            if !direct_decl {
+                                self.engine.store_unknown_callee_effects(&call_arg_tys);
+                            }
                         }
                         *ret.clone()
                     }
@@ -5870,6 +5883,7 @@ impl TypeChecker {
                                             *span,
                                         );
                                     } else {
+                                        let mut call_arg_tys: Vec<Type> = Vec::new();
                                         for (arg, (_, param_ty)) in
                                             args.iter().zip(expected_params.iter())
                                         {
@@ -5881,7 +5895,9 @@ impl TypeChecker {
                                             {
                                                 self.diagnostics.push(diag);
                                             }
+                                            call_arg_tys.push(arg_ty);
                                         }
+                                        self.engine.store_unknown_callee_effects(&call_arg_tys);
                                     }
                                     // Row-propagation stage gap 1/3
                                     // (docs/capability-effects-spec.md):
@@ -5956,6 +5972,7 @@ impl TypeChecker {
                                     *span,
                                 );
                             } else {
+                                let mut call_arg_tys: Vec<Type> = Vec::new();
                                 for (arg, param_ty) in args.iter().zip(expected_params.iter())
                                 {
                                     let arg_ty = self.infer_expr(arg);
@@ -5967,6 +5984,10 @@ impl TypeChecker {
                                         self.diagnostics.push(diag);
                                     }
                                     self.check_int_literal_range(param_ty, arg, arg.span());
+                                    call_arg_tys.push(arg_ty);
+                                }
+                                if !self_in_default {
+                                    self.engine.store_unknown_callee_effects(&call_arg_tys);
                                 }
                             }
                             // The reference binds the callee's row vars to this

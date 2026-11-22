@@ -479,11 +479,11 @@ privileged `Plugin { run: .. }` literal below a `deny!` that reads another regis
 of `Plugin`s now counts, exactly as it did when it sat above); a block inside a
 method of a trait impl that depends on one of its parameters is judged on `all`,
 because a generic bound or a `dyn` reaches the method through the trait; and a
-function nothing references is not judged on its parameters (it cannot run). The body of a trait default method is checked like an impl method body (item 122, closed 2026-11-22). Still
-open: a
-helper that stores a closure into a container it was handed is not followed through
-a factory result, a generic trait bound or a `dyn` (item 123), or when the container
-sits inside a tuple, an `Option`, a `Result` or an enum (item 119). A coarse `deny!(fs)`, `deny!(io)` or `deny!(all)` is judged by overlap with the used capability (item 121, closed 2026-11-22). Rejected: the `tests/security/attack_deny_*.kry` programs (E0110).
+function nothing references is not judged on its parameters (it cannot run). The body of a trait default method is checked like an impl method body (item 122, closed 2026-11-22). A
+helper that stores a closure into a container it was handed is followed when the container sits
+inside a tuple, an `Option` or a `Result`, and a call through a factory result, a generic trait bound or a
+`dyn` widens every container of closures among its arguments by every closure it is handed
+(items 119 and 123, closed 2026-11-22). A coarse `deny!(fs)`, `deny!(io)` or `deny!(all)` is judged by overlap with the used capability (item 121, closed 2026-11-22). Rejected: the `tests/security/attack_deny_*.kry` programs (E0110).
 Accepted: the `tests/security/ctl_deny_*.kry` controls.
 
 See `tests/security/cap_escape_closure_launder_local_struct_field.kry`,

@@ -375,10 +375,11 @@ returned value, and the rows of a lambda's annotated parameters.
   per-call copy: its stores are written into the slot of each argument the
   parameter is bound to, at the moment it is bound.
 - Not covered:
-  * The `deny!` verdict and the forward references: see 2.7. What 2.7 does not reach is a
-    helper's stores followed through a factory result, a generic trait bound or a `dyn`
-    (LEDGER item 123), a container inside a tuple / `Option` / `Result` / enum parameter
-    (item 119). The body of a trait default method is checked like an impl method body (item 122, closed 2026-11-22).
+  * The `deny!` verdict and the forward references: see 2.7. A helper's stores are
+    followed when the handed container sits inside a tuple / `Option` / `Result` parameter
+    (LEDGER item 119, closed 2026-11-22); through a factory result, a generic trait bound or a `dyn`
+    they are not replayed, and the call widens every container of closures among its arguments
+    by every closure reachable from them instead (item 123, closed 2026-11-22). The body of a trait default method is checked like an impl method body (item 122, closed 2026-11-22).
   * A store inside a lambda into a variable the lambda captured by move is a dead
     store at run time, but the slot is shared, so the program is rejected when the
     privileged closure reaches a `deny!` that reads the variable.
@@ -422,9 +423,10 @@ it) let a privileged closure reach the block in every one of those cases.
 - The verdict does not depend on the order of the declarations: a privileged closure stored into
   a slot below the block counts, as it did above it. That is the per-declaration slot cost of 2.6,
   now order-independent.
-- Not covered: a store
-  helper reached through a factory result, a generic trait bound or a `dyn` (item 123), or a
-  container inside a tuple / `Option` / `Result` / enum parameter (item 119), is not followed.
+- A store helper reached through a factory result, a generic trait bound or a `dyn` is not followed
+  (nothing names the callee); the call widens every container of closures among its arguments by
+  every closure reachable from them (item 123, closed 2026-11-22). A container inside a tuple /
+  `Option` / `Result` parameter is followed (item 119, closed 2026-11-22).
 
 ## 3. Subtyping and variance
 

@@ -1,0 +1,34 @@
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+// item 123: a dyn method copies the elements of one handed container into another.
+trait Mover {
+    fn mv(self: Self, dst: [fn() -> str], src: [fn() -> str])
+}
+struct M1 {}
+impl Mover for M1 {
+    fn mv(self: M1, dst: [fn() -> str], src: [fn() -> str]) {
+        dst[0] = src[0]
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let r = secret()
+    let d: dyn Mover = M1 {}
+    let fns = [safe]
+    let hot = [r]
+    d.mv(fns, hot)
+    deny!(fs:read) {
+        for f in fns {
+            println(f())
+        }
+    }
+}

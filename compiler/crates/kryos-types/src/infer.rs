@@ -1135,6 +1135,76 @@ impl InferenceEngine {
         }
     }
 
+    /// The call reaches a callee that cannot be named: a function VALUE (a
+    /// factory result, a parameter, an element), a method through a generic
+    /// bound or a `dyn`. Nothing replays what its body stores into the
+    /// containers it was handed (LEDGER item 123), so assume the worst the
+    /// arguments allow: every container of closures among `arg_tys` may now
+    /// hold any closure reachable from any argument (a closure argument, the
+    /// elements of another container). Fails closed; a callee that stores
+    /// nothing is charged for it only when a `deny!` block later calls into
+    /// the widened container.
+    pub fn store_unknown_callee_effects(&mut self, arg_tys: &[Type]) {
+        let mut found: Vec<(CapRow, bool)> = Vec::new();
+        for t in arg_tys {
+            let resolved = self.resolve(t);
+            Self::fn_rows_in(&resolved, false, &mut found);
+        }
+        let mut source = CapRow::Resolved { concrete: crate::ty::CapBits::EMPTY, vars: Vec::new() };
+        for (row, _) in &found {
+            source = source.union(row);
+        }
+        for (row, in_container) in &found {
+            if !*in_container {
+                continue;
+            }
+            for &s in row.var_ids() {
+                let own: Vec<CapVarId> = source.var_ids().iter().copied().filter(|v| *v != s).collect();
+                let widened = CapRow::Resolved { concrete: source.concrete_bits(), vars: own };
+                let proxy = self.fresh_cap_var();
+                self.bind_cap_var(proxy, CapRow::var(s));
+                self.store_into_input(proxy, widened);
+            }
+        }
+    }
+
+    /// Every function row inside `ty` (not those inside a function's own
+    /// signature), with whether it sits in a container's storage.
+    fn fn_rows_in(ty: &Type, in_container: bool, out: &mut Vec<(CapRow, bool)>) {
+        match ty {
+            Type::Function { caps, .. } => out.push((caps.clone(), in_container)),
+            Type::Array { element, .. } | Type::Set { element } => {
+                Self::fn_rows_in(element, true, out)
+            }
+            Type::Map { key, value } => {
+                Self::fn_rows_in(key, true, out);
+                Self::fn_rows_in(value, true, out);
+            }
+            Type::Struct { generics, .. } | Type::Enum { generics, .. } => {
+                for g in generics {
+                    Self::fn_rows_in(g, true, out);
+                }
+            }
+            Type::Tuple { elements } => {
+                for e in elements {
+                    Self::fn_rows_in(e, in_container, out);
+                }
+            }
+            Type::Option { inner } => Self::fn_rows_in(inner, in_container, out),
+            Type::Result { ok, err } => {
+                Self::fn_rows_in(ok, in_container, out);
+                Self::fn_rows_in(err, in_container, out);
+            }
+            Type::Reference { inner, mutable } | Type::Pointer { inner, mutable } => {
+                Self::fn_rows_in(inner, in_container || *mutable, out)
+            }
+            Type::Shared { inner } | Type::Weak { inner } => {
+                Self::fn_rows_in(inner, in_container, out)
+            }
+            _ => {}
+        }
+    }
+
     fn storage_rows_in(ty: &Type, in_container: bool, out: &mut Vec<CapVarId>) {
         match ty {
             Type::Function { caps, .. } => {
@@ -1149,10 +1219,22 @@ impl InferenceEngine {
                 Self::storage_rows_in(key, true, out);
                 Self::storage_rows_in(value, true, out);
             }
-            Type::Struct { generics, .. } => {
+            Type::Struct { generics, .. } | Type::Enum { generics, .. } => {
                 for g in generics {
                     Self::storage_rows_in(g, true, out);
                 }
+            }
+            // A tuple, Option or Result is not storage itself, it holds
+            // values: a container inside it is still the caller's container.
+            Type::Tuple { elements } => {
+                for e in elements {
+                    Self::storage_rows_in(e, in_container, out);
+                }
+            }
+            Type::Option { inner } => Self::storage_rows_in(inner, in_container, out),
+            Type::Result { ok, err } => {
+                Self::storage_rows_in(ok, in_container, out);
+                Self::storage_rows_in(err, in_container, out);
             }
             Type::Reference { inner, mutable } | Type::Pointer { inner, mutable } => {
                 Self::storage_rows_in(inner, in_container || *mutable, out)
