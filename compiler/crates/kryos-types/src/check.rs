@@ -6022,34 +6022,10 @@ impl TypeChecker {
                             // rationale) for the generic trait-bound
                             // MethodCall arm a few hundred lines up.
                             if self_in_default {
-                                // `self.m(args)` reaches an override as often as the
-                                // default, and a required method has no body whose
-                                // row the reference could carry: the call may invoke
-                                // or hand back anything its ARGUMENTS can reach. So
-                                // charge the reference row plus this call's own
-                                // param rows (bound to the arguments by the unify
-                                // above), and give a returned closure the same row.
-                                // A harmless argument costs nothing; a privileged
-                                // one fails the enclosing `deny!`.
-                                let mut vs: Vec<crate::ty::CapVarId> = cap_var_map.values().copied().collect();
-                                // ...and whatever any override of `m` does or
-                                // returns: its own row and its row vars, bound
-                                // when the impl body is checked (read at the
-                                // module's `deny!` verdict, so impl order is moot).
-                                for isig in self.env.trait_impl_method_sigs(trait_name, method) {
-                                    vs.push(isig.own_cap_var);
-                                    vs.extend(isig.generic_cap_var_ids.iter().copied());
-                                }
-                                vs.sort_unstable();
-                                vs.dedup();
-                                let reach = crate::ty::CapRow::Resolved {
-                                    concrete: crate::ty::CapBits::EMPTY,
-                                    vars: vs,
-                                };
-                                self.accumulate_caps(&ref_caps.union(&reach));
-                                return sig.ret.with_fn_caps_replaced(&reach);
+                                self.accumulate_caps(&ref_caps);
+                            } else {
+                                self.accumulate_caps(&crate::ty::CapRow::unknown());
                             }
-                            self.accumulate_caps(&crate::ty::CapRow::unknown());
                             return sig.ret.with_caps_erased_to_unknown();
                         }
                     }

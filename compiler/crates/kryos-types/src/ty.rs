@@ -521,14 +521,6 @@ impl Type {
     /// passing an un-stamped — and therefore wrongly still-Resolved,
     /// possibly wrongly still-EMPTY — row through an unrecognized shape.
     pub fn with_caps_erased_to_unknown(&self) -> Type {
-        self.with_fn_caps_replaced(&CapRow::unknown())
-    }
-
-    /// Rewrite the row of every function type reachable inside this type to
-    /// `row` (exhaustive over `Type`, like `with_caps_erased_to_unknown`, which
-    /// is this with `Unknown`). Used where a callee's result can hold only what
-    /// its arguments could reach (a `self.m(args)` inside a trait default body).
-    pub fn with_fn_caps_replaced(&self, row: &CapRow) -> Type {
         match self {
             // Primitives and Error/Never/DynTrait/Var carry no capability
             // row anywhere inside them — nothing to stamp.
@@ -555,54 +547,54 @@ impl Type {
             | Type::Var(_)
             | Type::Error => self.clone(),
             Type::Array { element, size } => Type::Array {
-                element: Box::new(element.with_fn_caps_replaced(row)),
+                element: Box::new(element.with_caps_erased_to_unknown()),
                 size: *size,
             },
             Type::Tuple { elements } => Type::Tuple {
-                elements: elements.iter().map(|e| e.with_fn_caps_replaced(row)).collect(),
+                elements: elements.iter().map(|e| e.with_caps_erased_to_unknown()).collect(),
             },
             Type::Map { key, value } => Type::Map {
-                key: Box::new(key.with_fn_caps_replaced(row)),
-                value: Box::new(value.with_fn_caps_replaced(row)),
+                key: Box::new(key.with_caps_erased_to_unknown()),
+                value: Box::new(value.with_caps_erased_to_unknown()),
             },
             Type::Set { element } => Type::Set {
-                element: Box::new(element.with_fn_caps_replaced(row)),
+                element: Box::new(element.with_caps_erased_to_unknown()),
             },
             Type::Option { inner } => Type::Option {
-                inner: Box::new(inner.with_fn_caps_replaced(row)),
+                inner: Box::new(inner.with_caps_erased_to_unknown()),
             },
             Type::Result { ok, err } => Type::Result {
-                ok: Box::new(ok.with_fn_caps_replaced(row)),
-                err: Box::new(err.with_fn_caps_replaced(row)),
+                ok: Box::new(ok.with_caps_erased_to_unknown()),
+                err: Box::new(err.with_caps_erased_to_unknown()),
             },
             Type::Struct { name, generics } => Type::Struct {
                 name: name.clone(),
-                generics: generics.iter().map(|g| g.with_fn_caps_replaced(row)).collect(),
+                generics: generics.iter().map(|g| g.with_caps_erased_to_unknown()).collect(),
             },
             Type::Enum { name, generics } => Type::Enum {
                 name: name.clone(),
-                generics: generics.iter().map(|g| g.with_fn_caps_replaced(row)).collect(),
+                generics: generics.iter().map(|g| g.with_caps_erased_to_unknown()).collect(),
             },
             Type::Function { params, ret, caps: _ } => Type::Function {
-                params: params.iter().map(|p| p.with_fn_caps_replaced(row)).collect(),
-                ret: Box::new(ret.with_fn_caps_replaced(row)),
+                params: params.iter().map(|p| p.with_caps_erased_to_unknown()).collect(),
+                ret: Box::new(ret.with_caps_erased_to_unknown()),
                 // The function VALUE itself is the thing dynamic dispatch
                 // cannot pin to one concrete implementation — its own row
                 // is the primary target this stamp exists to fix.
-                caps: row.clone(),
+                caps: CapRow::unknown(),
             },
             Type::Reference { inner, mutable } => Type::Reference {
-                inner: Box::new(inner.with_fn_caps_replaced(row)),
+                inner: Box::new(inner.with_caps_erased_to_unknown()),
                 mutable: *mutable,
             },
             Type::Shared { inner } => Type::Shared {
-                inner: Box::new(inner.with_fn_caps_replaced(row)),
+                inner: Box::new(inner.with_caps_erased_to_unknown()),
             },
             Type::Weak { inner } => Type::Weak {
-                inner: Box::new(inner.with_fn_caps_replaced(row)),
+                inner: Box::new(inner.with_caps_erased_to_unknown()),
             },
             Type::Pointer { inner, mutable } => Type::Pointer {
-                inner: Box::new(inner.with_fn_caps_replaced(row)),
+                inner: Box::new(inner.with_caps_erased_to_unknown()),
                 mutable: *mutable,
             },
         }

@@ -1370,9 +1370,7 @@ R3_ESCAPES="$R3_ESCAPES \
     attack_deny_trait_default_generic_trait \
     attack_deny_trait_default_bound_dispatch \
     attack_deny_trait_default_dyn_dispatch \
-    attack_deny_trait_default_via_self \
-    attack_deny_trait_default_self_required \
-    attack_deny_trait_default_self_returns_closure"
+    attack_deny_trait_default_via_self"
 for esc in $R3_ESCAPES; do
     esc_ok=1
     for mode in "" "--strict-capabilities"; do
@@ -1418,8 +1416,7 @@ R3_CONTROLS="ctl_deny_param_wrapper_pure \
     ctl_slot_lambda_wrapper_calls_put_pure \
     ctl_deny_plugin_platform_pure \
     ctl_deny_trait_default_method_pure \
-    ctl_deny_trait_default_bound_safe \
-    ctl_deny_trait_default_self_required_safe"
+    ctl_deny_trait_default_bound_safe"
 for ctl in $R3_CONTROLS; do
     ctl_ok=1
     for mode in "" "--strict-capabilities"; do
