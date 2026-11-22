@@ -671,6 +671,50 @@ else
     echo "  FAIL: well-typed default method over-rejected or misrun: $out"; fail=1
 fi
 
+# A default body is checked once for every implementer: `self.m()` inside it is
+# a call on the implementer, not a `dyn` dispatch. These were rejected with a
+# false E0110 (by-value aggregate through a dyn handle) and must run.
+cat > "$TMP/tdm_self_aggr.kry" <<'KRY'
+use std::option::{Option, Some, None}
+struct Pt { x: i64, y: i64 }
+trait T1 {
+    fn find(self: Self) -> Option<i64>
+    fn mk(self: Self) -> Pt { return Pt { x: 1, y: 2 } }
+    fn get_or(self: Self, d: i64) -> i64 {
+        let p = self.mk()
+        match self.find() { Some(v) => v + p.y, None => d }
+    }
+}
+struct A {}
+impl T1 for A { fn find(self: A) -> Option<i64> { return Some(9) } }
+fn main() { println(A {}.get_or(1)) }
+KRY
+out="$("$K" run "$TMP/tdm_self_aggr.kry" 2>&1)"
+if [ "$out" = "11" ]; then
+    echo "  ok   a default method calling self methods that return an Option / struct is accepted and runs"
+else
+    echo "  FAIL: default method self call returning an aggregate misjudged as dyn dispatch: $out"; fail=1
+fi
+cat > "$TMP/tdm_self_deny.kry" <<'KRY'
+trait Job {
+    fn work(self: Self) -> i64 { return 40 }
+    fn run(self: Self) -> i64 {
+        deny!(fs:read) { println(self.work() + 2) }
+        return 1
+    }
+}
+struct J {}
+impl Job for J {}
+fn main() { println(J {}.run()) }
+KRY
+out="$("$K" run "$TMP/tdm_self_deny.kry" 2>&1)"
+if [ "$out" = "42
+1" ]; then
+    echo "  ok   a deny! block in a default method that calls self.work() is accepted and runs"
+else
+    echo "  FAIL: deny! + self call in a default method over-rejected: $out"; fail=1
+fi
+
 if [ $fail -eq 0 ]; then
     echo "diagnostics-gate: PASS"
 else

@@ -38,6 +38,8 @@ pub struct TypeChecker {
     in_pure_function: bool,
     /// The current `Self` type - set when checking trait/impl blocks.
     current_self_type: Option<Type>,
+    /// The trait whose default method body is being checked.
+    trait_default_self: Option<String>,
     /// Duplicate-binding detection for the pattern currently being bound.
     /// Set to an empty map at each top-level `bind_pattern` entry; every
     /// GENUINE binding (not a bare-variant tag test) records its name here,
@@ -231,6 +233,7 @@ impl TypeChecker {
             actor_names: std::collections::HashSet::new(),
             in_pure_function: false,
             current_self_type: None,
+            trait_default_self: None,
             generic_var_bounds: std::collections::HashMap::new(),
             lambda_expected_types: std::collections::HashMap::new(),
             resolved_lambda_params: std::collections::HashMap::new(),
@@ -3085,6 +3088,7 @@ impl TypeChecker {
                 // like an impl method body, with `Self` bound to the trait itself
                 // (the same `Self` its signatures were resolved with).
                 let prev_self = self.current_self_type.take();
+                let prev_default_self = self.trait_default_self.replace(name.clone());
                 let self_ty = Type::DynTrait {
                     trait_name: name.clone(),
                 };
@@ -3131,8 +3135,9 @@ impl TypeChecker {
                         self.engine.mark_slot_rows(&sig.ret, false);
                         self.engine.begin_store_effects(&sig.generic_cap_var_ids);
                         self.engine.set_effect_owner(sig.own_cap_var);
-                        // Reached through the trait's signature (a bound, a `dyn`).
-                        self.engine.mark_dispatch_owner(sig.own_cap_var);
+                        // Not a dispatch owner: every route to a default body
+                        // (a bound, a `dyn`, `self`, an inheriting impl) makes a
+                        // reference to this signature that binds its row vars.
                         let param_tys: Vec<Type> =
                             sig.params.iter().map(|(_, t)| t.clone()).collect();
                         self.engine.mark_input_storage(&param_tys);
@@ -3167,6 +3172,7 @@ impl TypeChecker {
                     self.env.pop_scope();
                 }
                 self.env.pop_scope();
+                self.trait_default_self = prev_default_self;
                 self.current_self_type = prev_self;
             }
             _ => {}
@@ -5835,16 +5841,25 @@ impl TypeChecker {
                                 if let Some(sig) =
                                     trait_def.methods.iter().find(|m| m.name == *method)
                                 {
-                                    let expected_params: Vec<_> = if sig
+                                    // Freshen the signature's row vars for this call (see the
+                                    // `dyn` arm below).
+                                    let (inst_params, _ir, _vm, cap_var_map) =
+                                        self.engine.instantiate_sig(sig);
+                                    let expected_params: Vec<(String, Type)> = sig
                                         .params
-                                        .first()
-                                        .map(|(n, _)| n.as_str())
-                                        == Some("self")
-                                    {
-                                        sig.params[1..].to_vec()
-                                    } else {
-                                        sig.params.clone()
-                                    };
+                                        .iter()
+                                        .zip(inst_params.iter())
+                                        .skip(
+                                            if sig.params.first().map(|(n, _)| n.as_str())
+                                                == Some("self")
+                                            {
+                                                1
+                                            } else {
+                                                0
+                                            },
+                                        )
+                                        .map(|((n, _), t)| (n.clone(), t.clone()))
+                                        .collect();
                                     if args.len() != expected_params.len() {
                                         self.error(
                                             format!(
@@ -5892,6 +5907,9 @@ impl TypeChecker {
                                     // could have come from ANY implementing
                                     // type, so its row is exactly as
                                     // unknowable as the call itself.
+                                    let _ = self
+                                        .engine
+                                        .reference_row(sig.own_cap_var, &cap_var_map, *span);
                                     self.accumulate_caps(&crate::ty::CapRow::unknown());
                                     return sig.ret.with_caps_erased_to_unknown();
                                 }
@@ -5904,12 +5922,29 @@ impl TypeChecker {
                 if let Type::DynTrait { ref trait_name } = obj_ty {
                     if let Some(trait_def) = self.env.lookup_trait(trait_name).cloned() {
                         if let Some(sig) = trait_def.methods.iter().find(|m| m.name == *method) {
+                            // `self.m()` inside a default method body of THIS trait:
+                            // `self` is typed as the trait only because the body is
+                            // checked once for every implementer. It is not a `dyn`
+                            // value: the body is monomorphized per impl, so neither
+                            // the by-value-aggregate ABI limit nor an unknown
+                            // callee applies (LEDGER item 122).
+                            let self_in_default = self.trait_default_self.as_deref()
+                                == Some(trait_name.as_str())
+                                && matches!(object.as_ref(), Expr::Identifier { name, .. } if name == "self");
+                            // Freshen the trait signature's row vars for THIS call, as
+                            // every other reference does. Unifying the arguments with
+                            // the signature's own params bound the signature's vars to
+                            // the caller's, and the `deny!` obligation of an inherited
+                            // default body (which owns those vars) then resolved
+                            // through the caller instead of through the reference.
+                            let (inst_params, _inst_ret, _vm, cap_var_map) =
+                                self.engine.instantiate_sig(sig);
                             // Skip 'self' parameter (first param) if present.
                             let expected_params: Vec<_> =
                                 if sig.params.first().map(|(n, _)| n.as_str()) == Some("self") {
-                                    sig.params[1..].to_vec()
+                                    inst_params[1..].to_vec()
                                 } else {
-                                    sig.params.clone()
+                                    inst_params.clone()
                                 };
                             if args.len() != expected_params.len() {
                                 self.error(
@@ -5921,7 +5956,7 @@ impl TypeChecker {
                                     *span,
                                 );
                             } else {
-                                for (arg, (_, param_ty)) in args.iter().zip(expected_params.iter())
+                                for (arg, param_ty) in args.iter().zip(expected_params.iter())
                                 {
                                     let arg_ty = self.infer_expr(arg);
                                     // LEDGER item 40: last point a concrete type exists before `any` erasure.
@@ -5934,6 +5969,11 @@ impl TypeChecker {
                                     self.check_int_literal_range(param_ty, arg, arg.span());
                                 }
                             }
+                            // The reference binds the callee's row vars to this
+                            // call's arguments for the `deny!` verdict.
+                            let (_own_row, ref_caps) = self
+                                .engine
+                                .reference_row(sig.own_cap_var, &cap_var_map, *span);
                             // A `dyn` method returning a by-value AGGREGATE
                             // (tuple, enum, Option, Result, or a multi-field
                             // struct) cannot be dispatched: the uniform i64
@@ -5956,7 +5996,7 @@ impl TypeChecker {
                                     .unwrap_or(false),
                                 _ => false,
                             };
-                            if ret_is_byval_agg {
+                            if ret_is_byval_agg && !self_in_default {
                                 self.error_with_code(
                                     format!(
                                         "`dyn {trait_name}` method `{method}` returns a by-value aggregate (`{}`), which trait-object dispatch cannot pass through its uniform handle ABI yet -- it truncates to the first field. Return a scalar or a heap handle (str/array/map), return the fields individually, or call the method via static dispatch (a concrete-typed receiver, not `dyn`).",
@@ -5981,7 +6021,11 @@ impl TypeChecker {
                             // -- see the identical treatment (and full
                             // rationale) for the generic trait-bound
                             // MethodCall arm a few hundred lines up.
-                            self.accumulate_caps(&crate::ty::CapRow::unknown());
+                            if self_in_default {
+                                self.accumulate_caps(&ref_caps);
+                            } else {
+                                self.accumulate_caps(&crate::ty::CapRow::unknown());
+                            }
                             return sig.ret.with_caps_erased_to_unknown();
                         }
                     }
