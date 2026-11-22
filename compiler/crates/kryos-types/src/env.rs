@@ -310,6 +310,29 @@ impl TypeEnv {
         None
     }
 
+    /// The signature of `method` in every impl of `trait_name` that OVERRIDES it
+    /// (an inherited default carries the trait's own signature and is left out).
+    pub fn trait_impl_method_sigs(&self, trait_name: &str, method: &str) -> Vec<FunctionSig> {
+        let own = self
+            .lookup_trait(trait_name)
+            .and_then(|d| d.methods.iter().find(|m| m.name == method))
+            .map(|m| m.own_cap_var);
+        let mut out = Vec::new();
+        for scope in self.scopes.iter() {
+            for ((_, tr), methods) in &scope.impls {
+                if tr.as_deref() != Some(trait_name) {
+                    continue;
+                }
+                for m in methods {
+                    if m.name == method && Some(m.own_cap_var) != own {
+                        out.push(m.clone());
+                    }
+                }
+            }
+        }
+        out
+    }
+
     /// Collect every method name visible for the given type (across all impls
     /// in scope). Used by the "did you mean?" diagnostics.
     pub fn all_method_names(&self, type_name: &str) -> Vec<String> {

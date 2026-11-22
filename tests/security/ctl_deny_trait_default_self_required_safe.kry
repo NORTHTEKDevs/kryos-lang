@@ -1,0 +1,16 @@
+// Control: the same shapes with harmless closures only (a required method and a default one handing the list back through self). WANTED: accepted in both modes.
+fn safe() -> str { return "safe" }
+
+trait Rn {
+    fn pass(self: Self, fns: [fn() -> str]) -> [fn() -> str]
+    fn id(self: Self, fns: [fn() -> str]) -> [fn() -> str] { return fns }
+    fn go(self: Self, fns: [fn() -> str]) {
+        let f = || "harmless"
+        let ys = self.pass(fns)
+        let zs = self.id(ys)
+        deny!(fs:read) { for f in zs { println(f()) } }
+    }
+}
+struct R1 {}
+impl Rn for R1 { fn pass(self: Self, fns: [fn() -> str]) -> [fn() -> str] { return fns } }
+fn main() { R1 {}.go([safe, safe]) }
