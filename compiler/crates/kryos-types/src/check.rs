@@ -1491,46 +1491,8 @@ impl TypeChecker {
         self.denies_reported.clear();
 
         // Second pass: check function bodies and expressions.
-        let diag_mark2 = self.diagnostics.len();
-        let deny_marks2 = self.engine.deny_marks();
-        let log_mark2 = self.cap_effects_log.len();
-        for (i, decl) in module.declarations.iter().enumerate() {
-            self.engine.set_current_decl(Some(i));
+        for decl in &module.declarations {
             self.check_decl(decl);
-        }
-        self.engine.set_current_decl(None);
-        // A reference that precedes the declaration it names reads the callee's
-        // row before the callee's body was checked, so a `deny!` verdict used to
-        // depend on declaration order (LEDGER items 124 and 125). When the module
-        // holds a `deny!` whose row can still change, check every body once more
-        // in call-graph order (callee before caller) with the results thrown away,
-        // so the pass that reports sees every callee's summary already built.
-        // Rows only widen (`bind_cap_var` unions), so the extra pass is safe in
-        // the same way the actor pre-pass above is.
-        let order = if self.engine.deny_marks().0 > deny_marks2.0 {
-            self.engine.callee_first_order(module.declarations.len())
-        } else {
-            None
-        };
-        if let Some(order) = order {
-            self.diagnostics.truncate(diag_mark2);
-            self.engine.truncate_denies(deny_marks2);
-            self.cap_effects_log.truncate(log_mark2);
-            self.denies_reported.clear();
-            for &i in &order {
-                self.engine.set_current_decl(Some(i));
-                self.check_decl(&module.declarations[i]);
-            }
-            self.engine.set_current_decl(None);
-            self.diagnostics.truncate(diag_mark2);
-            self.engine.truncate_denies(deny_marks2);
-            self.cap_effects_log.truncate(log_mark2);
-            self.denies_reported.clear();
-            for (i, decl) in module.declarations.iter().enumerate() {
-                self.engine.set_current_decl(Some(i));
-                self.check_decl(decl);
-            }
-            self.engine.set_current_decl(None);
         }
 
         // Every `deny!` block is judged on the row its body was charged, and the

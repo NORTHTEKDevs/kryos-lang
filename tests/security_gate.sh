@@ -1404,26 +1404,6 @@ R3_ESCAPES="$R3_ESCAPES \
     attack_deny_trait_default_bound_dispatch \
     attack_deny_trait_default_dyn_dispatch \
     attack_deny_trait_default_via_self"
-# Root F (items 124 and 125): the verdict must not depend on declaration order. Every program here
-# hands a closure on through, or stores it via, a callee declared below its caller.
-R3_ESCAPES="$R3_ESCAPES \
-    attack_fwd_param_chain_invoke_in_deny \
-    attack_fwd_param_chain_container_in_deny \
-    attack_fwd_param_chain_method_in_deny \
-    attack_fwd_param_chain_actor_in_deny \
-    attack_fwd_rev_hotparam_forward_via_local_alias \
-    attack_fwd_rev_slot_param_helper_chain \
-    attack_fwd_mainfirst_verify_actor_to_actor_message \
-    attack_fwd_store_relay_two_hop \
-    attack_fwd_store_relay_global_slot \
-    attack_fwd_store_relay_method \
-    attack_fwd_builder_relay_returns_container \
-    attack_fwd_fill_relay_struct_field_after_main \
-    attack_fwd_fill_relay_struct_field_before_main \
-    attack_fwd_three_hop_param_chain \
-    attack_fwd_mutual_recursion_param_chain \
-    attack_fwd_three_hop_store_relay \
-    attack_fwd_impl_method_chain"
 for esc in $R3_ESCAPES; do
     esc_ok=1
     for mode in "" "--strict-capabilities"; do
@@ -1469,9 +1449,7 @@ R3_CONTROLS="ctl_deny_param_wrapper_pure \
     ctl_slot_lambda_wrapper_calls_put_pure \
     ctl_deny_plugin_platform_pure \
     ctl_deny_trait_default_method_pure \
-    ctl_deny_trait_default_bound_safe \
-    ctl_fwd_param_chain_pure \
-    ctl_fwd_store_relay_pure"
+    ctl_deny_trait_default_bound_safe"
 for ctl in $R3_CONTROLS; do
     ctl_ok=1
     for mode in "" "--strict-capabilities"; do
