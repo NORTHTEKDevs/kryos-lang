@@ -1,0 +1,33 @@
+// LEDGER items 124/125 (root F, declaration order), found by the root-F wave as the chain a single extra pass cannot settle.
+// Shape: `a` hands its parameter to `b`, `b` to `c`, `c` calls it; every helper is declared ABOVE the callee it hands the closure to, and `main` calls `a` inside deny!(fs:read).
+// A verdict must not depend on declaration order: the six orders of a, b, c must agree with each other.
+// Measured (master dd637a90, 26 orders of the six items): the shape layer rejects every order with E0507; the row layer's E0110 appears in 7 of the 26 (the reversed order among them) and not in the order below. The pin is the verdict set: every order must give the same codes, E0110 included.
+// WANTED: rejected with E0110 in both modes, and `kryos run` must not print the secret.
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+fn a(r: fn() -> str) -> str {
+    return b(r)
+}
+
+fn b(r: fn() -> str) -> str {
+    return c(r)
+}
+
+fn c(r: fn() -> str) -> str {
+    return r()
+}
+
+@capabilities(fs:read)
+fn main() {
+    let r = secret()
+    deny!(fs:read) {
+        println("LEAK: " + a(r))
+    }
+}

@@ -226,6 +226,23 @@ pub struct InferenceEngine {
     /// Bumped every time `bind_cap_var` changes the substitution: `settle_denies`
     /// runs the completion of the references to a fixed point with it.
     cap_epoch: u64,
+    /// Every reference one declaration body made to another declaration, as
+    /// (the owner's own-row var, the callee's own-row var), recorded whether or
+    /// not the callee has polymorphic vars. See `callee_first_order`.
+    ref_edges: Vec<(CapVarId, CapVarId)>,
+    /// The index (in the module's declaration list) of the declaration being
+    /// checked, and the declaration each own-row var belongs to.
+    current_decl: Option<usize>,
+    owner_decl: HashMap<CapVarId, usize>,
+}
+
+/// One strongly connected component of the declaration reference graph, see
+/// `InferenceEngine::callee_first_order`.
+#[derive(Debug)]
+pub struct CalleeGroup {
+    pub members: Vec<usize>,
+    pub owners: Vec<CapVarId>,
+    pub cyclic: bool,
 }
 
 /// See `InferenceEngine::effect_scope`.
@@ -350,6 +367,9 @@ impl InferenceEngine {
             instantiations: Vec::new(),
             owner_poly: HashMap::new(),
             dispatch_owners: std::collections::HashSet::new(),
+            ref_edges: Vec::new(),
+            current_decl: None,
+            owner_decl: HashMap::new(),
             cap_epoch: 0,
         }
     }
@@ -744,10 +764,178 @@ impl InferenceEngine {
     pub fn set_effect_owner(&mut self, own: CapVarId) {
         if let Some(scope) = self.effect_scope.as_mut() {
             scope.owner = Some(own);
+            if let Some(d) = self.current_decl {
+                self.owner_decl.insert(own, d);
+            }
             let mut poly: Vec<CapVarId> = scope.poly.iter().copied().collect();
             poly.sort_unstable();
             self.owner_poly.insert(own, poly);
         }
+    }
+
+    /// Name the declaration (its index in the module's list) the checker is
+    /// about to check, so `callee_first_order` can group own-row vars by it.
+    pub fn set_current_decl(&mut self, d: Option<usize>) {
+        self.current_decl = d;
+    }
+
+    /// The order in which the declarations of a module must be checked so that
+    /// every reference follows the declaration it names (callee before caller),
+    /// computed from the references the last textual pass recorded. `None` when
+    /// no declaration references one declared at or after itself, i.e. the
+    /// textual order already is that order. A reference that precedes its
+    /// declaration reads the callee's row before the body is checked, and the
+    /// row it reads cannot be instantiated for the caller's own parameters (LEDGER
+    /// items 124 and 125): the verdict then depended on declaration order.
+    ///
+    /// Strongly connected components (mutual recursion, or methods of one impl
+    /// that call each other) come out as one `CalleeGroup` each, members in
+    /// callee-first order and flagged cyclic. The caller re-checks a cyclic
+    /// group until `convergence_stamp` stops changing (no fixed repeat count),
+    /// so a forward chain of any length inside one component settles too.
+    pub fn callee_first_order(&mut self, n: usize) -> Option<Vec<CalleeGroup>> {
+        let edges = std::mem::take(&mut self.ref_edges);
+        let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
+        let mut forward = false;
+        for (o, c) in edges {
+            let (Some(&a), Some(&b)) = (self.owner_decl.get(&o), self.owner_decl.get(&c)) else {
+                continue;
+            };
+            if a >= n || b >= n {
+                continue;
+            }
+            if a == b {
+                // Two methods of one declaration: forward when the caller's
+                // own-row var is lower than the callee's (allocated in order).
+                // A declaration that references ITSELF (a recursion) reads its
+                // own stores before its body is finished, so it is forward too:
+                // the first pass replayed nothing for it (a recursion that swaps
+                // two parameters then hid the stored closure from the caller).
+                if o <= c {
+                    forward = true;
+                    adj[a].push(b);
+                }
+                continue;
+            }
+            if b > a {
+                forward = true;
+            }
+            adj[a].push(b);
+        }
+        if !forward {
+            return None;
+        }
+        let mut owners_in: Vec<usize> = vec![0; n];
+        for d in self.owner_decl.values() {
+            if *d < n {
+                owners_in[*d] += 1;
+            }
+        }
+        // Tarjan, iterative, over successors in index order: components come out
+        // callee first.
+        let mut index = vec![usize::MAX; n];
+        let mut low = vec![0usize; n];
+        let mut on = vec![false; n];
+        let mut stack: Vec<usize> = Vec::new();
+        let mut next = 0usize;
+        let mut comps: Vec<Vec<usize>> = Vec::new();
+        for root in 0..n {
+            if index[root] != usize::MAX {
+                continue;
+            }
+            let mut work: Vec<(usize, usize)> = vec![(root, 0)];
+            while let Some(&(v, i)) = work.last() {
+                if i == 0 && index[v] == usize::MAX {
+                    index[v] = next;
+                    low[v] = next;
+                    next += 1;
+                    stack.push(v);
+                    on[v] = true;
+                }
+                if i < adj[v].len() {
+                    work.last_mut().unwrap().1 += 1;
+                    let w = adj[v][i];
+                    if index[w] == usize::MAX {
+                        work.push((w, 0));
+                    } else if on[w] {
+                        low[v] = low[v].min(index[w]);
+                    }
+                } else {
+                    work.pop();
+                    if let Some(&(p, _)) = work.last() {
+                        low[p] = low[p].min(low[v]);
+                    }
+                    if low[v] == index[v] {
+                        let mut comp = Vec::new();
+                        while let Some(w) = stack.pop() {
+                            on[w] = false;
+                            comp.push(w);
+                            if w == v {
+                                break;
+                            }
+                        }
+                        comps.push(comp);
+                    }
+                }
+            }
+        }
+        let mut groups = Vec::new();
+        for comp in comps {
+            let cyclic = comp.len() > 1 || adj[comp[0]].contains(&comp[0]);
+            let mut owners: Vec<CapVarId> = self
+                .owner_decl
+                .iter()
+                .filter(|(_, d)| comp.contains(d))
+                .map(|(o, _)| *o)
+                .collect();
+            owners.sort_unstable();
+            groups.push(CalleeGroup { members: comp, owners, cyclic });
+        }
+        Some(groups)
+    }
+
+    /// The next cap var id to be allocated: every var below it exists now. The
+    /// extra checking pass allocates fresh copies at each reference; those are
+    /// excluded from `convergence_stamp` so a re-check can reach a fixed point.
+    pub fn cap_var_watermark(&self) -> CapVarId {
+        self.next_cap_var
+    }
+
+    /// What a re-check of a cyclic group can still change: the resolved row of
+    /// each own-row var of the group, what each stored, and the resolved row of
+    /// every global slot, with vars allocated at or after `watermark` (copies
+    /// made by the extra pass itself) left out. Equal before and after a round
+    /// means the round settled nothing new. Rows only widen, so it converges.
+    pub fn convergence_stamp(
+        &mut self,
+        owners: &[CapVarId],
+        watermark: CapVarId,
+    ) -> Vec<(CapVarId, crate::ty::CapBits, Vec<CapVarId>)> {
+        let mut ids: Vec<CapVarId> = owners.to_vec();
+        let mut slots: Vec<CapVarId> = self.global_slot_cap_vars.iter().copied().collect();
+        slots.sort_unstable();
+        ids.extend(slots);
+        let mut out = Vec::new();
+        for id in ids {
+            if let Some(b) = self.cap_substitutions.get(&id).cloned() {
+                let flat = self.resolve_cap_row_keeping_slots(&b);
+                let mut vars: Vec<CapVarId> =
+                    flat.var_ids().iter().copied().filter(|v| *v < watermark).collect();
+                vars.sort_unstable();
+                out.push((id, flat.concrete_bits(), vars));
+            }
+        }
+        for o in owners {
+            if let Some(list) = self.store_effects.get(o) {
+                for (slot, row) in list.clone() {
+                    let mut vars: Vec<CapVarId> =
+                        row.var_ids().iter().copied().filter(|v| *v < watermark).collect();
+                    vars.sort_unstable();
+                    out.push((slot, row.concrete_bits(), vars));
+                }
+            }
+        }
+        out
     }
 
     /// Mark the declaration `own` as a method of a trait impl: it can be reached
@@ -887,6 +1075,9 @@ impl InferenceEngine {
         span: Span,
     ) -> (CapRow, CapRow) {
         self.replay_store_effects(own, cap_var_map);
+        if let Some(o) = self.effect_scope.as_ref().and_then(|s| s.owner) {
+            self.ref_edges.push((o, own));
+        }
         let own_row = self.resolve_own_cap_row(own);
         let mut ref_caps = self.instantiate_row(&own_row, cap_var_map);
         let owner = self.effect_scope.as_ref().and_then(|s| s.owner);
@@ -1198,6 +1389,9 @@ impl InferenceEngine {
         }
         self.replay_store_effects(impl_sig.own_cap_var, &map);
         let owner = self.effect_scope.as_ref().and_then(|s| s.owner);
+        if let Some(o) = owner {
+            self.ref_edges.push((o, impl_sig.own_cap_var));
+        }
         let mut m: Vec<(CapVarId, CapVarId)> = map.into_iter().collect();
         m.sort_unstable();
         self.instantiations.push(Instantiation {

@@ -1,0 +1,34 @@
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+fn safe() -> str {
+    return "safe"
+}
+
+struct Plugin {
+    run: fn() -> str,
+}
+fn a(reg: [Plugin], n: i64, p1: fn() -> str, p2: fn() -> str, p3: fn() -> str, p4: fn() -> str, p5: fn() -> str, p6: fn() -> str, p7: fn() -> str, p8: fn() -> str, p9: fn() -> str, p10: fn() -> str, p11: fn() -> str, p12: fn() -> str, p13: fn() -> str, p14: fn() -> str, p15: fn() -> str, p16: fn() -> str, p17: fn() -> str, p18: fn() -> str, p19: fn() -> str, p20: fn() -> str, p21: fn() -> str, p22: fn() -> str, p23: fn() -> str, p24: fn() -> str, p25: fn() -> str, p26: fn() -> str, p27: fn() -> str, p28: fn() -> str, p29: fn() -> str, p30: fn() -> str, p31: fn() -> str) -> [Plugin] {
+    if n == 0 {
+        return push(reg, Plugin { run: p1 })
+    }
+    return b(reg, n - 1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12, p13, p14, p15, p16, p17, p18, p19, p20, p21, p22, p23, p24, p25, p26, p27, p28, p29, p30, p31, p1)
+}
+fn b(reg: [Plugin], n: i64, p1: fn() -> str, p2: fn() -> str, p3: fn() -> str, p4: fn() -> str, p5: fn() -> str, p6: fn() -> str, p7: fn() -> str, p8: fn() -> str, p9: fn() -> str, p10: fn() -> str, p11: fn() -> str, p12: fn() -> str, p13: fn() -> str, p14: fn() -> str, p15: fn() -> str, p16: fn() -> str, p17: fn() -> str, p18: fn() -> str, p19: fn() -> str, p20: fn() -> str, p21: fn() -> str, p22: fn() -> str, p23: fn() -> str, p24: fn() -> str, p25: fn() -> str, p26: fn() -> str, p27: fn() -> str, p28: fn() -> str, p29: fn() -> str, p30: fn() -> str, p31: fn() -> str) -> [Plugin] {
+    if n == 0 {
+        return reg
+    }
+    return a(reg, n - 1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12, p13, p14, p15, p16, p17, p18, p19, p20, p21, p22, p23, p24, p25, p26, p27, p28, p29, p30, p31, p1)
+}
+@capabilities(fs:read)
+fn main() {
+    let r = secret()
+    let mut reg: [Plugin] = []
+    reg = a(reg, 30, safe, safe, safe, safe, safe, safe, safe, safe, safe, safe, safe, safe, safe, safe, safe, safe, safe, safe, safe, safe, safe, safe, safe, safe, safe, safe, safe, safe, safe, safe, safe)
+    deny!(fs:read) {
+        for q in reg {
+            println("LEAK: " + q.run())
+        }
+    }
+}

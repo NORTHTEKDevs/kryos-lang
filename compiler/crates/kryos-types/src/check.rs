@@ -1491,8 +1491,89 @@ impl TypeChecker {
         self.denies_reported.clear();
 
         // Second pass: check function bodies and expressions.
-        for decl in &module.declarations {
+        let diag_mark2 = self.diagnostics.len();
+        let deny_marks2 = self.engine.deny_marks();
+        let log_mark2 = self.cap_effects_log.len();
+        for (i, decl) in module.declarations.iter().enumerate() {
+            self.engine.set_current_decl(Some(i));
             self.check_decl(decl);
+        }
+        self.engine.set_current_decl(None);
+        // A reference that precedes the declaration it names reads the callee's
+        // row before the callee's body was checked, so a `deny!` verdict used to
+        // depend on declaration order (LEDGER items 124 and 125). When the module
+        // holds a `deny!` whose row can still change, check every body once more
+        // in call-graph order (callee before caller) with the results thrown away,
+        // so the pass that reports sees every callee's summary already built.
+        // Rows only widen (`bind_cap_var` unions), so the extra pass is safe in
+        // the same way the actor pre-pass above is.
+        let order = if self.engine.deny_marks().0 > deny_marks2.0 {
+            self.engine.callee_first_order(module.declarations.len())
+        } else {
+            None
+        };
+        if let Some(order) = order {
+            self.diagnostics.truncate(diag_mark2);
+            self.engine.truncate_denies(deny_marks2);
+            self.cap_effects_log.truncate(log_mark2);
+            self.denies_reported.clear();
+            let watermark = self.engine.cap_var_watermark();
+            let mut unsettled: Option<Span> = None;
+            for group in &order {
+                let mut prev = if group.cyclic {
+                    Some(self.engine.convergence_stamp(&group.owners, watermark))
+                } else {
+                    None
+                };
+                let mut rounds = 0usize;
+                // A cyclic group is re-checked until a whole round changes
+                // nothing it can still change. A chain through it settles in at
+                // most one round per own-row var, so the bound below cannot cut
+                // a real propagation short; it only stops a runaway.
+                // The stamp is a finite lattice and rows only widen, so the loop
+                // always converges; the bound is a runaway stop sized by the
+                // number of cap vars that exist (a rotation of K parameters
+                // between two functions needs about K rounds). Hitting it is a
+                // program whose rows this pass could not settle, which is
+                // rejected below, never accepted unjudged.
+                let limit = 2 * (watermark as usize) + 64;
+                loop {
+                    for &i in &group.members {
+                        self.engine.set_current_decl(Some(i));
+                        self.check_decl(&module.declarations[i]);
+                    }
+                    if !group.cyclic {
+                        break;
+                    }
+                    let now = self.engine.convergence_stamp(&group.owners, watermark);
+                    rounds += 1;
+                    if prev.as_ref() == Some(&now) {
+                        break;
+                    }
+                    if rounds >= limit {
+                        unsettled.get_or_insert(module.declarations[group.members[0]].span());
+                        break;
+                    }
+                    prev = Some(now);
+                }
+            }
+            self.engine.set_current_decl(None);
+            self.diagnostics.truncate(diag_mark2);
+            self.engine.truncate_denies(deny_marks2);
+            self.cap_effects_log.truncate(log_mark2);
+            self.denies_reported.clear();
+            for (i, decl) in module.declarations.iter().enumerate() {
+                self.engine.set_current_decl(Some(i));
+                self.check_decl(decl);
+            }
+            self.engine.set_current_decl(None);
+            if let Some(span) = unsettled {
+                self.error_with_code(
+                    "the capability rows of this group of mutually recursive functions did not settle, so no `deny!` verdict can be trusted here; split the cycle or reduce the number of function-typed parameters passed around it",
+                    span,
+                    kryos_errors::codes::E0110,
+                );
+            }
         }
 
         // Every `deny!` block is judged on the row its body was charged, and the

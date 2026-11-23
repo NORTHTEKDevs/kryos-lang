@@ -1,0 +1,28 @@
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+fn safe() -> str {
+    return "safe"
+}
+
+struct Plugin {
+    run: fn() -> str,
+}
+fn a(reg: [Plugin], n: i64, p1: fn() -> str, p2: fn() -> str) -> [Plugin] {
+    if n == 0 {
+        return push(reg, Plugin { run: p1 })
+    }
+    return a(reg, n - 1, p2, p1)
+}
+@capabilities(fs:read)
+fn main() {
+    let r = secret()
+    let mut reg: [Plugin] = []
+    reg = a(reg, 1, safe, safe)
+    deny!(fs:read) {
+        for q in reg {
+            println("LEAK: " + q.run())
+        }
+    }
+}
