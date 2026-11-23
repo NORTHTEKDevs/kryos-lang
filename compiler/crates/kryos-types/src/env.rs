@@ -1,4 +1,4 @@
-//! Type environment — scope-based symbol table for type checking.
+//! Type environment - scope-based symbol table for type checking.
 //!
 //! Tracks variable types, function signatures, struct/enum definitions,
 //! trait methods, and impl blocks across nested lexical scopes.
@@ -41,7 +41,7 @@ pub struct FunctionSig {
     /// Capability-row variable IDs for every UNANNOTATED fn-typed parameter
     /// or return position in this declaration's OWN signature (not counting
     /// row vars nested further inside a called/returned function's own
-    /// signature). Populated independently of `generic_var_ids` — a
+    /// signature). Populated independently of `generic_var_ids` - a
     /// type-monomorphic HOF (`fn apply(f: fn()->str) -> str`) gets a fresh
     /// row var here even with `generic_var_ids` empty, per
     /// `docs/capability-effects-spec.md` §2.3's generalization rule (the
@@ -52,14 +52,14 @@ pub struct FunctionSig {
     /// A SEPARATE capability-row var representing this declaration's OWN
     /// total inferred capability requirement (the union of its direct
     /// gated-builtin calls plus the rows of everything it calls,
-    /// including — for a HOF — its own `generic_cap_var_ids` entries).
+    /// including - for a HOF - its own `generic_cap_var_ids` entries).
     /// Bound exactly once, by `check_decl`, after the declaration's body
     /// has been walked; every REFERENCE to this function as a value reads
     /// it (freshening any `generic_cap_var_ids` it happens to mention,
     /// via `InferenceEngine::instantiate_row`) rather than the raw
     /// template value, so two different call sites of a row-polymorphic
     /// HOF never share a binding. Deliberately NOT itself a member of
-    /// `generic_cap_var_ids` — see `check.rs`'s `Expr::Identifier` arm for
+    /// `generic_cap_var_ids` - see `check.rs`'s `Expr::Identifier` arm for
     /// the resolve-then-instantiate sequencing this requires.
     pub own_cap_var: CapVarId,
     pub params: Vec<(String, Type)>,
@@ -79,7 +79,7 @@ pub struct TraitDef {
 struct Scope {
     /// Variable name -> type
     variables: HashMap<String, Type>,
-    /// Variables declared with `let mut` — assignment allowed.
+    /// Variables declared with `let mut` - assignment allowed.
     mutable_vars: HashSet<String>,
     /// Function name -> signature
     functions: HashMap<String, FunctionSig>,
@@ -308,6 +308,25 @@ impl TypeEnv {
             }
         }
         None
+    }
+
+    /// Every impl method named `method` of an `impl <trait_name> for ...`
+    /// block in scope: the candidates a call through a generic bound or a
+    /// `dyn` can reach.
+    pub fn impl_methods_of_trait(&self, trait_name: &str, method: &str) -> Vec<FunctionSig> {
+        let mut out: Vec<FunctionSig> = Vec::new();
+        for scope in self.scopes.iter().rev() {
+            for ((_ty, tr), methods) in &scope.impls {
+                if tr.as_deref() == Some(trait_name) {
+                    for m in methods.iter().filter(|m| m.name == method) {
+                        if !out.iter().any(|o| o.own_cap_var == m.own_cap_var) {
+                            out.push(m.clone());
+                        }
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// Collect every method name visible for the given type (across all impls

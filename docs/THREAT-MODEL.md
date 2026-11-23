@@ -500,7 +500,7 @@ is the **narrowing**: the privileged closure runs where `deny!` says it must not
 None of the 13 makes an unannotated, zero-authority program read a file
 (section 4.5 lists shapes that do). They are all row-layer gaps.
 
-- **Row-layer gaps, 13 rows.** (119 and 123, a helper that stores a closure into a container it was handed where the container sits in a tuple, `Option` or `Result` parameter or the helper is reached through a function value, a generic bound or a `dyn`, were closed 2026-11-22: `storage_rows_in` walks them, and a call whose callee cannot be named widens every container of closures among its arguments, `store_unknown_callee_effects` in `kryos-types/src/infer.rs`. 121, coarse `deny!` families, was closed 2026-11-22: the verdict now judges a denied
+- **Row-layer gaps, 13 rows.** (119 and 123, a helper that stores a closure into a container it was handed where the container sits in a tuple, `Option` or `Result` parameter or the helper is reached through a function value, a generic bound or a `dyn`, were closed 2026-11-22: `storage_rows_in` walks them, a call through a bound or a `dyn` replays the stores of the impls (`replay_impl_effects`) and a call through a function value widens every container of closures among its arguments (`store_unknown_callee_effects`), all in `kryos-types/src/infer.rs`. 121, coarse `deny!` families, was closed 2026-11-22: the verdict now judges a denied
   coarse family by overlap, `denied_caps_used` in `kryos-types/src/ty.rs`. 122, the body of a trait default method, was closed
   2026-11-22: `check_decl_inner` has a `Decl::Trait` arm that checks each default body like an impl method body.) 124 and 125 (13 rows) are forward references: a
   function declared above the callee it hands a closure to, or a store made by a
@@ -617,23 +617,24 @@ items 124 and 125 (4.1).
   row is bound to the default method's signature, so a caller of an inherited default
   method is charged what the body uses.
 
-- **A call through a callee that cannot be named is over-approximated** (LEDGER items 119 and
-  123, CLOSED 2026-11-22). A call through a function value (a factory result, a parameter, an
-  element), through a generic trait bound or through a `dyn` references no declaration, so the
-  stores of its body cannot be replayed. The checker now assumes every container of closures
-  among the call's arguments may hold any closure reachable from any argument. The cost is an
-  over-rejection, never an escape: a `deny!` that later calls into such a container is
-  rejected (E0110) when a privileged closure was handed to the same call, even if the callee
-  stores nothing (pinned: tests/security/ctl_slot_param_fn_value_other_container.kry shows the
-  case that stays accepted, a container the `deny!` block never reads). Measured against the
-  1712 programs of the corpus (tests, examples, stdlib, packages, ecosystem): no program is newly
-  rejected. A closure held in a struct FIELD of an argument or of the receiver is not reached
-  by this rule (the field row is not in the argument's type; LEDGER item 122, verifier attacks
-  n10, v01, v04, x01, still open).
-  Likewise a container inside a tuple, `Option` or `Result` parameter is treated as shared with
-  the caller, so a helper that stores a privileged closure into an `Option<[fn]>` it was
-  handed by value is rejected when the caller iterates the original array in a `deny!`, although
-  an `Option` copies the array it wraps and `kryos run` prints no secret for that program.
+- **A call through a function value is over-approximated, a trait dispatch is not** (LEDGER items
+  119 and 123, CLOSED 2026-11-22, revised in round 1). A call through a generic trait bound or a
+  `dyn` replays what every `impl` method of that name stores (into a container parameter or a
+  struct field, `replay_impl_effects` in `kryos-types/src/infer.rs`), so a callee that only
+  reads is not charged. A call through a function value (a factory result, a lambda, a
+  parameter, an element) names no declaration, so its stores cannot be replayed: once any body
+  of the module has stored a closure into a container it was handed, the checker assumes every
+  container of closures among the call's arguments, and the declared fields of the structs
+  among them, may hold any closure reachable from any argument. The cost is an over-rejection,
+  never an escape: a `deny!` that later calls into such a container is rejected (E0110) when a
+  privileged closure was handed to the same call, even if that callee stores nothing (the cases
+  that stay accepted: no body of the module stores a closure into a container, or the `deny!`
+  block never reads the container; pinned: `ctl_slot_param_fn_value_other_container.kry`,
+  `ctl_slot_legit_*`). A struct RESULT holding a fn field and a lambda body's store into a
+  struct field are not reached (LEDGER item 122, verifier attacks n10, v01, v04, x01, still
+  open). A container inside a tuple or a `Result` parameter is shared with the caller;
+  `Some(arr)` copies the array it wraps, so a helper that stores into an `Option<[fn]>` it
+  was handed by value is not charged (a container nested in the Option still is).
 
 ### 4.5 Accepted zero-authority shapes outside the escape corpus
 

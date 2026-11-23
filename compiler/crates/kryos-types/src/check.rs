@@ -217,6 +217,58 @@ impl Default for TypeChecker {
 }
 
 impl TypeChecker {
+    /// The declared field types of every struct named inside `tys`, followed
+    /// transitively through the fields: a closure held in a field is storage a
+    /// callee handed the struct can write to, and it is not part of the
+    /// struct's own type.
+    fn struct_field_tys(&self, tys: &[Type]) -> Vec<Type> {
+        fn names(t: &Type, out: &mut Vec<String>) {
+            match t {
+                Type::Struct { name, generics } => {
+                    out.push(name.clone());
+                    for g in generics {
+                        names(g, out);
+                    }
+                }
+                Type::Array { element, .. } | Type::Set { element } => names(element, out),
+                Type::Map { key, value } => {
+                    names(key, out);
+                    names(value, out);
+                }
+                Type::Tuple { elements } => elements.iter().for_each(|e| names(e, out)),
+                Type::Option { inner }
+                | Type::Shared { inner }
+                | Type::Weak { inner }
+                | Type::Reference { inner, .. }
+                | Type::Pointer { inner, .. } => names(inner, out),
+                Type::Result { ok, err } => {
+                    names(ok, out);
+                    names(err, out);
+                }
+                Type::Enum { generics, .. } => generics.iter().for_each(|g| names(g, out)),
+                _ => {}
+            }
+        }
+        let mut work: Vec<String> = Vec::new();
+        for t in tys {
+            names(&self.engine.resolve(t), &mut work);
+        }
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut out: Vec<Type> = Vec::new();
+        while let Some(n) = work.pop() {
+            if !seen.insert(n.clone()) {
+                continue;
+            }
+            if let Some(sd) = self.env.lookup_struct(&n) {
+                for (_, ft) in &sd.fields {
+                    names(ft, &mut work);
+                    out.push(ft.clone());
+                }
+            }
+        }
+        out
+    }
+
     pub fn new() -> Self {
         let mut engine = InferenceEngine::new();
         let builtin_cap_var = engine.fresh_cap_var();
@@ -5782,7 +5834,9 @@ impl TypeChecker {
                                         && self.env.lookup_function(name).is_some()
                             );
                             if !direct_decl {
-                                self.engine.store_unknown_callee_effects(&call_arg_tys);
+                                let field_tys = self.struct_field_tys(&call_arg_tys);
+                                self.engine
+                                    .store_unknown_callee_effects(&call_arg_tys, &field_tys);
                             }
                         }
                         *ret.clone()
@@ -5897,7 +5951,14 @@ impl TypeChecker {
                                             }
                                             call_arg_tys.push(arg_ty);
                                         }
-                                        self.engine.store_unknown_callee_effects(&call_arg_tys);
+                                        let _ = &call_arg_tys;
+                                        for imp in self
+                                            .env
+                                            .impl_methods_of_trait(trait_name, method)
+                                        {
+                                            self.engine
+                                                .replay_impl_effects(&imp, &inst_params, *span);
+                                        }
                                     }
                                     // Row-propagation stage gap 1/3
                                     // (docs/capability-effects-spec.md):
@@ -5986,8 +6047,14 @@ impl TypeChecker {
                                     self.check_int_literal_range(param_ty, arg, arg.span());
                                     call_arg_tys.push(arg_ty);
                                 }
+                                let _ = &call_arg_tys;
                                 if !self_in_default {
-                                    self.engine.store_unknown_callee_effects(&call_arg_tys);
+                                    for imp in
+                                        self.env.impl_methods_of_trait(trait_name, method)
+                                    {
+                                        self.engine
+                                            .replay_impl_effects(&imp, &inst_params, *span);
+                                    }
                                 }
                             }
                             // The reference binds the callee's row vars to this

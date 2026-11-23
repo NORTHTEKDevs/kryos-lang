@@ -1,0 +1,31 @@
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+use std::iter::{for_each}
+struct Holder { reg: [fn() -> str] }
+trait Adder { fn add(self: Self, h: Holder, g: fn() -> str) }
+struct I1 {}
+impl Adder for I1 {
+    fn add(self: I1, h: Holder, g: fn() -> str) { h.reg[0] = g }
+}
+fn go<A: Adder>(a: A, h: Holder, g: fn() -> str) { a.add(h, g) }
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let r = secret()
+    let h = Holder { reg: [safe] }
+    go(I1 {}, h, r)
+    let hs = [h]
+    deny!(fs:read) {
+        for_each(hs, |q: Holder| {
+            for f in q.reg {
+                println(f())
+            }
+        })
+    }
+}

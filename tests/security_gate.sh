@@ -1249,6 +1249,10 @@ R2_ESCAPES="$R2_ESCAPES \
     attack_slot_param_trait_bound_dispatch \
     attack_slot_dyn_registrar_store \
     attack_slot_dyn_copy_between_containers"
+# Item 123, round 2: the store goes through a trait bound or a dyn into a container held
+# in a STRUCT (an argument or the receiver). Such a call replays what every impl of the
+# trait method stores, with the impl's parameter vars paired to the call's.
+R2_ESCAPES="$R2_ESCAPES     attack_slot_bound_receiver_struct_field     attack_slot_dyn_self_holds_container     attack_slot_dyn_holder_as_arg     attack_slot_bound_holder_as_arg     attack_slot_dyn_default_self_field     attack_slot_bound_receiver_generic_nested     attack_slot_dyn_in_deny_nested_net"
 # The lambda form of item 112: a LAMBDA with an annotated array parameter that stores
 # its closure parameter into it. A lambda is one monomorphic value, so there is no
 # per-call copy of the parameter row to replay; the stores are written into the slot
@@ -1309,6 +1313,9 @@ R2_CONTROLS="$R2_CONTROLS \
     ctl_slot_param_fn_value_factory_pure \
     ctl_slot_dyn_registrar_store_pure \
     ctl_slot_param_fn_value_other_container"
+# Callees that only read, reached through a function value, a trait bound or a dyn, or
+# an Option payload (which `Some(arr)` copies): none stores, so none is charged.
+R2_CONTROLS="$R2_CONTROLS     ctl_slot_legit_fnvalue_read_only     ctl_slot_legit_traitbound_read_only     ctl_slot_legit_dyn_read_only     ctl_slot_legit_option_param_copy     ctl_slot_legit_lambda_read_only     ctl_slot_legit_traitbound_two_containers     ctl_slot_legit_map_through_value     ctl_slot_legit_dyn_two_arrays"
 for ctl in $R2_CONTROLS; do
     ctl_ok=1
     for mode in "" "--strict-capabilities"; do
