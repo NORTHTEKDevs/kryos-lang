@@ -167,10 +167,6 @@ pub struct InferenceEngine {
     /// True once any body (a declaration, an impl method or a lambda) stored a
     /// closure into a container it was handed.
     input_store_seen: bool,
-    /// The declaration whose forward reference `complete_references` is
-    /// replaying: a store into the container that declaration was handed lands
-    /// in its recorded effects, because its body is already closed.
-    completing_owner: Option<CapVarId>,
     pending_unknown: Vec<PendingUnknown>,
     /// Row vars of the SIGNATURE of a lambda whose body is being checked right
     /// now (a count, because lambdas nest). A declaration's own signature vars
@@ -342,7 +338,6 @@ impl InferenceEngine {
             effect_scope: None,
             store_effects: HashMap::new(),
             input_store_seen: false,
-            completing_owner: None,
             pending_unknown: Vec::new(),
             frozen_cap_vars: HashMap::new(),
             lambda_param_cap_vars: std::collections::HashSet::new(),
@@ -370,43 +365,6 @@ impl InferenceEngine {
     /// unification, invariant to it, and by whatever populates a function's
     /// OWN inferred row once its body has been walked).
     pub fn bind_cap_var(&mut self, id: CapVarId, row: CapRow) {
-        let completing = self
-            .completing_owner
-            .filter(|_| self.effect_scope.is_none() && self.global_slot_cap_vars.contains(&id));
-        self.bind_cap_var_inner(id, row);
-        if let Some(owner) = completing {
-            self.file_completed_slot_store(owner, id);
-        }
-    }
-
-    /// A forward reference completed after its holder's body closed bound the
-    /// global slot `slot`: file what the slot now holds of the holder's own
-    /// polymorphic vars as that body's store (as `end_store_effects` does for a
-    /// store made while the body was open), so the holder's callers replay it.
-    fn file_completed_slot_store(&mut self, owner: CapVarId, slot: CapVarId) {
-        let Some(binding) = self.cap_substitutions.get(&slot).cloned() else {
-            return;
-        };
-        let poly = self.owner_poly.get(&owner).cloned().unwrap_or_default();
-        let flat = self.resolve_cap_row_keeping_slots(&binding);
-        let vars: Vec<CapVarId> = flat
-            .var_ids()
-            .iter()
-            .copied()
-            .filter(|v| poly.contains(v))
-            .collect();
-        if vars.is_empty() {
-            return;
-        }
-        let entry = (slot, CapRow::Resolved { concrete: crate::ty::CapBits::EMPTY, vars });
-        let list = self.store_effects.entry(owner).or_default();
-        if !list.contains(&entry) {
-            list.push(entry);
-            self.cap_epoch += 1;
-        }
-    }
-
-    fn bind_cap_var_inner(&mut self, id: CapVarId, row: CapRow) {
         if let Some(scope) = self.effect_scope.as_mut() {
             if self.global_slot_cap_vars.contains(&id) {
                 scope.touched.push(id);
@@ -707,35 +665,6 @@ impl InferenceEngine {
         out
     }
 
-    /// `instantiate_row` for the row of a function TYPE copied out of a signature.
-    /// The signature's own var may be bound to a var local to the body (the copy a
-    /// forward reference made of its callee's return row, still unbound when this
-    /// reference is typed): flattening to that local var drops the link to the
-    /// signature's var, which is the only one this reference's map instantiates, so
-    /// what the body later binds the local var to never reached the caller's copy.
-    /// Keep the copy of every signature var passed on the way down as well:
-    /// `complete_references` binds it to the var's final row, instantiated.
-    fn instantiate_row_linked(&self, row: &CapRow, cap_var_map: &HashMap<CapVarId, CapVarId>) -> CapRow {
-        let mut out = self.instantiate_row(row, cap_var_map);
-        let CapRow::Resolved { vars, .. } = row else {
-            return out;
-        };
-        let mut visited: std::collections::HashSet<CapVarId> = std::collections::HashSet::new();
-        let mut stack: Vec<CapVarId> = vars.clone();
-        while let Some(cur) = stack.pop() {
-            if !visited.insert(cur) || self.global_slot_cap_vars.contains(&cur) {
-                continue;
-            }
-            if let Some(&copy) = cap_var_map.get(&cur) {
-                out = out.union(&CapRow::var(copy));
-            }
-            if let Some(CapRow::Resolved { vars, .. }) = self.cap_substitutions.get(&cur) {
-                stack.extend(vars.iter().copied());
-            }
-        }
-        out
-    }
-
     /// Like `resolve_cap_row`, but a GLOBAL slot var (see
     /// `global_slot_cap_vars`) is not chased: it stays in the result as an
     /// open var so the reader keeps a reference to the storage location
@@ -971,28 +900,6 @@ impl InferenceEngine {
             ref_caps = CapRow::var(copy);
             own_copy = Some(copy);
         }
-        // A callee already checked whose row still ends in a var that only a
-        // forward reference of ITS body binds later (a copy `tool` made of the
-        // `invoke` declared below it): flattening it here gave the caller that
-        // var as it stands, never mapped through this reference's freshening of the
-        // callee's parameter rows. Charge a var of this reference's own instead,
-        // seeded with the flattened row and bound again, instantiated, by
-        // `complete_references` once the callee's row is final.
-        if own_copy.is_none()
-            && !cap_var_map.is_empty()
-            && owner != Some(own)
-            && self.cap_substitutions.contains_key(&own)
-            && own_row.var_ids().iter().any(|v| {
-                !self.cap_substitutions.contains_key(v)
-                    && !cap_var_map.contains_key(v)
-                    && !self.global_slot_cap_vars.contains(v)
-            })
-        {
-            let copy = self.fresh_cap_var();
-            self.bind_cap_var(copy, ref_caps.clone());
-            ref_caps = CapRow::var(copy);
-            own_copy = Some(copy);
-        }
         if !cap_var_map.is_empty() {
             let mut map: Vec<(CapVarId, CapVarId)> =
                 cap_var_map.iter().map(|(k, v)| (*k, *v)).collect();
@@ -1053,9 +960,7 @@ impl InferenceEngine {
             let before = self.cap_epoch;
             for r in refs {
                 let map: HashMap<CapVarId, CapVarId> = r.map.iter().copied().collect();
-                self.completing_owner = r.owner;
                 self.replay_store_effects(r.callee, &map);
-                self.completing_owner = None;
                 if r.replay_only {
                     continue;
                 }
@@ -1181,33 +1086,6 @@ impl InferenceEngine {
             if !scope.param_stores.contains(&entry) {
                 scope.param_stores.push(entry);
             }
-            return;
-        }
-        // No body is open: a forward reference is being completed. The store
-        // belongs to the declaration holding the reference (its body ended before
-        // the callee's stores were known), so file it as that body would have,
-        // and let callers of it replay it on the next pass.
-        let Some(owner) = self.completing_owner else {
-            return;
-        };
-        let poly = self.owner_poly.get(&owner).cloned().unwrap_or_default();
-        let flat = self.resolve_cap_row_keeping_slots(&row);
-        let vars: Vec<CapVarId> = flat
-            .var_ids()
-            .iter()
-            .copied()
-            .filter(|v| *v != storage && (poly.contains(v) || self.global_slot_cap_vars.contains(v)))
-            .collect();
-        let bits = flat.concrete_bits();
-        if bits == crate::ty::CapBits::EMPTY && vars.is_empty() {
-            return;
-        }
-        let entry = (storage, CapRow::Resolved { concrete: bits, vars });
-        let list = self.store_effects.entry(owner).or_default();
-        if !list.contains(&entry) {
-            list.push(entry);
-            self.cap_epoch += 1;
-            self.note_input_store();
         }
     }
 
@@ -1838,11 +1716,6 @@ impl InferenceEngine {
     fn is_frozen(&self, v: CapVarId) -> bool {
         self.frozen_cap_vars.contains_key(&v)
             || self.effect_scope.as_ref().is_some_and(|s| s.poly.contains(&v))
-            // A forward reference completed after its holder's body closed: the
-            // holder's signature vars are inputs of that body all the same.
-            || self
-                .completing_owner
-                .is_some_and(|o| self.owner_poly.get(&o).is_some_and(|p| p.contains(&v)))
     }
 
     /// Every row var that appears anywhere in `ty`: the value's own row, the
@@ -2630,7 +2503,7 @@ impl InferenceEngine {
                     .collect(),
                 ret: Box::new(self.instantiate_impl(ret, var_map, cap_var_map)),
                 caps: match cap_var_map {
-                    Some(map) => self.instantiate_row_linked(caps, map),
+                    Some(map) => self.instantiate_row(caps, map),
                     None => caps.clone(),
                 },
             },

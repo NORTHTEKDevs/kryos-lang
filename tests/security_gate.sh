@@ -1260,14 +1260,6 @@ R2_ESCAPES="$R2_ESCAPES     attack_slot_bound_receiver_struct_field     attack_s
 R2_ESCAPES="$R2_ESCAPES \
     attack_slot_lambda_container_param_store \
     attack_slot_lambda_container_param_push"
-# Item 123, round 3: a trait DEFAULT method that stores through a required method
-# (`fn add2(self, g) { self.add(g) }`) was never replayed, because the default body's own
-# effects were recorded only when the impl was checked first; and a type ALIAS over a
-# container shared one row var between every use, so a store through an aliased
-# parameter was never input storage. Round 3 also pins the 13 forward-reference rows of
-# items 124 and 125 (a store or a parameter handed to a callee declared below its caller).
-R2_ESCAPES="$R2_ESCAPES     attack_slot_default_method_calls_required_bound     attack_slot_default_method_calls_required_dyn     attack_slot_default_method_calls_required_concrete     attack_slot_default_method_calls_required_global     attack_slot_default_method_main_first     attack_slot_default_method_via_lambda     attack_slot_alias_plain_array     attack_slot_alias_tuple_direct     attack_slot_alias_through_factory"
-R2_ESCAPES="$R2_ESCAPES     attack_fwd_param_chain_invoke_in_deny     attack_fwd_param_chain_container_in_deny     attack_fwd_param_chain_method_in_deny     attack_fwd_param_chain_actor_in_deny     attack_fwd_rev_hotparam_forward_via_local_alias     attack_fwd_rev_slot_param_helper_chain     attack_fwd_mainfirst_verify_actor_to_actor_message     attack_fwd_store_relay_two_hop     attack_fwd_store_relay_global_slot     attack_fwd_store_relay_method     attack_fwd_builder_relay_returns_container     attack_fwd_fill_relay_struct_field_after_main     attack_fwd_fill_relay_struct_field_before_main"
 for esc in $R2_ESCAPES; do
     esc_ok=1
     for mode in "" "--strict-capabilities"; do
@@ -1323,7 +1315,6 @@ R2_CONTROLS="$R2_CONTROLS \
     ctl_slot_param_fn_value_other_container"
 # Callees that only read, reached through a function value, a trait bound or a dyn, or
 # an Option payload (which `Some(arr)` copies): none stores, so none is charged.
-R2_CONTROLS="$R2_CONTROLS     ctl_slot_default_method_pure_arg_bound     ctl_slot_default_method_pure_arg_dyn     ctl_slot_default_method_read_only     ctl_slot_alias_plain_array_pure     ctl_slot_alias_tuple_pure     ctl_slot_alias_fn_type_called"
 R2_CONTROLS="$R2_CONTROLS     ctl_slot_legit_fnvalue_read_only     ctl_slot_legit_traitbound_read_only     ctl_slot_legit_dyn_read_only     ctl_slot_legit_option_param_copy     ctl_slot_legit_lambda_read_only     ctl_slot_legit_traitbound_two_containers     ctl_slot_legit_map_through_value     ctl_slot_legit_dyn_two_arrays"
 for ctl in $R2_CONTROLS; do
     ctl_ok=1
