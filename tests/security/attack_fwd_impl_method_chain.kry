@@ -1,0 +1,39 @@
+// LEDGER items 124/125 (root F, declaration order): the forward chain sits inside ONE impl, whose methods call each other.
+// Shape: `Tool.go` hands its parameter to `Tool.mid`, which hands it to `Tool.fin`, which calls it; each is declared above the method it calls. `main` calls `go` inside deny!(fs:read).
+// Measured (master dd637a90, 26 orders): E0507 in every order, E0110 only in 12 of the 26. The pin is the verdict set: every order must give the same codes, E0110 included.
+// WANTED: rejected with E0110 in both modes, and `kryos run` must not print the secret.
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+struct Tool {
+    id: i64,
+}
+
+impl Tool {
+    fn go(self: Tool, r: fn() -> str) -> str {
+        return self.mid(r)
+    }
+
+    fn mid(self: Tool, r: fn() -> str) -> str {
+        return self.fin(r)
+    }
+
+    fn fin(self: Tool, r: fn() -> str) -> str {
+        return r()
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let r = secret()
+    let t = Tool { id: 1 }
+    deny!(fs:read) {
+        println("LEAK: " + t.go(r))
+    }
+}

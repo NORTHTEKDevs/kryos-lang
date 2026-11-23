@@ -1,0 +1,42 @@
+// LEDGER item 125 (root F, declaration order): the store relay is three hops long (h1 -> h2 -> h3), each declared above the callee it relays to.
+// `h3` pushes a Plugin holding the closure into the array; `main` reads the array inside deny!(fs:read). Every order of h1, h2, h3 must agree.
+// Measured (master dd637a90, 26 orders): `kryos check` rc=0 in default and strict mode in 22 of the 26 orders (including the one below), and `kryos run` prints TOPSECRET-CLOSURE-9f8e7d6c5b4a; rejected with E0110 in the other 4 (the reversed order among them).
+// WANTED: rejected with E0110 in both modes, and `kryos run` must not print the secret.
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+struct Plugin {
+    name: str,
+    run: fn() -> str,
+}
+
+fn h1(reg: [Plugin], name: str, f: fn() -> str) -> [Plugin] {
+    return h2(reg, name, f)
+}
+
+fn h2(reg: [Plugin], name: str, f: fn() -> str) -> [Plugin] {
+    return h3(reg, name, f)
+}
+
+fn h3(reg: [Plugin], name: str, f: fn() -> str) -> [Plugin] {
+    return push(reg, Plugin { name: name, run: f })
+}
+
+@capabilities(fs:read)
+fn main() {
+    let r = secret()
+    let mut reg: [Plugin] = []
+    reg = h1(reg, "a", safe)
+    reg = h1(reg, "evil", r)
+    deny!(fs:read) {
+        for q in reg {
+            println("LEAK: " + q.run())
+        }
+    }
+}
