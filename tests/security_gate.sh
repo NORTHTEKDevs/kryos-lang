@@ -1423,10 +1423,7 @@ R3_ESCAPES="$R3_ESCAPES \
     attack_fwd_three_hop_param_chain \
     attack_fwd_mutual_recursion_param_chain \
     attack_fwd_three_hop_store_relay \
-    attack_fwd_impl_method_chain \
-    attack_fwd_cycle12_store_relay \
-    attack_fwd_impl_store_relay_12 \
-    attack_fwd_cycle12_struct_store_relay"
+    attack_fwd_impl_method_chain \n    attack_fwd_cycle12_store_relay \n    attack_fwd_impl_store_relay_12 \n    attack_fwd_cycle12_struct_store_relay"
 for esc in $R3_ESCAPES; do
     esc_ok=1
     for mode in "" "--strict-capabilities"; do
@@ -1474,10 +1471,7 @@ R3_CONTROLS="ctl_deny_param_wrapper_pure \
     ctl_deny_trait_default_method_pure \
     ctl_deny_trait_default_bound_safe \
     ctl_fwd_param_chain_pure \
-    ctl_fwd_store_relay_pure \
-    ctl_fwd_cycle12_store_relay \
-    ctl_fwd_impl_store_relay_12 \
-    ctl_fwd_cycle12_struct_store_relay"
+    ctl_fwd_store_relay_pure \n    ctl_fwd_cycle12_store_relay \n    ctl_fwd_impl_store_relay_12 \n    ctl_fwd_cycle12_struct_store_relay"
 for ctl in $R3_CONTROLS; do
     ctl_ok=1
     for mode in "" "--strict-capabilities"; do

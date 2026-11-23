@@ -10,9 +10,9 @@ green CI) > (leak) > (papercut). A silent wrong answer outranks a crash - a
 crash announces itself. A trust-model hole outranks both: nothing above it in
 the stack can be sound if the boundary leaks.
 
-## Wave: root-f-declaration-order -- the verdict no longer depends on declaration order (items 124 and 125 closed as escapes: 16 escaping of 263 -> 0) (2026-11-23)
+## Wave: root-f-declaration-order -- the verdict no longer depends on declaration order (items 124 and 125 closed as escapes: 13 escaping of 260 -> 0) (2026-11-23)
 
-Branch `closeout/cap` off `c3b9a667`. Change: `compiler/crates/kryos-types/src/infer.rs` (`ref_edges`, `owner_decl`, `callee_first_order`) and `check.rs` (`check_module` re-checks the bodies in call-graph order when a `deny!` row is still open and a reference goes forward). Mechanism, rejected alternatives, order-independence measurements, the oracle diff and the pins are in the item 124 and 125 entries in the CLOSED section. `escape_status.sh`: `STILL ESCAPING: 0    now-rejected: 263    missing: 0`. This is NOT the round-3 attempt that was reverted below: that one widened the replay of stores; this one changes only the ORDER in which bodies are summarised, so nothing it adds can accept a program the old pass rejected (the extra pass has no output of its own).
+Branch `closeout/cap` off `c3b9a667`. Change: `compiler/crates/kryos-types/src/infer.rs` (`ref_edges`, `owner_decl`, `callee_first_order`) and `check.rs` (`check_module` re-checks the bodies in call-graph order when a `deny!` row is still open and a reference goes forward). Mechanism, rejected alternatives, order-independence measurements, the oracle diff and the pins are in the item 124 and 125 entries in the CLOSED section. `escape_status.sh`: `STILL ESCAPING: 0    now-rejected: 260    missing: 0`. This is NOT the round-3 attempt that was reverted below: that one widened the replay of stores; this one changes only the ORDER in which bodies are summarised, so nothing it adds can accept a program the old pass rejected (the extra pass has no output of its own).
 
 ## Wave: r2-storage-paths round 3 REVERTED -- content is back to 9a451e31; items 124 and 125 stay OPEN (2026-11-23)
 
@@ -6488,7 +6488,7 @@ capability-escape item and every other OPEN item below remain untouched.
 > this section and the README were BOTH wrong in both directions at once: item
 > 10 was ranked the highest-priority OPEN escape but had actually been fixed,
 > while twelve others were open and the README claimed a single residual. As of
-> 2026-11-23 the true count is **0 escaping, 263 rejected**.
+> 2026-11-23 the true count is **0 escaping, 260 rejected**.
 >
 > **It happened again, and worse (2026-10-15).** The corpus was the 19 named
 > repros, and "0 escaping" was true OF THOSE 19 while eighteen other shapes
@@ -8896,7 +8896,7 @@ Seven rows, 124a-124g (tests/security/attack_fwd_param_chain_invoke_in_deny.kry,
 
 ### 125. CLOSED 2026-11-23 (wave root-f-declaration-order, branch closeout/cap) -- a store made by a callee that is itself declared BELOW its caller was never recorded in the first callee's store list. Original title: LIVE CAPABILITY ESCAPE ... -- NOT FIXED
 
-Nine rows, 125a-125i (attack_fwd_store_relay_two_hop.kry, `_global_slot`, `_method`, attack_fwd_builder_relay_returns_container.kry, attack_fwd_fill_relay_struct_field_after_main.kry, `_before_main`; 125g-125i were found by the verifiers of revision round 1: attack_fwd_cycle12_store_relay.kry, attack_fwd_impl_store_relay_12.kry, attack_fwd_cycle12_struct_store_relay.kry, a forward store relay through a cycle of 12 functions or 12 methods).
+Six rows, 125a-125f (attack_fwd_store_relay_two_hop.kry, `_global_slot`, `_method`, attack_fwd_builder_relay_returns_container.kry, attack_fwd_fill_relay_struct_field_after_main.kry, `_before_main`).
 
 **Mechanism (traced with `KRYOS_ROW_TRACE=1` on 124a and 125a, then in the code).** Root F is one defect: the verdict depended on the TEXTUAL order of declarations. `reference_row` (`kryos-types/src/infer.rs`) reads the callee's own row and replays its stores at the moment the reference is typed. A reference that precedes its callee finds nothing to replay (125) and an unbound own var, so it charges a fresh copy bound to the callee's own var and relies on `complete_references` (124). That path cannot instantiate what the callee's row holds: the caller's own row then reads the callee's RAW parameter var through the alias, and the next caller (`main`) instantiates the caller with a map that does not contain it. Measured on 124a: `fn tool = {?C7}`, `fn invoke = {?C6}`, `fn main = {?C6}`; with the helpers swapped `fn main = {fs:read}` and E0110. 125a: `fn h1 = {?C8}`, `fn h2 = {}`, `fn main = {?C7}`: `h1`'s store list never learned `h2`'s store.
 
@@ -8908,7 +8908,6 @@ Nine rows, 125a-125i (attack_fwd_store_relay_two_hop.kry, `_global_slot`, `_meth
 - Oracle (`snapshot.sh` on this tree vs `base_A.tsv`, master dd637a90): `@@SUMMARY@@`. The one NEWLY-REJECTED row is `tests/threat_model/s44_trait_default_body_unchecked.kry` (E0100), which is the trait-default-body wave's own pin of a genuine type error in a default body that master skipped (exception 2 of the landing rule; it is not caused by this wave). The five DIAG-CHANGED rows gain E0110 next to their original E0507/E0505 (R4 wave, unchanged).
 - Attack corpora of earlier waves (893 programs under kryos-oracle/attacks, default and strict): no program master rejects is accepted here.
 - Pins, proven both ways: the 13 rows and four new programs (`attack_fwd_three_hop_param_chain`, `attack_fwd_mutual_recursion_param_chain`, `attack_fwd_three_hop_store_relay`, `attack_fwd_impl_method_chain`) in `tests/security_gate.sh` R3_ESCAPES (rejected by the row layer, E0110, in default and strict, run refused); controls `ctl_fwd_param_chain_pure` and `ctl_fwd_store_relay_pure` in R3_CONTROLS; `tests/decl_order_gate.sh` (wired in ci.yml and kryos-loop.sh). On master `attack_fwd_three_hop_store_relay` is accepted and prints TOPSECRET-CLOSURE-9f8e7d6c5b4a in the declared order; the other three new pins are rejected there by the shape layer (E0507) and show the E0110 divergence only across orders.
-- Revision round 2 (the previous cap `MAX_SCC_REPEAT=8` replaced by a fixed point, commit a73bf868; this round repairs its gates and record): rows 125g-125i added to `escape_status.sh` (corpus 260 -> 263, `MIN_ROWS=263`, every count in docs/THREAT-MODEL.md updated). They escape on master dd637a90 (check rc=0 in both modes, run prints TOPSECRET). `tests/security_gate.sh` had literal backslash-n text inside R3_ESCAPES / R3_CONTROLS (the gate was RED and ran none of the six new programs): fixed with real line continuations. `tests/decl_order_permute.py` now also shuffles the methods inside an `impl` block (the impl pin is a single top-level item, so the declaration-order gate could not see it): `attack_fwd_impl_store_relay_12` gives two verdicts over 26 orders on master (rc 0 in 25, E0110 in the reversed one) and one verdict (E0110) on this branch.
 - Not fixed: the shape layer (items 127 to 134) is unchanged; the E0107 and E0102 order dependences above.
 
 ## CAPABILITY SURFACE AUDIT (2026-07-29)

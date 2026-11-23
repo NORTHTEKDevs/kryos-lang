@@ -39,7 +39,7 @@ and in the escape corpus below; "no known escape" means "no escape found by the
 searches that were run", and the searches were run by the same people who wrote
 the checker.
 
-"Known" has two precise meanings here. Section 4.1 is the escape corpus: 263
+"Known" has two precise meanings here. Section 4.1 is the escape corpus: 260
 repros listed by name in `tools/loop/escape_status.sh`, none of them still accepted (80 on 1.3.0; rows 124 and 125, 13 rows, were closed by the root-F wave of 2026-11-23; the 57 rows of items 126 to 134 were closed by the R4 wave of 2026-11-21, row 121 by the coarse-family wave, row 122 by the trait-default-body wave and the eight rows of items 119 and 123 by the r2-storage-paths wave, all of 2026-11-22).
 Section 4.5 lists accepted zero-authority shapes (B5, B6, B7 and B9) that are
 not in that corpus; five more (B1 to B4 and B8) were listed in the first version
@@ -166,8 +166,8 @@ permissive for the direct case (claims.tsv G3-deny-direct-*). For closures
 reaching the block through parameters, locals, containers, struct fields, actor
 state, `spawn`, generics, `dyn` and the other shapes in section 2 of
 [10-capabilities.md](10-capabilities.md): gate `tests/security_gate.sh`
-(gate, run for the 1.3.0 revision: PASS, 342 `ok` lines, 0 FAIL) and `tools/loop/escape_status.sh` (263 of 263 repros rejected,
-executed 2026-11-22 on the `closeout/cap` branch). **Exceptions: none of the 263 repros is still accepted (4.1); the
+(gate, run for the 1.3.0 revision: PASS, 342 `ok` lines, 0 FAIL) and `tools/loop/escape_status.sh` (260 of 260 repros rejected,
+executed 2026-11-22 on the `closeout/cap` branch). **Exceptions: none of the 260 repros is still accepted (4.1); the
 unknown shapes are what the list cannot show.** `deny!` does not bound a callee that is handed a closure (N16, B6).
 
 **G4. `@pure` functions call no gated or impure builtin.**
@@ -427,7 +427,7 @@ in principle". Treat it as a declaration, not a boundary; a DLL built by a
 compiler older than PR #40 can carry B1 to B4 and B8, and one built by this compiler can
 still carry B9.
 
-**N15. Zero known escapes is not a soundness proof.** The corpus is 263 repros
+**N15. Zero known escapes is not a soundness proof.** The corpus is 260 repros
 found by directed search; 75 more shapes are enumerated by a generator. Both
 were written by the authors of the checker. Section 4.5 lists four accepted
 shapes that are in neither, and the first version of this document listed eight;
@@ -458,7 +458,7 @@ header: "DELEGATION, not an escape").
 ### 4.1 Capability escapes known and still accepted
 
 Measured 2026-11-21 with `bash tools/loop/escape_status.sh` on the in-place build
-of the R4 wave's branch (`closeout/cap`): **`STILL ESCAPING: 0    now-rejected: 263    missing: 0`** (2026-11-23, root-F wave), 263
+of the R4 wave's branch (`closeout/cap`): **`STILL ESCAPING: 0    now-rejected: 260    missing: 0`** (2026-11-23, root-F wave), 260
 repros (on the 1.3.0 build of 2026-11-02 the same corpus read 80 / 180; the 57 rows of items 126 to 134 and rows 119, 121, 122 and 123 are the difference). Each row below is a program that `kryos check` accepts in default **and**
 `--strict-capabilities` mode and whose `kryos run` printed the secret (executed;
 `tools/loop/check-escapes-documented.sh` re-runs every row and fails if one is no
@@ -480,7 +480,7 @@ blind.
 |---|---|---|---|
 <!-- known-escapes:end -->
 
-No repro of the corpus is accepted any more: every one of the 263 is rejected in default and strict mode (`escape_status.sh`, 2026-11-23). That is a statement about the 263 programs, not a proof about unknown ones: the shape-layer imprecision of items 127 to 134 is still there and is covered only because the row layer judges the `deny!` block.
+No repro of the corpus is accepted any more: every one of the 260 is rejected in default and strict mode (`escape_status.sh`, 2026-11-23). That is a statement about the 260 programs, not a proof about unknown ones: the shape-layer imprecision of items 127 to 134 is still there and is covered only because the row layer judges the `deny!` block.
 
 - **Row-layer gaps, closed.** (119 and 123, a helper that stores a closure into a container it was handed where the container sits in a tuple, `Option` or `Result` parameter or the helper is reached through a function value, a generic bound or a `dyn`, were closed 2026-11-22: `storage_rows_in` walks them, a call through a bound or a `dyn` replays the stores of the impls (`replay_impl_effects`) and a call through a function value widens every container of closures among its arguments (`store_unknown_callee_effects`), all in `kryos-types/src/infer.rs`. 121, coarse `deny!` families, was closed 2026-11-22: the verdict now judges a denied
   coarse family by overlap, `denied_caps_used` in `kryos-types/src/ty.rs`. 122, the body of a trait default method, was closed
@@ -709,7 +709,7 @@ accepted repros equals the set in the table between the `known-escapes` markers,
 id for id and path for path. A stale entry (fixed but still listed), an
 undocumented escape (accepted but not listed), a duplicate id, a mismatched repro
 path, an accepted repro whose leak did not reproduce (no leak marker in its run
-output), a row that `kryos check --strict-capabilities` rejects, or fewer than 263 measured
+output), a row that `kryos check --strict-capabilities` rejects, or fewer than 260 measured
 rows (`MIN_ROWS`: rows are only ever added, so a lower count means one was
 deleted) each fail the check. It then re-runs every row of the `known-bypasses`
 table (4.5) with the same binary and fails when a row no longer behaves as
