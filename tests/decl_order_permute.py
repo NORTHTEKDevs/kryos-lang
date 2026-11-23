@@ -42,6 +42,31 @@ def split(src):
     return head, items
 
 
+def impl_parts(item):
+    """(header, methods, footer) for an `impl` item with 2+ methods, else None."""
+    lines = item.split('\n')
+    h = next((i for i, ln in enumerate(lines) if code_part(ln).strip().startswith('impl')), None)
+    if h is None or not code_part(lines[h]).rstrip().endswith('{') or code_part(lines[-1]).strip() != '}':
+        return None
+    _, methods = split('\n'.join(lines[h + 1:-1]))
+    if len(methods) < 2:
+        return None
+    return '\n'.join(lines[:h + 1]), methods, lines[-1]
+
+
+def render(item, rng, reverse):
+    parts = impl_parts(item)
+    if parts is None:
+        return item
+    header, methods, footer = parts
+    ms = list(methods)
+    if reverse:
+        ms.reverse()
+    elif rng is not None:
+        rng.shuffle(ms)
+    return header + '\n' + '\n'.join(ms) + '\n' + footer
+
+
 def verdict(path, strict):
     cmd = [K, 'check'] + (['--strict-capabilities'] if strict else []) + [path]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=120, encoding='utf-8', errors='replace')
@@ -66,8 +91,9 @@ for f in FILES:
     results = {}
     for k, o in enumerate(orders):
         p = os.path.join(WORK, f'{tag}_{k}.kry')
+        mrng = random.Random(f'{tag}-{k}') if k > 1 else None
         with open(p, 'w', encoding='utf-8', newline='\n') as fh:
-            fh.write('\n'.join(head) + '\n' + '\n\n'.join(items[i] for i in o) + '\n')
+            fh.write('\n'.join(head) + '\n' + '\n\n'.join(render(items[i], mrng, k == 1) for i in o) + '\n')
         results.setdefault((verdict(p, False), verdict(p, True)), []).append(o)
     if len(results) == 1:
         (v,) = results
