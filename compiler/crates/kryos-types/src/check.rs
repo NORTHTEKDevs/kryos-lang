@@ -159,6 +159,10 @@ pub struct TypeChecker {
     /// non-declaration resolutions (e.g. a struct field's own type, a
     /// `let` annotation) -- harmless, since nothing else reads this field.
     pending_cap_var_ids: Vec<crate::ty::CapVarId>,
+    /// Non-generic type aliases by name: the written type and what it resolved
+    /// to at its definition. A use re-resolves the written type so each use gets
+    /// its own fresh capability rows (see `resolve_type_expr`).
+    type_alias_exprs: std::collections::HashMap<String, (TypeExpr, Type)>,
     /// One entry per function/lambda body CURRENTLY being checked (a
     /// stack because bodies nest: a lambda literal inside a function
     /// body inside another lambda...). Every gated-builtin call and every
@@ -300,6 +304,7 @@ impl TypeChecker {
             suppress_array_elem_unify: std::collections::HashSet::new(),
             dyn_container_reject_params: std::collections::HashSet::new(),
             pending_cap_var_ids: Vec::new(),
+            type_alias_exprs: std::collections::HashMap::new(),
             cap_accum_stack: Vec::new(),
             current_actor_fn_state_fields: std::collections::HashSet::new(),
             dump_fn_effects: std::env::var("KRYOS_DUMP_FN_EFFECTS")
@@ -971,7 +976,20 @@ impl TypeChecker {
                         }
                     } else if let Some(ty) = self.env.lookup_var(name) {
                         // Type alias or generic parameter registered as a variable.
-                        ty.clone()
+                        // An alias is re-resolved per use: its written `fn`
+                        // positions each get fresh capability rows, exactly as if
+                        // the alias were spelled out. Sharing the definition's
+                        // one row var made every use of the alias a single
+                        // un-generalised row, so a store through an aliased
+                        // container parameter was never seen as input storage.
+                        let ty = ty.clone();
+                        if let Some((te, def)) = self.type_alias_exprs.get(name) {
+                            if *def == ty {
+                                let te = te.clone();
+                                return self.resolve_type_expr(&te);
+                            }
+                        }
+                        ty
                     } else {
                         self.error_with_code(
                             format!("unknown type `{name}`"),
@@ -2207,6 +2225,8 @@ impl TypeChecker {
                     self.env.define_var(name.clone(), Type::Error);
                 } else {
                     let resolved = self.resolve_type_expr(ty);
+                    self.type_alias_exprs
+                        .insert(name.clone(), (ty.clone(), resolved.clone()));
                     // Register as a variable in the type namespace for lookup.
                     self.env.define_var(name.clone(), resolved);
                 }
@@ -5952,10 +5972,12 @@ impl TypeChecker {
                                             call_arg_tys.push(arg_ty);
                                         }
                                         let _ = &call_arg_tys;
-                                        for imp in self
-                                            .env
-                                            .impl_methods_of_trait(trait_name, method)
-                                        {
+                                        // The trait's own signature carries the
+                                        // stores of an inherited default body.
+                                        let mut targets =
+                                            self.env.impl_methods_of_trait(trait_name, method);
+                                        targets.push(sig.clone());
+                                        for imp in targets {
                                             self.engine
                                                 .replay_impl_effects(&imp, &inst_params, *span);
                                         }
@@ -6048,13 +6070,12 @@ impl TypeChecker {
                                     call_arg_tys.push(arg_ty);
                                 }
                                 let _ = &call_arg_tys;
-                                if !self_in_default {
-                                    for imp in
-                                        self.env.impl_methods_of_trait(trait_name, method)
-                                    {
-                                        self.engine
-                                            .replay_impl_effects(&imp, &inst_params, *span);
-                                    }
+                                let mut targets =
+                                    self.env.impl_methods_of_trait(trait_name, method);
+                                targets.push(sig.clone());
+                                for imp in targets {
+                                    self.engine
+                                        .replay_impl_effects(&imp, &inst_params, *span);
                                 }
                             }
                             // The reference binds the callee's row vars to this
