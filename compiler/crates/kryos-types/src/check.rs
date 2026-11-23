@@ -1517,9 +1517,34 @@ impl TypeChecker {
             self.engine.truncate_denies(deny_marks2);
             self.cap_effects_log.truncate(log_mark2);
             self.denies_reported.clear();
-            for &i in &order {
-                self.engine.set_current_decl(Some(i));
-                self.check_decl(&module.declarations[i]);
+            let watermark = self.engine.cap_var_watermark();
+            for group in &order {
+                let mut prev = if group.cyclic {
+                    Some(self.engine.convergence_stamp(&group.owners, watermark))
+                } else {
+                    None
+                };
+                let mut rounds = 0usize;
+                // A cyclic group is re-checked until a whole round changes
+                // nothing it can still change. A chain through it settles in at
+                // most one round per own-row var, so the bound below cannot cut
+                // a real propagation short; it only stops a runaway.
+                let limit = 2 * group.owners.len() + 8;
+                loop {
+                    for &i in &group.members {
+                        self.engine.set_current_decl(Some(i));
+                        self.check_decl(&module.declarations[i]);
+                    }
+                    if !group.cyclic {
+                        break;
+                    }
+                    let now = self.engine.convergence_stamp(&group.owners, watermark);
+                    rounds += 1;
+                    if prev.as_ref() == Some(&now) || rounds >= limit {
+                        break;
+                    }
+                    prev = Some(now);
+                }
             }
             self.engine.set_current_decl(None);
             self.diagnostics.truncate(diag_mark2);

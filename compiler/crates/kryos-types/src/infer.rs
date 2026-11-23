@@ -236,6 +236,15 @@ pub struct InferenceEngine {
     owner_decl: HashMap<CapVarId, usize>,
 }
 
+/// One strongly connected component of the declaration reference graph, see
+/// `InferenceEngine::callee_first_order`.
+#[derive(Debug)]
+pub struct CalleeGroup {
+    pub members: Vec<usize>,
+    pub owners: Vec<CapVarId>,
+    pub cyclic: bool,
+}
+
 /// See `InferenceEngine::effect_scope`.
 #[derive(Debug, Default)]
 struct EffectScope {
@@ -780,10 +789,11 @@ impl InferenceEngine {
     /// items 124 and 125): the verdict then depended on declaration order.
     ///
     /// Strongly connected components (mutual recursion, or methods of one impl
-    /// that call each other) are listed together, repeated once per own-row
-    /// var they hold (at most `MAX_SCC_REPEAT`), so a forward chain inside one
-    /// component settles too.
-    pub fn callee_first_order(&mut self, n: usize) -> Option<Vec<usize>> {
+    /// that call each other) come out as one `CalleeGroup` each, members in
+    /// callee-first order and flagged cyclic. The caller re-checks a cyclic
+    /// group until `convergence_stamp` stops changing (no fixed repeat count),
+    /// so a forward chain of any length inside one component settles too.
+    pub fn callee_first_order(&mut self, n: usize) -> Option<Vec<CalleeGroup>> {
         let edges = std::mem::take(&mut self.ref_edges);
         let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
         let mut forward = false;
@@ -860,23 +870,68 @@ impl InferenceEngine {
                                 break;
                             }
                         }
-                        comp.sort_unstable();
                         comps.push(comp);
                     }
                 }
             }
         }
-        const MAX_SCC_REPEAT: usize = 8;
-        let mut order = Vec::new();
+        let mut groups = Vec::new();
         for comp in comps {
-            let owners: usize = comp.iter().map(|d| owners_in[*d]).sum();
             let cyclic = comp.len() > 1 || adj[comp[0]].contains(&comp[0]);
-            let reps = if cyclic { owners.clamp(2, MAX_SCC_REPEAT) } else { 1 };
-            for _ in 0..reps {
-                order.extend(comp.iter().copied());
+            let mut owners: Vec<CapVarId> = self
+                .owner_decl
+                .iter()
+                .filter(|(_, d)| comp.contains(d))
+                .map(|(o, _)| *o)
+                .collect();
+            owners.sort_unstable();
+            groups.push(CalleeGroup { members: comp, owners, cyclic });
+        }
+        Some(groups)
+    }
+
+    /// The next cap var id to be allocated: every var below it exists now. The
+    /// extra checking pass allocates fresh copies at each reference; those are
+    /// excluded from `convergence_stamp` so a re-check can reach a fixed point.
+    pub fn cap_var_watermark(&self) -> CapVarId {
+        self.next_cap_var
+    }
+
+    /// What a re-check of a cyclic group can still change: the resolved row of
+    /// each own-row var of the group, what each stored, and the resolved row of
+    /// every global slot, with vars allocated at or after `watermark` (copies
+    /// made by the extra pass itself) left out. Equal before and after a round
+    /// means the round settled nothing new. Rows only widen, so it converges.
+    pub fn convergence_stamp(
+        &mut self,
+        owners: &[CapVarId],
+        watermark: CapVarId,
+    ) -> Vec<(CapVarId, crate::ty::CapBits, Vec<CapVarId>)> {
+        let mut ids: Vec<CapVarId> = owners.to_vec();
+        let mut slots: Vec<CapVarId> = self.global_slot_cap_vars.iter().copied().collect();
+        slots.sort_unstable();
+        ids.extend(slots);
+        let mut out = Vec::new();
+        for id in ids {
+            if let Some(b) = self.cap_substitutions.get(&id).cloned() {
+                let flat = self.resolve_cap_row_keeping_slots(&b);
+                let mut vars: Vec<CapVarId> =
+                    flat.var_ids().iter().copied().filter(|v| *v < watermark).collect();
+                vars.sort_unstable();
+                out.push((id, flat.concrete_bits(), vars));
             }
         }
-        Some(order)
+        for o in owners {
+            if let Some(list) = self.store_effects.get(o) {
+                for (slot, row) in list.clone() {
+                    let mut vars: Vec<CapVarId> =
+                        row.var_ids().iter().copied().filter(|v| *v < watermark).collect();
+                    vars.sort_unstable();
+                    out.push((slot, row.concrete_bits(), vars));
+                }
+            }
+        }
+        out
     }
 
     /// Mark the declaration `own` as a method of a trait impl: it can be reached
