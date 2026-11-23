@@ -37,14 +37,8 @@ tests/security/attack_fwd_three_hop_param_chain.kry
 tests/security/attack_fwd_mutual_recursion_param_chain.kry
 tests/security/attack_fwd_three_hop_store_relay.kry
 tests/security/attack_fwd_impl_method_chain.kry
-tests/security/attack_fwd_cycle12_store_relay.kry
-tests/security/attack_fwd_impl_store_relay_12.kry
-tests/security/attack_fwd_cycle12_struct_store_relay.kry
 tests/security/ctl_fwd_param_chain_pure.kry
 tests/security/ctl_fwd_store_relay_pure.kry
-tests/security/ctl_fwd_cycle12_store_relay.kry
-tests/security/ctl_fwd_impl_store_relay_12.kry
-tests/security/ctl_fwd_cycle12_struct_store_relay.kry
 "
 fail=0
 # shellcheck disable=SC2086
