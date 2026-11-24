@@ -45,7 +45,7 @@ kryos run hello.kry
 
 ## In one minute
 
-- **It's fast.** Native binaries via LLVM. On 1.3.0 Kryos takes 0.59x to 1.04x of Rust's time on five of seven benchmarks and 1.34x and 1.88x on the other two, and is 32x to 307x faster than Python on five of them. Measured medians, methodology, and where Kryos loses (and why) in [BENCHMARKS.md](BENCHMARKS.md).
+- **It's fast.** Native binaries via LLVM. On 1.3.0 Kryos takes 0.64x to 1.03x of Rust's time on five of seven benchmarks and 1.34x and 1.75x on the other two, and is 32x to 327x faster than Python on five of them. Measured medians, methodology, and where Kryos loses (and why) in [BENCHMARKS.md](BENCHMARKS.md).
 - **It's safe.** Memory safety by construction (ARC + move semantics), no `'a` lifetime annotations, no GC pauses. This is a Swift-like ownership model - simpler than Rust's borrow checker, and not equivalent to its compile-time guarantees (no data-race freedom proofs). Known exceptions on 1.3.0: values linked through `shared` pointers are never freed, one `shared` shape corrupts the heap in release builds, and a `match` on an `Option` field of a struct parameter leaks its payload (LEDGER items 137 to 139). Capability-typed effects catch I/O leaks at compile time.
 - **It's small.** One binary, no LLVM dependency for development, ~20 MB compiler, ~700 MB to build from source.
 - **It runs anywhere.** Native (Linux / macOS / Windows / Intel / Apple Silicon) from the same source, plus an explicit-subset WebAssembly target (scalars, strings, closures, host-import I/O - anything outside the subset is a clear compile error, never a miscompile; see [docs/wasm-contract.md](docs/wasm-contract.md)).
@@ -230,19 +230,19 @@ kryos build --backend wasm hello.kry      # WebAssembly
 
 ## How it compares
 
-Medians of 5 runs on Kryos 1.3.0, in seconds (lower is better). [BENCHMARKS.md](BENCHMARKS.md) records the commit, machine and toolchains, the spreads, the Cranelift column and the startup floors; every port printed the same output.
+Medians of 5 runs on Kryos 1.3.0 (re-measured 2026-11-24), in seconds (lower is better). [BENCHMARKS.md](BENCHMARKS.md) records the commit, machine and toolchains, the spreads, the Cranelift column and the startup floors; every port printed the same output.
 
 | Benchmark | Kryos (LLVM) | Rust -O | clang -O2 | clang++ -O2 | Go | Python | Kryos / Rust |
 |---|---|---|---|---|---|---|---|
-| fib | 0.362 | 0.358 | 0.356 | 0.357 | 0.722 | 17.758 | 1.01x |
-| mandelbrot | 0.383 | 0.381 | 0.381 | 0.373 | 0.391 | 20.466 | 1.00x |
-| nbody | 0.150 | 0.112 | 0.154 | 0.158 | 0.258 | 46.104 | 1.34x |
-| binary_trees | 1.455 | 0.772 | 0.691 | 0.732 | 0.492 | 2.389 | 1.88x |
-| fannkuch | 0.204 | 0.196 | 0.192 | 0.187 | 0.197 | 6.542 | 1.04x |
-| matmul | 0.620 | 0.645 | 0.645 | 0.643 | 0.561 | 34.818 | 0.96x |
-| hashmap | 0.086 | 0.147 | n/a | 0.487 | 0.159 | 0.671 | 0.59x |
+| fib | 0.357 | 0.356 | 0.357 | 0.354 | 0.717 | 17.350 | 1.00x |
+| mandelbrot | 0.374 | 0.374 | 0.374 | 0.373 | 0.384 | 20.868 | 1.00x |
+| nbody | 0.147 | 0.109 | 0.153 | 0.153 | 0.249 | 48.099 | 1.34x |
+| binary_trees | 1.406 | 0.802 | 0.721 | 0.773 | 0.494 | 2.155 | 1.75x |
+| fannkuch | 0.203 | 0.197 | 0.193 | 0.188 | 0.201 | 6.505 | 1.03x |
+| matmul | 0.626 | 0.664 | 0.662 | 0.655 | 0.571 | 36.456 | 0.94x |
+| hashmap | 0.081 | 0.126 | n/a | 0.334 | 0.138 | 0.490 | 0.64x |
 
-Kryos is level with Rust (within 4%) on recursion and on floating-point and integer loops (fib, mandelbrot, fannkuch, matmul), and faster on map-heavy code (hashmap). It trails on nbody (1.34x) and on allocation-heavy recursion (binary_trees, 1.88x). binary_trees was 1.42x at 1.0.0-rc.2; most of the slowdown is a memory leak: its `shared` nodes are never freed (LEDGER item 137). The per-benchmark analysis, "where we lose and why", is in [BENCHMARKS.md](BENCHMARKS.md).
+Kryos is level with Rust (within 6%) on recursion and on floating-point and integer loops (fib, mandelbrot, fannkuch, matmul), and faster on map-heavy code (hashmap). It trails on nbody (1.34x) and on allocation-heavy recursion (binary_trees, 1.75x). binary_trees was 1.42x at 1.0.0-rc.2; most of the slowdown is a memory leak: its `shared` nodes are never freed (LEDGER item 137). The per-benchmark analysis, "where we lose and why", is in [BENCHMARKS.md](BENCHMARKS.md).
 
 ---
 
