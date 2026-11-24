@@ -164,10 +164,6 @@ pub struct InferenceEngine {
     /// `(slot, the declaration's polymorphic vars that slot now holds)`.
     /// Replayed at every call site with that call's fresh copy of the vars.
     store_effects: HashMap<CapVarId, Vec<(CapVarId, CapRow)>>,
-    /// True once any body (a declaration, an impl method or a lambda) stored a
-    /// closure into a container it was handed.
-    input_store_seen: bool,
-    pending_unknown: Vec<PendingUnknown>,
     /// Row vars of the SIGNATURE of a lambda whose body is being checked right
     /// now (a count, because lambdas nest). A declaration's own signature vars
     /// are `effect_scope.poly`. See `is_frozen`.
@@ -226,23 +222,6 @@ pub struct InferenceEngine {
     /// Bumped every time `bind_cap_var` changes the substitution: `settle_denies`
     /// runs the completion of the references to a fixed point with it.
     cap_epoch: u64,
-    /// Every reference one declaration body made to another declaration, as
-    /// (the owner's own-row var, the callee's own-row var), recorded whether or
-    /// not the callee has polymorphic vars. See `callee_first_order`.
-    ref_edges: Vec<(CapVarId, CapVarId)>,
-    /// The index (in the module's declaration list) of the declaration being
-    /// checked, and the declaration each own-row var belongs to.
-    current_decl: Option<usize>,
-    owner_decl: HashMap<CapVarId, usize>,
-}
-
-/// One strongly connected component of the declaration reference graph, see
-/// `InferenceEngine::callee_first_order`.
-#[derive(Debug)]
-pub struct CalleeGroup {
-    pub members: Vec<usize>,
-    pub owners: Vec<CapVarId>,
-    pub cyclic: bool,
 }
 
 /// See `InferenceEngine::effect_scope`.
@@ -306,21 +285,6 @@ struct Instantiation {
     /// reference charged its caller instead of the callee's own, still unbound,
     /// row var. `complete_references` binds it to the callee's row, instantiated.
     own_copy: Option<CapVarId>,
-    /// A dispatch through a trait (generic bound or `dyn`) replaying the stores
-    /// of an impl method: `complete_references` replays its stores and nothing
-    /// else, and `settle_denies` does not re-judge the impl's `deny!` blocks.
-    replay_only: bool,
-}
-
-/// An unknown-callee store (a call through a function value) filed while no
-/// body had stored a closure into a container yet. See `store_unknown_callee_effects`.
-#[derive(Debug, Clone)]
-struct PendingUnknown {
-    owner: Option<CapVarId>,
-    slot: CapVarId,
-    /// The slot is a container the owner's body was handed.
-    param: bool,
-    row: CapRow,
 }
 
 /// A capability a `deny!` block denies and the block's authority includes.
@@ -354,8 +318,6 @@ impl InferenceEngine {
             global_slot_cap_vars: std::collections::HashSet::new(),
             effect_scope: None,
             store_effects: HashMap::new(),
-            input_store_seen: false,
-            pending_unknown: Vec::new(),
             frozen_cap_vars: HashMap::new(),
             lambda_param_cap_vars: std::collections::HashSet::new(),
             contravariant: false,
@@ -367,9 +329,6 @@ impl InferenceEngine {
             instantiations: Vec::new(),
             owner_poly: HashMap::new(),
             dispatch_owners: std::collections::HashSet::new(),
-            ref_edges: Vec::new(),
-            current_decl: None,
-            owner_decl: HashMap::new(),
             cap_epoch: 0,
         }
     }
@@ -764,178 +723,10 @@ impl InferenceEngine {
     pub fn set_effect_owner(&mut self, own: CapVarId) {
         if let Some(scope) = self.effect_scope.as_mut() {
             scope.owner = Some(own);
-            if let Some(d) = self.current_decl {
-                self.owner_decl.insert(own, d);
-            }
             let mut poly: Vec<CapVarId> = scope.poly.iter().copied().collect();
             poly.sort_unstable();
             self.owner_poly.insert(own, poly);
         }
-    }
-
-    /// Name the declaration (its index in the module's list) the checker is
-    /// about to check, so `callee_first_order` can group own-row vars by it.
-    pub fn set_current_decl(&mut self, d: Option<usize>) {
-        self.current_decl = d;
-    }
-
-    /// The order in which the declarations of a module must be checked so that
-    /// every reference follows the declaration it names (callee before caller),
-    /// computed from the references the last textual pass recorded. `None` when
-    /// no declaration references one declared at or after itself, i.e. the
-    /// textual order already is that order. A reference that precedes its
-    /// declaration reads the callee's row before the body is checked, and the
-    /// row it reads cannot be instantiated for the caller's own parameters (LEDGER
-    /// items 124 and 125): the verdict then depended on declaration order.
-    ///
-    /// Strongly connected components (mutual recursion, or methods of one impl
-    /// that call each other) come out as one `CalleeGroup` each, members in
-    /// callee-first order and flagged cyclic. The caller re-checks a cyclic
-    /// group until `convergence_stamp` stops changing (no fixed repeat count),
-    /// so a forward chain of any length inside one component settles too.
-    pub fn callee_first_order(&mut self, n: usize) -> Option<Vec<CalleeGroup>> {
-        let edges = std::mem::take(&mut self.ref_edges);
-        let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
-        let mut forward = false;
-        for (o, c) in edges {
-            let (Some(&a), Some(&b)) = (self.owner_decl.get(&o), self.owner_decl.get(&c)) else {
-                continue;
-            };
-            if a >= n || b >= n {
-                continue;
-            }
-            if a == b {
-                // Two methods of one declaration: forward when the caller's
-                // own-row var is lower than the callee's (allocated in order).
-                // A declaration that references ITSELF (a recursion) reads its
-                // own stores before its body is finished, so it is forward too:
-                // the first pass replayed nothing for it (a recursion that swaps
-                // two parameters then hid the stored closure from the caller).
-                if o <= c {
-                    forward = true;
-                    adj[a].push(b);
-                }
-                continue;
-            }
-            if b > a {
-                forward = true;
-            }
-            adj[a].push(b);
-        }
-        if !forward {
-            return None;
-        }
-        let mut owners_in: Vec<usize> = vec![0; n];
-        for d in self.owner_decl.values() {
-            if *d < n {
-                owners_in[*d] += 1;
-            }
-        }
-        // Tarjan, iterative, over successors in index order: components come out
-        // callee first.
-        let mut index = vec![usize::MAX; n];
-        let mut low = vec![0usize; n];
-        let mut on = vec![false; n];
-        let mut stack: Vec<usize> = Vec::new();
-        let mut next = 0usize;
-        let mut comps: Vec<Vec<usize>> = Vec::new();
-        for root in 0..n {
-            if index[root] != usize::MAX {
-                continue;
-            }
-            let mut work: Vec<(usize, usize)> = vec![(root, 0)];
-            while let Some(&(v, i)) = work.last() {
-                if i == 0 && index[v] == usize::MAX {
-                    index[v] = next;
-                    low[v] = next;
-                    next += 1;
-                    stack.push(v);
-                    on[v] = true;
-                }
-                if i < adj[v].len() {
-                    work.last_mut().unwrap().1 += 1;
-                    let w = adj[v][i];
-                    if index[w] == usize::MAX {
-                        work.push((w, 0));
-                    } else if on[w] {
-                        low[v] = low[v].min(index[w]);
-                    }
-                } else {
-                    work.pop();
-                    if let Some(&(p, _)) = work.last() {
-                        low[p] = low[p].min(low[v]);
-                    }
-                    if low[v] == index[v] {
-                        let mut comp = Vec::new();
-                        while let Some(w) = stack.pop() {
-                            on[w] = false;
-                            comp.push(w);
-                            if w == v {
-                                break;
-                            }
-                        }
-                        comps.push(comp);
-                    }
-                }
-            }
-        }
-        let mut groups = Vec::new();
-        for comp in comps {
-            let cyclic = comp.len() > 1 || adj[comp[0]].contains(&comp[0]);
-            let mut owners: Vec<CapVarId> = self
-                .owner_decl
-                .iter()
-                .filter(|(_, d)| comp.contains(d))
-                .map(|(o, _)| *o)
-                .collect();
-            owners.sort_unstable();
-            groups.push(CalleeGroup { members: comp, owners, cyclic });
-        }
-        Some(groups)
-    }
-
-    /// The next cap var id to be allocated: every var below it exists now. The
-    /// extra checking pass allocates fresh copies at each reference; those are
-    /// excluded from `convergence_stamp` so a re-check can reach a fixed point.
-    pub fn cap_var_watermark(&self) -> CapVarId {
-        self.next_cap_var
-    }
-
-    /// What a re-check of a cyclic group can still change: the resolved row of
-    /// each own-row var of the group, what each stored, and the resolved row of
-    /// every global slot, with vars allocated at or after `watermark` (copies
-    /// made by the extra pass itself) left out. Equal before and after a round
-    /// means the round settled nothing new. Rows only widen, so it converges.
-    pub fn convergence_stamp(
-        &mut self,
-        owners: &[CapVarId],
-        watermark: CapVarId,
-    ) -> Vec<(CapVarId, crate::ty::CapBits, Vec<CapVarId>)> {
-        let mut ids: Vec<CapVarId> = owners.to_vec();
-        let mut slots: Vec<CapVarId> = self.global_slot_cap_vars.iter().copied().collect();
-        slots.sort_unstable();
-        ids.extend(slots);
-        let mut out = Vec::new();
-        for id in ids {
-            if let Some(b) = self.cap_substitutions.get(&id).cloned() {
-                let flat = self.resolve_cap_row_keeping_slots(&b);
-                let mut vars: Vec<CapVarId> =
-                    flat.var_ids().iter().copied().filter(|v| *v < watermark).collect();
-                vars.sort_unstable();
-                out.push((id, flat.concrete_bits(), vars));
-            }
-        }
-        for o in owners {
-            if let Some(list) = self.store_effects.get(o) {
-                for (slot, row) in list.clone() {
-                    let mut vars: Vec<CapVarId> =
-                        row.var_ids().iter().copied().filter(|v| *v < watermark).collect();
-                    vars.sort_unstable();
-                    out.push((slot, row.concrete_bits(), vars));
-                }
-            }
-        }
-        out
     }
 
     /// Mark the declaration `own` as a method of a trait impl: it can be reached
@@ -1012,9 +803,6 @@ impl InferenceEngine {
         if found.is_empty() {
             return;
         }
-        if found.iter().any(|(slot, _)| self.input_storage_cap_vars.contains(slot)) {
-            self.note_input_store();
-        }
         let entry = self.store_effects.entry(own).or_default();
         for e in found {
             if !entry.contains(&e) {
@@ -1075,9 +863,6 @@ impl InferenceEngine {
         span: Span,
     ) -> (CapRow, CapRow) {
         self.replay_store_effects(own, cap_var_map);
-        if let Some(o) = self.effect_scope.as_ref().and_then(|s| s.owner) {
-            self.ref_edges.push((o, own));
-        }
         let own_row = self.resolve_own_cap_row(own);
         let mut ref_caps = self.instantiate_row(&own_row, cap_var_map);
         let owner = self.effect_scope.as_ref().and_then(|s| s.owner);
@@ -1101,7 +886,6 @@ impl InferenceEngine {
                 map,
                 span,
                 own_copy,
-                replay_only: false,
             });
         }
         (own_row, ref_caps)
@@ -1152,9 +936,6 @@ impl InferenceEngine {
             for r in refs {
                 let map: HashMap<CapVarId, CapVarId> = r.map.iter().copied().collect();
                 self.replay_store_effects(r.callee, &map);
-                if r.replay_only {
-                    continue;
-                }
                 for &(var, copy) in &r.map {
                     if self.cap_substitutions.contains_key(&var) {
                         let row = self.instantiate_row(&CapRow::var(var), &map);
@@ -1195,9 +976,6 @@ impl InferenceEngine {
         self.complete_references(&refs_all);
         let mut refs: HashMap<CapVarId, Vec<usize>> = HashMap::new();
         for (i, r) in refs_all.iter().enumerate() {
-            if r.replay_only {
-                continue;
-            }
             refs.entry(r.callee).or_default().push(i);
         }
         let mut seen: std::collections::HashSet<(Span, Option<CapVarId>, CapRow)> =
@@ -1284,7 +1062,6 @@ impl InferenceEngine {
     /// one of its annotated container parameters, and write it into whatever
     /// slot that var is already bound to (see `lambda_input_stores`).
     fn record_lambda_store(&mut self, storage: CapVarId, row: CapRow) {
-        self.note_input_store();
         let rows = self.lambda_input_stores.entry(storage).or_default();
         if !rows.contains(&row) {
             rows.push(row.clone());
@@ -1318,10 +1095,7 @@ impl InferenceEngine {
     /// A slot that is itself the storage of a container the ENCLOSING body was
     /// handed (a helper passing its own parameter on) is recorded as a store of
     /// that body instead of being bound, so helpers compose.
-    ///
-    /// `reachable_slots` is the first half of that: every slot reachable from
-    /// `target` through the bindings, sorted.
-    fn reachable_slots(&self, target: CapVarId) -> Vec<CapVarId> {
+    fn store_into_input(&mut self, target: CapVarId, row: CapRow) {
         let mut slots: Vec<CapVarId> = Vec::new();
         let mut stack: Vec<CapVarId> = vec![target];
         let mut seen: std::collections::HashSet<CapVarId> = std::collections::HashSet::new();
@@ -1337,11 +1111,7 @@ impl InferenceEngine {
             }
         }
         slots.sort_unstable();
-        slots
-    }
-
-    fn store_into_input(&mut self, target: CapVarId, row: CapRow) {
-        for s in self.reachable_slots(target) {
+        for s in slots {
             if self.input_storage_cap_vars.contains(&s) && self.is_frozen(s) {
                 self.record_param_store(s, row.clone());
             } else {
@@ -1365,222 +1135,6 @@ impl InferenceEngine {
         }
     }
 
-    /// A call through a generic trait bound or a `dyn` reaches ONE of the
-    /// `impl Trait for ..` methods named `impl_sig`. Replay what that method
-    /// stores (into a container it was handed, into a struct field) at this call:
-    /// each cap var of the impl's parameter types is paired with the var at the
-    /// same position of the call's instantiated trait signature `call_params`
-    /// (index 0 is `self` when present). Run for every candidate impl; a method
-    /// that stores nothing replays nothing, so a read-only callee costs nothing.
-    pub fn replay_impl_effects(
-        &mut self,
-        impl_sig: &crate::env::FunctionSig,
-        call_params: &[Type],
-        span: Span,
-    ) {
-        let skip = usize::from(impl_sig.params.first().map(|(n, _)| n.as_str()) == Some("self"));
-        let mut map: HashMap<CapVarId, CapVarId> = HashMap::new();
-        for (i, (_, it)) in impl_sig.params.iter().enumerate().skip(skip) {
-            if let Some(ct) = call_params.get(i) {
-                let it = self.resolve(it);
-                let ct = self.resolve(ct);
-                Self::pair_cap_vars(&it, &ct, &mut map);
-            }
-        }
-        self.replay_store_effects(impl_sig.own_cap_var, &map);
-        let owner = self.effect_scope.as_ref().and_then(|s| s.owner);
-        if let Some(o) = owner {
-            self.ref_edges.push((o, impl_sig.own_cap_var));
-        }
-        let mut m: Vec<(CapVarId, CapVarId)> = map.into_iter().collect();
-        m.sort_unstable();
-        self.instantiations.push(Instantiation {
-            owner,
-            callee: impl_sig.own_cap_var,
-            map: m,
-            span,
-            own_copy: None,
-            replay_only: true,
-        });
-    }
-
-    /// Pair the cap vars of two types of the same shape, position by position.
-    fn pair_cap_vars(imp: &Type, call: &Type, map: &mut HashMap<CapVarId, CapVarId>) {
-        match (imp, call) {
-            (Type::Function { caps: a, .. }, Type::Function { caps: b, .. }) => {
-                if let Some(&bv) = b.var_ids().first() {
-                    for &av in a.var_ids() {
-                        map.entry(av).or_insert(bv);
-                    }
-                }
-            }
-            (Type::Array { element: a, .. }, Type::Array { element: b, .. })
-            | (Type::Set { element: a }, Type::Set { element: b }) => Self::pair_cap_vars(a, b, map),
-            (Type::Map { key: k1, value: v1 }, Type::Map { key: k2, value: v2 }) => {
-                Self::pair_cap_vars(k1, k2, map);
-                Self::pair_cap_vars(v1, v2, map);
-            }
-            (Type::Struct { generics: a, .. }, Type::Struct { generics: b, .. })
-            | (Type::Enum { generics: a, .. }, Type::Enum { generics: b, .. }) => {
-                for (x, y) in a.iter().zip(b.iter()) {
-                    Self::pair_cap_vars(x, y, map);
-                }
-            }
-            (Type::Tuple { elements: a }, Type::Tuple { elements: b }) => {
-                for (x, y) in a.iter().zip(b.iter()) {
-                    Self::pair_cap_vars(x, y, map);
-                }
-            }
-            (Type::Option { inner: a }, Type::Option { inner: b })
-            | (Type::Shared { inner: a }, Type::Shared { inner: b })
-            | (Type::Weak { inner: a }, Type::Weak { inner: b })
-            | (Type::Reference { inner: a, .. }, Type::Reference { inner: b, .. })
-            | (Type::Pointer { inner: a, .. }, Type::Pointer { inner: b, .. }) => {
-                Self::pair_cap_vars(a, b, map)
-            }
-            (Type::Result { ok: o1, err: e1 }, Type::Result { ok: o2, err: e2 }) => {
-                Self::pair_cap_vars(o1, o2, map);
-                Self::pair_cap_vars(e1, e2, map);
-            }
-            _ => {}
-        }
-    }
-
-    /// The call reaches a function VALUE (a factory result, a parameter, an
-    /// element, a lambda): nothing names a declaration whose stores could be
-    /// replayed (LEDGER item 123). `arg_tys` are the argument types and
-    /// `field_tys` the declared field types of the structs among them (a field is
-    /// storage too). Assume the worst the arguments allow: every container of
-    /// closures among them may now hold any closure reachable from any of them.
-    ///
-    /// The assumption is made only once some body has stored a closure into a
-    /// container it was handed (`input_store_seen`): until then nothing in the
-    /// module can store one, and a callee that reads is not charged. A call typed
-    /// before the first such body is filed in `pending_unknown` and applied the
-    /// moment one is seen.
-    pub fn store_unknown_callee_effects(&mut self, arg_tys: &[Type], field_tys: &[Type]) {
-        let mut found: Vec<(CapRow, bool)> = Vec::new();
-        for t in arg_tys {
-            let resolved = self.resolve(t);
-            Self::fn_rows_in(&resolved, false, &mut found);
-        }
-        for t in field_tys {
-            let resolved = self.resolve(t);
-            Self::fn_rows_in(&resolved, true, &mut found);
-        }
-        let mut source = CapRow::Resolved { concrete: crate::ty::CapBits::EMPTY, vars: Vec::new() };
-        for (row, _) in &found {
-            source = source.union(row);
-        }
-        for (row, in_container) in &found {
-            if !*in_container {
-                continue;
-            }
-            for &s in row.var_ids() {
-                let own: Vec<CapVarId> = source.var_ids().iter().copied().filter(|v| *v != s).collect();
-                let widened = CapRow::Resolved { concrete: source.concrete_bits(), vars: own };
-                let proxy = self.fresh_cap_var();
-                self.bind_cap_var(proxy, CapRow::var(s));
-                if self.input_store_seen {
-                    self.store_into_input(proxy, widened);
-                } else {
-                    let owner = self.effect_scope.as_ref().and_then(|sc| sc.owner);
-                    for slot in self.reachable_slots(proxy) {
-                        let param = self.input_storage_cap_vars.contains(&slot) && self.is_frozen(slot);
-                        self.pending_unknown.push(PendingUnknown {
-                            owner,
-                            slot,
-                            param,
-                            row: widened.clone(),
-                        });
-                    }
-                }
-            }
-        }
-    }
-
-    /// A body stored a closure into a container it was handed: from now on an
-    /// unknown callee may do so too, and the calls filed before are applied.
-    fn note_input_store(&mut self) {
-        if self.input_store_seen {
-            return;
-        }
-        self.input_store_seen = true;
-        for p in std::mem::take(&mut self.pending_unknown) {
-            if !p.param {
-                self.bind_cap_var(p.slot, p.row);
-                continue;
-            }
-            let Some(owner) = p.owner else { continue };
-            let poly = self.owner_poly.get(&owner).cloned().unwrap_or_default();
-            let flat = self.resolve_cap_row_keeping_slots(&p.row);
-            let vars: Vec<CapVarId> = flat
-                .var_ids()
-                .iter()
-                .copied()
-                .filter(|v| *v != p.slot && (poly.contains(v) || self.global_slot_cap_vars.contains(v)))
-                .collect();
-            if flat.concrete_bits() == crate::ty::CapBits::EMPTY && vars.is_empty() {
-                continue;
-            }
-            let entry = (p.slot, CapRow::Resolved { concrete: flat.concrete_bits(), vars });
-            let list = self.store_effects.entry(owner).or_default();
-            if !list.contains(&entry) {
-                list.push(entry);
-            }
-        }
-    }
-
-    /// Every function row inside `ty` (not those inside a function's own
-    /// signature), with whether it sits in a container's storage.
-    fn fn_rows_in(ty: &Type, in_container: bool, out: &mut Vec<(CapRow, bool)>) {
-        match ty {
-            Type::Function { caps, .. } => out.push((caps.clone(), in_container)),
-            Type::Array { element, .. } | Type::Set { element } => {
-                Self::fn_rows_in(element, true, out)
-            }
-            Type::Map { key, value } => {
-                Self::fn_rows_in(key, true, out);
-                Self::fn_rows_in(value, true, out);
-            }
-            Type::Struct { generics, .. } | Type::Enum { generics, .. } => {
-                for g in generics {
-                    Self::fn_rows_in(g, true, out);
-                }
-            }
-            Type::Tuple { elements } => {
-                for e in elements {
-                    Self::fn_rows_in(e, in_container, out);
-                }
-            }
-            // `Some(arr)` copies the array it wraps (measured: a callee's store
-            // into the payload never reaches the caller's array), so the wrapped
-            // container's own elements are not the caller's storage; a container
-            // NESTED in it is still shared.
-            Type::Option { inner } => match inner.as_ref() {
-                Type::Array { element, .. } | Type::Set { element } => {
-                    Self::fn_rows_in(element, in_container, out)
-                }
-                Type::Map { key, value } => {
-                    Self::fn_rows_in(key, in_container, out);
-                    Self::fn_rows_in(value, in_container, out);
-                }
-                _ => Self::fn_rows_in(inner, in_container, out),
-            },
-            Type::Result { ok, err } => {
-                Self::fn_rows_in(ok, in_container, out);
-                Self::fn_rows_in(err, in_container, out);
-            }
-            Type::Reference { inner, mutable } | Type::Pointer { inner, mutable } => {
-                Self::fn_rows_in(inner, in_container || *mutable, out)
-            }
-            Type::Shared { inner } | Type::Weak { inner } => {
-                Self::fn_rows_in(inner, in_container, out)
-            }
-            _ => {}
-        }
-    }
-
     fn storage_rows_in(ty: &Type, in_container: bool, out: &mut Vec<CapVarId>) {
         match ty {
             Type::Function { caps, .. } => {
@@ -1595,32 +1149,10 @@ impl InferenceEngine {
                 Self::storage_rows_in(key, true, out);
                 Self::storage_rows_in(value, true, out);
             }
-            Type::Struct { generics, .. } | Type::Enum { generics, .. } => {
+            Type::Struct { generics, .. } => {
                 for g in generics {
                     Self::storage_rows_in(g, true, out);
                 }
-            }
-            // A tuple, Option or Result is not storage itself, it holds
-            // values: a container inside it is still the caller's container.
-            Type::Tuple { elements } => {
-                for e in elements {
-                    Self::storage_rows_in(e, in_container, out);
-                }
-            }
-            // See `fn_rows_in`: `Some(arr)` copies the array it wraps.
-            Type::Option { inner } => match inner.as_ref() {
-                Type::Array { element, .. } | Type::Set { element } => {
-                    Self::storage_rows_in(element, in_container, out)
-                }
-                Type::Map { key, value } => {
-                    Self::storage_rows_in(key, in_container, out);
-                    Self::storage_rows_in(value, in_container, out);
-                }
-                _ => Self::storage_rows_in(inner, in_container, out),
-            },
-            Type::Result { ok, err } => {
-                Self::storage_rows_in(ok, in_container, out);
-                Self::storage_rows_in(err, in_container, out);
             }
             Type::Reference { inner, mutable } | Type::Pointer { inner, mutable } => {
                 Self::storage_rows_in(inner, in_container || *mutable, out)
@@ -1866,12 +1398,6 @@ impl InferenceEngine {
         // the source), and that var must take the element's row.
         let before = self.resolve_cap_row(c1);
         for &v in c1.var_ids() {
-            // A flow INTO the row of an unannotated lambda parameter's element is a
-            // store into a container the lambda was handed (its param type is not
-            // marked as input storage, so nothing else records it).
-            if self.frozen_cap_vars.contains_key(&v) {
-                self.note_input_store();
-            }
             if self.input_storage_cap_vars.contains(&v) && self.is_frozen(v) {
                 // A store into a container this body was handed (LEDGER root
                 // R2, item 112): never bind the parameter's storage var.

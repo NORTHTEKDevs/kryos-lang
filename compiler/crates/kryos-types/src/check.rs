@@ -38,8 +38,6 @@ pub struct TypeChecker {
     in_pure_function: bool,
     /// The current `Self` type - set when checking trait/impl blocks.
     current_self_type: Option<Type>,
-    /// The trait whose default method body is being checked.
-    trait_default_self: Option<String>,
     /// Duplicate-binding detection for the pattern currently being bound.
     /// Set to an empty map at each top-level `bind_pattern` entry; every
     /// GENUINE binding (not a bare-variant tag test) records its name here,
@@ -217,58 +215,6 @@ impl Default for TypeChecker {
 }
 
 impl TypeChecker {
-    /// The declared field types of every struct named inside `tys`, followed
-    /// transitively through the fields: a closure held in a field is storage a
-    /// callee handed the struct can write to, and it is not part of the
-    /// struct's own type.
-    fn struct_field_tys(&self, tys: &[Type]) -> Vec<Type> {
-        fn names(t: &Type, out: &mut Vec<String>) {
-            match t {
-                Type::Struct { name, generics } => {
-                    out.push(name.clone());
-                    for g in generics {
-                        names(g, out);
-                    }
-                }
-                Type::Array { element, .. } | Type::Set { element } => names(element, out),
-                Type::Map { key, value } => {
-                    names(key, out);
-                    names(value, out);
-                }
-                Type::Tuple { elements } => elements.iter().for_each(|e| names(e, out)),
-                Type::Option { inner }
-                | Type::Shared { inner }
-                | Type::Weak { inner }
-                | Type::Reference { inner, .. }
-                | Type::Pointer { inner, .. } => names(inner, out),
-                Type::Result { ok, err } => {
-                    names(ok, out);
-                    names(err, out);
-                }
-                Type::Enum { generics, .. } => generics.iter().for_each(|g| names(g, out)),
-                _ => {}
-            }
-        }
-        let mut work: Vec<String> = Vec::new();
-        for t in tys {
-            names(&self.engine.resolve(t), &mut work);
-        }
-        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut out: Vec<Type> = Vec::new();
-        while let Some(n) = work.pop() {
-            if !seen.insert(n.clone()) {
-                continue;
-            }
-            if let Some(sd) = self.env.lookup_struct(&n) {
-                for (_, ft) in &sd.fields {
-                    names(ft, &mut work);
-                    out.push(ft.clone());
-                }
-            }
-        }
-        out
-    }
-
     pub fn new() -> Self {
         let mut engine = InferenceEngine::new();
         let builtin_cap_var = engine.fresh_cap_var();
@@ -285,7 +231,6 @@ impl TypeChecker {
             actor_names: std::collections::HashSet::new(),
             in_pure_function: false,
             current_self_type: None,
-            trait_default_self: None,
             generic_var_bounds: std::collections::HashMap::new(),
             lambda_expected_types: std::collections::HashMap::new(),
             resolved_lambda_params: std::collections::HashMap::new(),
@@ -1491,89 +1436,8 @@ impl TypeChecker {
         self.denies_reported.clear();
 
         // Second pass: check function bodies and expressions.
-        let diag_mark2 = self.diagnostics.len();
-        let deny_marks2 = self.engine.deny_marks();
-        let log_mark2 = self.cap_effects_log.len();
-        for (i, decl) in module.declarations.iter().enumerate() {
-            self.engine.set_current_decl(Some(i));
+        for decl in &module.declarations {
             self.check_decl(decl);
-        }
-        self.engine.set_current_decl(None);
-        // A reference that precedes the declaration it names reads the callee's
-        // row before the callee's body was checked, so a `deny!` verdict used to
-        // depend on declaration order (LEDGER items 124 and 125). When the module
-        // holds a `deny!` whose row can still change, check every body once more
-        // in call-graph order (callee before caller) with the results thrown away,
-        // so the pass that reports sees every callee's summary already built.
-        // Rows only widen (`bind_cap_var` unions), so the extra pass is safe in
-        // the same way the actor pre-pass above is.
-        let order = if self.engine.deny_marks().0 > deny_marks2.0 {
-            self.engine.callee_first_order(module.declarations.len())
-        } else {
-            None
-        };
-        if let Some(order) = order {
-            self.diagnostics.truncate(diag_mark2);
-            self.engine.truncate_denies(deny_marks2);
-            self.cap_effects_log.truncate(log_mark2);
-            self.denies_reported.clear();
-            let watermark = self.engine.cap_var_watermark();
-            let mut unsettled: Option<Span> = None;
-            for group in &order {
-                let mut prev = if group.cyclic {
-                    Some(self.engine.convergence_stamp(&group.owners, watermark))
-                } else {
-                    None
-                };
-                let mut rounds = 0usize;
-                // A cyclic group is re-checked until a whole round changes
-                // nothing it can still change. A chain through it settles in at
-                // most one round per own-row var, so the bound below cannot cut
-                // a real propagation short; it only stops a runaway.
-                // The stamp is a finite lattice and rows only widen, so the loop
-                // always converges; the bound is a runaway stop sized by the
-                // number of cap vars that exist (a rotation of K parameters
-                // between two functions needs about K rounds). Hitting it is a
-                // program whose rows this pass could not settle, which is
-                // rejected below, never accepted unjudged.
-                let limit = 2 * (watermark as usize) + 64;
-                loop {
-                    for &i in &group.members {
-                        self.engine.set_current_decl(Some(i));
-                        self.check_decl(&module.declarations[i]);
-                    }
-                    if !group.cyclic {
-                        break;
-                    }
-                    let now = self.engine.convergence_stamp(&group.owners, watermark);
-                    rounds += 1;
-                    if prev.as_ref() == Some(&now) {
-                        break;
-                    }
-                    if rounds >= limit {
-                        unsettled.get_or_insert(module.declarations[group.members[0]].span());
-                        break;
-                    }
-                    prev = Some(now);
-                }
-            }
-            self.engine.set_current_decl(None);
-            self.diagnostics.truncate(diag_mark2);
-            self.engine.truncate_denies(deny_marks2);
-            self.cap_effects_log.truncate(log_mark2);
-            self.denies_reported.clear();
-            for (i, decl) in module.declarations.iter().enumerate() {
-                self.engine.set_current_decl(Some(i));
-                self.check_decl(decl);
-            }
-            self.engine.set_current_decl(None);
-            if let Some(span) = unsettled {
-                self.error_with_code(
-                    "the capability rows of this group of mutually recursive functions did not settle, so no `deny!` verdict can be trusted here; split the cycle or reduce the number of function-typed parameters passed around it",
-                    span,
-                    kryos_errors::codes::E0110,
-                );
-            }
         }
 
         // Every `deny!` block is judged on the row its body was charged, and the
@@ -3205,107 +3069,6 @@ impl TypeChecker {
                 if scoped_impl_generics {
                     self.env.pop_scope();
                 }
-                self.current_self_type = prev_self;
-            }
-            Decl::Trait {
-                name,
-                generics,
-                methods,
-                ..
-            } => {
-                // The BODY of a trait default method. `register_decl` records only
-                // the signatures ("bodies live in each impl"), and this match had
-                // no arm for the trait, so a default body was never checked: a
-                // type error in one was accepted and a `deny!` block in one was
-                // never judged by the row layer (LEDGER item 122). Check each body
-                // like an impl method body, with `Self` bound to the trait itself
-                // (the same `Self` its signatures were resolved with).
-                let prev_self = self.current_self_type.take();
-                let prev_default_self = self.trait_default_self.replace(name.clone());
-                let self_ty = Type::DynTrait {
-                    trait_name: name.clone(),
-                };
-                self.current_self_type = Some(self_ty.clone());
-                let trait_def = self.env.lookup_trait(name).cloned();
-                self.env.push_scope();
-                for gp in generics {
-                    let tv = self.engine.fresh_var();
-                    self.env.define_var(gp.name.clone(), tv);
-                }
-                for method in methods {
-                    let Decl::Function {
-                        name: mname,
-                        body: Some(body),
-                        params: m_params,
-                        ret_ty: m_ret,
-                        generics: m_generics,
-                        ..
-                    } = method
-                    else {
-                        continue;
-                    };
-                    self.env.push_scope();
-                    self.env.define_var("self".to_string(), self_ty.clone());
-                    for gp in m_generics {
-                        let tv = self.engine.fresh_var();
-                        self.env.define_var(gp.name.clone(), tv);
-                    }
-                    let sig = trait_def
-                        .as_ref()
-                        .and_then(|d| d.methods.iter().find(|s| &s.name == mname))
-                        .cloned();
-                    let prev_ret = self.current_return_type.take();
-                    let prev_fn = self.current_function_name.take();
-                    self.current_function_name = Some(mname.clone());
-                    if let Some(sig) = &sig {
-                        for (pname, pty) in &sig.params {
-                            if pname != "self" {
-                                self.env.define_var(pname.clone(), pty.clone());
-                            }
-                        }
-                        self.current_return_type = Some(sig.ret.clone());
-                        self.seed_tail_lambda_expected(body);
-                        self.engine.mark_slot_rows(&sig.ret, false);
-                        self.engine.begin_store_effects(&sig.generic_cap_var_ids);
-                        self.engine.set_effect_owner(sig.own_cap_var);
-                        // Not a dispatch owner: every route to a default body
-                        // (a bound, a `dyn`, `self`, an inheriting impl) makes a
-                        // reference to this signature that binds its row vars.
-                        let param_tys: Vec<Type> =
-                            sig.params.iter().map(|(_, t)| t.clone()).collect();
-                        self.engine.mark_input_storage(&param_tys);
-                    } else {
-                        for param in m_params {
-                            if param.name == "self" {
-                                continue;
-                            }
-                            let ty = param
-                                .ty
-                                .as_ref()
-                                .map(|t| self.resolve_type_expr(t))
-                                .unwrap_or_else(|| self.engine.fresh_var());
-                            self.env.define_var(param.name.clone(), ty);
-                        }
-                        self.current_return_type =
-                            m_ret.as_ref().map(|t| self.resolve_type_expr(t));
-                        self.seed_tail_lambda_expected(body);
-                    }
-                    self.cap_accum_stack.push(crate::ty::CapRow::empty());
-                    self.check_block(body);
-                    let method_caps = self
-                        .cap_accum_stack
-                        .pop()
-                        .unwrap_or_else(crate::ty::CapRow::empty);
-                    if let Some(sig) = &sig {
-                        self.engine.bind_cap_var(sig.own_cap_var, method_caps);
-                        self.engine.end_store_effects(Some(sig.own_cap_var));
-                    }
-                    self.current_function_name = prev_fn;
-                    self.current_return_type = prev_ret;
-                    self.env.pop_scope();
-                }
-                self.env.pop_scope();
-                self.trait_default_self = prev_default_self;
                 self.current_self_type = prev_self;
             }
             _ => {}
@@ -5740,7 +5503,6 @@ impl TypeChecker {
                             // First argument's type, kept for the builtin
                             // `contains` shape gate after its needle is typed.
                             let mut contains_first: Option<Type> = None;
-                            let mut call_arg_tys: Vec<Type> = Vec::new();
                             for (i, (arg, param_ty)) in
                                 args.iter().zip(params.iter()).enumerate()
                             {
@@ -5792,7 +5554,6 @@ impl TypeChecker {
                                     }
                                 }
                                 let arg_ty = self.infer_expr(arg);
-                                call_arg_tys.push(arg_ty.clone());
                                 // LEDGER root R4 (spawn family). MIR `lower_coop_spawn` RUNS a
                                 // closure-literal argument's body on the cooperative task, so like
                                 // `spawn <lambda>` its row is charged to the enclosing frame (a plain
@@ -5906,19 +5667,6 @@ impl TypeChecker {
                                     }
                                 }
                             }
-                            // A call through a function VALUE: the callee is not a
-                            // declaration, so its stores are not replayed (item 123).
-                            let direct_decl = matches!(
-                                callee.as_ref(),
-                                Expr::Identifier { name, .. }
-                                    if self.env.lookup_var(name).is_none()
-                                        && self.env.lookup_function(name).is_some()
-                            );
-                            if !direct_decl {
-                                let field_tys = self.struct_field_tys(&call_arg_tys);
-                                self.engine
-                                    .store_unknown_callee_effects(&call_arg_tys, &field_tys);
-                            }
                         }
                         *ret.clone()
                     }
@@ -5989,25 +5737,16 @@ impl TypeChecker {
                                 if let Some(sig) =
                                     trait_def.methods.iter().find(|m| m.name == *method)
                                 {
-                                    // Freshen the signature's row vars for this call (see the
-                                    // `dyn` arm below).
-                                    let (inst_params, _ir, _vm, cap_var_map) =
-                                        self.engine.instantiate_sig(sig);
-                                    let expected_params: Vec<(String, Type)> = sig
+                                    let expected_params: Vec<_> = if sig
                                         .params
-                                        .iter()
-                                        .zip(inst_params.iter())
-                                        .skip(
-                                            if sig.params.first().map(|(n, _)| n.as_str())
-                                                == Some("self")
-                                            {
-                                                1
-                                            } else {
-                                                0
-                                            },
-                                        )
-                                        .map(|((n, _), t)| (n.clone(), t.clone()))
-                                        .collect();
+                                        .first()
+                                        .map(|(n, _)| n.as_str())
+                                        == Some("self")
+                                    {
+                                        sig.params[1..].to_vec()
+                                    } else {
+                                        sig.params.clone()
+                                    };
                                     if args.len() != expected_params.len() {
                                         self.error(
                                             format!(
@@ -6018,7 +5757,6 @@ impl TypeChecker {
                                             *span,
                                         );
                                     } else {
-                                        let mut call_arg_tys: Vec<Type> = Vec::new();
                                         for (arg, (_, param_ty)) in
                                             args.iter().zip(expected_params.iter())
                                         {
@@ -6030,15 +5768,6 @@ impl TypeChecker {
                                             {
                                                 self.diagnostics.push(diag);
                                             }
-                                            call_arg_tys.push(arg_ty);
-                                        }
-                                        let _ = &call_arg_tys;
-                                        for imp in self
-                                            .env
-                                            .impl_methods_of_trait(trait_name, method)
-                                        {
-                                            self.engine
-                                                .replay_impl_effects(&imp, &inst_params, *span);
                                         }
                                     }
                                     // Row-propagation stage gap 1/3
@@ -6065,9 +5794,6 @@ impl TypeChecker {
                                     // could have come from ANY implementing
                                     // type, so its row is exactly as
                                     // unknowable as the call itself.
-                                    let _ = self
-                                        .engine
-                                        .reference_row(sig.own_cap_var, &cap_var_map, *span);
                                     self.accumulate_caps(&crate::ty::CapRow::unknown());
                                     return sig.ret.with_caps_erased_to_unknown();
                                 }
@@ -6080,29 +5806,12 @@ impl TypeChecker {
                 if let Type::DynTrait { ref trait_name } = obj_ty {
                     if let Some(trait_def) = self.env.lookup_trait(trait_name).cloned() {
                         if let Some(sig) = trait_def.methods.iter().find(|m| m.name == *method) {
-                            // `self.m()` inside a default method body of THIS trait:
-                            // `self` is typed as the trait only because the body is
-                            // checked once for every implementer. It is not a `dyn`
-                            // value: the body is monomorphized per impl, so neither
-                            // the by-value-aggregate ABI limit nor an unknown
-                            // callee applies (LEDGER item 122).
-                            let self_in_default = self.trait_default_self.as_deref()
-                                == Some(trait_name.as_str())
-                                && matches!(object.as_ref(), Expr::Identifier { name, .. } if name == "self");
-                            // Freshen the trait signature's row vars for THIS call, as
-                            // every other reference does. Unifying the arguments with
-                            // the signature's own params bound the signature's vars to
-                            // the caller's, and the `deny!` obligation of an inherited
-                            // default body (which owns those vars) then resolved
-                            // through the caller instead of through the reference.
-                            let (inst_params, _inst_ret, _vm, cap_var_map) =
-                                self.engine.instantiate_sig(sig);
                             // Skip 'self' parameter (first param) if present.
                             let expected_params: Vec<_> =
                                 if sig.params.first().map(|(n, _)| n.as_str()) == Some("self") {
-                                    inst_params[1..].to_vec()
+                                    sig.params[1..].to_vec()
                                 } else {
-                                    inst_params.clone()
+                                    sig.params.clone()
                                 };
                             if args.len() != expected_params.len() {
                                 self.error(
@@ -6114,8 +5823,7 @@ impl TypeChecker {
                                     *span,
                                 );
                             } else {
-                                let mut call_arg_tys: Vec<Type> = Vec::new();
-                                for (arg, param_ty) in args.iter().zip(expected_params.iter())
+                                for (arg, (_, param_ty)) in args.iter().zip(expected_params.iter())
                                 {
                                     let arg_ty = self.infer_expr(arg);
                                     // LEDGER item 40: last point a concrete type exists before `any` erasure.
@@ -6126,23 +5834,8 @@ impl TypeChecker {
                                         self.diagnostics.push(diag);
                                     }
                                     self.check_int_literal_range(param_ty, arg, arg.span());
-                                    call_arg_tys.push(arg_ty);
-                                }
-                                let _ = &call_arg_tys;
-                                if !self_in_default {
-                                    for imp in
-                                        self.env.impl_methods_of_trait(trait_name, method)
-                                    {
-                                        self.engine
-                                            .replay_impl_effects(&imp, &inst_params, *span);
-                                    }
                                 }
                             }
-                            // The reference binds the callee's row vars to this
-                            // call's arguments for the `deny!` verdict.
-                            let (_own_row, ref_caps) = self
-                                .engine
-                                .reference_row(sig.own_cap_var, &cap_var_map, *span);
                             // A `dyn` method returning a by-value AGGREGATE
                             // (tuple, enum, Option, Result, or a multi-field
                             // struct) cannot be dispatched: the uniform i64
@@ -6165,7 +5858,7 @@ impl TypeChecker {
                                     .unwrap_or(false),
                                 _ => false,
                             };
-                            if ret_is_byval_agg && !self_in_default {
+                            if ret_is_byval_agg {
                                 self.error_with_code(
                                     format!(
                                         "`dyn {trait_name}` method `{method}` returns a by-value aggregate (`{}`), which trait-object dispatch cannot pass through its uniform handle ABI yet -- it truncates to the first field. Return a scalar or a heap handle (str/array/map), return the fields individually, or call the method via static dispatch (a concrete-typed receiver, not `dyn`).",
@@ -6190,11 +5883,7 @@ impl TypeChecker {
                             // -- see the identical treatment (and full
                             // rationale) for the generic trait-bound
                             // MethodCall arm a few hundred lines up.
-                            if self_in_default {
-                                self.accumulate_caps(&ref_caps);
-                            } else {
-                                self.accumulate_caps(&crate::ty::CapRow::unknown());
-                            }
+                            self.accumulate_caps(&crate::ty::CapRow::unknown());
                             return sig.ret.with_caps_erased_to_unknown();
                         }
                     }

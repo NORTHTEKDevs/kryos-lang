@@ -10104,3 +10104,14 @@ STILL ESCAPING 7, now-rejected 133; and `tests/bypass_gate.sh` PASS on the merge
 - The 64-bit non-cryptographic hash behind the cache key is unchanged.
 - `ecosystem/kryos-capi/build/build.sh` was edited to follow the new labels and
   not executed (it needs `zig`).
+
+### Close-out cap track: restore to the last verified head (2026-11-24)
+
+The cap close-out run landed two waves (r4-select-spawn at c752e8c2,
+coarse-family-deny at 25af4db3) and refuted four (trait-default-body,
+r2-storage-paths, root-f-declaration-order, residual). The run's revert step
+only undid each refuted wave's LAST revision, so earlier revisions of refuted
+waves stayed on the branch: 4abc3237, 93eb2775, edaefeca, 2adcb631, 9a451e31,
+225e8175, ae044fb8. This commit restores every file except this ledger to
+25af4db3, the last head that passed all three verifiers. The refuted-wave
+entries above stay as history; their items remain open.

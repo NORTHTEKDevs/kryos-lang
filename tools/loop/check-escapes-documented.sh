@@ -44,7 +44,7 @@ set -u
 # item-77 wave and its verifiers were recorded); a lower count means rows were
 # deleted, which would let an escape disappear from the measurement and from the
 # table together. Raise this when the corpus grows.
-MIN_ROWS=263
+MIN_ROWS=260
 
 if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
   echo "check-escapes-documented: FAIL -- bash >= 4 is required (associative arrays); this is ${BASH_VERSION:-unknown}"
