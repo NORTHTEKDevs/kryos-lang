@@ -45,7 +45,7 @@ kryos run hello.kry
 
 ## In one minute
 
-- **It's fast.** Native binaries via LLVM. On this build (1.3.0 plus the 1.3.1 memory wave) Kryos takes 0.70x to 1.03x of Rust's time on five of seven benchmarks and 1.32x and 2.00x on the other two, and is 31x to 322x faster than Python on five of them. Measured medians, methodology, and where Kryos loses (and why) in [BENCHMARKS.md](BENCHMARKS.md).
+- **It's fast.** Native binaries via LLVM. On this build (1.3.0 plus the 1.3.1 memory wave) Kryos takes 0.63x to 1.01x of Rust's time on five of seven benchmarks and 1.31x and 1.94x on the other two, and is 31x to 330x faster than Python on five of them. Measured medians, methodology, and where Kryos loses (and why) in [BENCHMARKS.md](BENCHMARKS.md).
 - **It's safe.** Memory safety by construction (ARC + move semantics), no `'a` lifetime annotations, no GC pauses. This is a Swift-like ownership model - simpler than Rust's borrow checker, and not equivalent to its compile-time guarantees (no data-race freedom proofs). Values linked through `shared` pointers (trees, lists, arrays, enums) are freed when the last owner goes (LEDGER item 137, 1.3.1); a few rarer shapes, such as a tuple that holds a `shared` handle or an overwritten `[shared T]` element, still leak an arc each (LEDGER item 137, residual list). Capability-typed effects catch I/O leaks at compile time.
 - **It's small.** One binary, no LLVM dependency for development, ~20 MB compiler, ~700 MB to build from source.
 - **It runs anywhere.** Native (Linux / macOS / Windows / Intel / Apple Silicon) from the same source, plus an explicit-subset WebAssembly target (scalars, strings, closures, host-import I/O - anything outside the subset is a clear compile error, never a miscompile; see [docs/wasm-contract.md](docs/wasm-contract.md)).
@@ -234,15 +234,15 @@ Medians of 5 runs on Kryos 1.3.0, in seconds (lower is better). [BENCHMARKS.md](
 
 | Benchmark | Kryos (LLVM) | Rust -O | clang -O2 | clang++ -O2 | Go | Python | Kryos / Rust |
 |---|---|---|---|---|---|---|---|
-| fib | 0.358 | 0.349 | 0.356 | 0.355 | 0.720 | 17.521 | 1.03x |
-| mandelbrot | 0.375 | 0.373 | 0.376 | 0.375 | 0.387 | 20.562 | 1.00x |
-| nbody | 0.146 | 0.110 | 0.152 | 0.152 | 0.250 | 46.988 | 1.32x |
-| binary_trees | 1.597 | 0.799 | 0.733 | 0.769 | 0.491 | 2.160 | 2.00x |
-| fannkuch | 0.203 | 0.197 | 0.192 | 0.191 | 0.201 | 6.373 | 1.03x |
-| matmul | 0.626 | 0.658 | 0.657 | 0.654 | 0.572 | 33.223 | 0.95x |
-| hashmap | 0.086 | 0.124 | n/a | 0.342 | 0.119 | 0.496 | 0.70x |
+| fib | 0.359 | 0.355 | 0.356 | 0.350 | 0.719 | 17.034 | 1.01x |
+| mandelbrot | 0.376 | 0.377 | 0.378 | 0.374 | 0.383 | 20.224 | 1.00x |
+| nbody | 0.145 | 0.111 | 0.151 | 0.151 | 0.249 | 47.871 | 1.31x |
+| binary_trees | 1.513 | 0.780 | 0.707 | 0.763 | 0.487 | 2.147 | 1.94x |
+| fannkuch | 0.202 | 0.200 | 0.190 | 0.187 | 0.200 | 6.340 | 1.01x |
+| matmul | 0.621 | 0.653 | 0.649 | 0.648 | 0.581 | 33.428 | 0.95x |
+| hashmap | 0.080 | 0.128 | n/a | 0.363 | 0.137 | 0.494 | 0.63x |
 
-Kryos is level with Rust (within 5%) on recursion and on floating-point and integer loops (fib, mandelbrot, fannkuch, matmul), and faster on map-heavy code (hashmap). It trails on nbody (1.32x) and on allocation-heavy recursion (binary_trees, 2.00x). binary_trees was 1.42x at 1.0.0-rc.2; its `shared` nodes were never freed from 1.1.0 until LEDGER item 137 (the peak was 1.1 GB, now 24 MB), but freeing them did not change the time. The per-benchmark analysis, "where we lose and why", is in [BENCHMARKS.md](BENCHMARKS.md).
+Kryos is level with Rust (within 5%) on recursion and on floating-point and integer loops (fib, mandelbrot, fannkuch, matmul), and faster on map-heavy code (hashmap). It trails on nbody (1.31x) and on allocation-heavy recursion (binary_trees, 1.94x). binary_trees was 1.42x at 1.0.0-rc.2; its `shared` nodes were never freed from 1.1.0 until LEDGER item 137 (the peak was 1.1 GB, now 24 MB), but freeing them did not make it faster. The per-benchmark analysis, "where we lose and why", is in [BENCHMARKS.md](BENCHMARKS.md).
 
 ---
 

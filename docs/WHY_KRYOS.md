@@ -130,20 +130,20 @@ fn main() {
 
 | Benchmark (medians of 5) | Kryos LLVM | Rust -O | ratio vs Rust |
 |---|---|---|---|
-| hashmap 1M+1M | 0.086s | 0.124s | 0.70x (beats Rust) |
-| matmul 512^2 | 0.626s | 0.658s | 0.95x |
-| mandelbrot 1000^2 x1000 | 0.375s | 0.373s | 1.00x |
-| fib(40) | 0.358s | 0.349s | 1.03x |
-| fannkuch-redux(10) | 0.203s | 0.197s | 1.03x |
-| nbody 2M steps | 0.146s | 0.110s | 1.32x |
-| binary_trees d16 | 1.597s | 0.799s | 2.00x |
+| hashmap 1M+1M | 0.080s | 0.128s | 0.63x (beats Rust) |
+| matmul 512^2 | 0.621s | 0.653s | 0.95x |
+| mandelbrot 1000^2 x1000 | 0.376s | 0.377s | 1.00x |
+| fib(40) | 0.359s | 0.355s | 1.01x |
+| fannkuch-redux(10) | 0.202s | 0.200s | 1.01x |
+| nbody 2M steps | 0.145s | 0.111s | 1.31x |
+| binary_trees d16 | 1.513s | 0.780s | 1.94x |
 
 Kryos is level with Rust (within 5%) on four of the 7 benchmarks and beats it
-outright on hashmap (0.70x). It trails on nbody (1.32x; level with clang and
-clang++ -O2 at 0.152s and 0.152s) and on binary_trees (2.00x; it was 1.42x at
+outright on hashmap (0.63x). It trails on nbody (1.31x; level with clang and
+clang++ -O2 at 0.151s and 0.151s) and on binary_trees (1.94x; it was 1.42x at
 1.0.0-rc.2; its `shared` nodes were never freed from 1.1.0 until LEDGER item
-137, which cut the peak from 1.1 GB to 24 MB but not the time). Measured on
-1.3.0 plus the 1.3.1 memory wave, 2026-11-24. Full methodology,
+137, which cut the peak from 1.1 GB to 24 MB but did not make it faster).
+Measured on 1.3.0 plus the 1.3.1 memory wave, 2026-11-24. Full methodology,
 spreads, and the per-benchmark analysis: [BENCHMARKS.md](../BENCHMARKS.md).
 
 The compiler applies five MIR-level optimization passes before handing off to the backend:
