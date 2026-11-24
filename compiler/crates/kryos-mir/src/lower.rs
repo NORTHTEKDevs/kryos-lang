@@ -341,6 +341,8 @@ pub struct LoweringContext {
     /// Set while lowering `let x = <closure field read>` (`h.f`, `hs[i].f`,
     /// `mk(i).f`): the binding retains the closure right after its Assign.
     pending_let_fn_retain: bool,
+    /// `let a = b.h` of a `shared` field: the binding takes its own arc reference.
+    pending_let_shared_retain: bool,
     /// The resolved annotation of the `let` whose initializer is currently
     /// being lowered. Consumed (take()) by `monomorphize_impl_fn` when a
     /// no-argument generic static constructor leaves type params unbound --
@@ -572,6 +574,7 @@ impl LoweringContext {
             keep_closure_locals_once: false,
             pending_let_share: false,
             pending_let_fn_retain: false,
+            pending_let_shared_retain: false,
             pending_let_expected: None,
             match_subject_roots: HashMap::new(),
             deref_own: false,
@@ -3998,6 +4001,7 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
     lower_stmt_inner(ctx, stmt);
     ctx.deref_let_copy = false;
     ctx.deref_own = false;
+    ctx.pending_let_shared_retain = false;
     drop_unescaped_str_temps(ctx, inst_mark, block_mark, locals_mark, &partial_moved_before, None);
     // A statement that created blocks is skipped above (its temps need not
     // dominate the end). Its LAST block, though, follows all of its branching
@@ -4671,6 +4675,17 @@ fn drop_unescaped_str_temps(
             if matches!(cand_ty, MirType::Shared(_)) {
                 if let RValue::Deref { operand } = value {
                     if mentions(operand, id) {
+                        continue;
+                    }
+                }
+                // Lent to a user function (`check(xs[0], v)`): its `shared`
+                // param is a borrow, and a callee that keeps the handle takes
+                // its own arc reference.
+                if let RValue::Call { func, args } = value {
+                    if args.iter().any(|a| mentions(a, id))
+                        && ctx.user_fn_names.contains(func)
+                        && !ctx.builtin_fn_names.contains(func)
+                    {
                         continue;
                     }
                 }
@@ -6271,8 +6286,26 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                     }
                     ctx.pending_let_fn_retain = true;
                 }
-                let mark_non_owning =
-                    reads_element && !owns_element && !owns_heap_read && !owns_fn_read && !owns_fn_field;
+                // `let a = b.h` of a `shared` field: the read is an alias, so the
+                // binding takes its own arc reference (below) and releases it at
+                // scope end; the source keeps its own.
+                let owns_shared_field = matches!(mir_ty, MirType::Shared(_))
+                    && matches!(expr, ast::Expr::FieldAccess { .. })
+                    && !is_variant_expr(ctx, expr);
+                if owns_shared_field {
+                    ctx.pending_let_shared_retain = true;
+                }
+                // `let h = xs[i]` of a `[shared T]`: the element read retains on
+                // both backends, so the binding owns that reference.
+                let owns_shared_elem = matches!(mir_ty, MirType::Shared(_))
+                    && matches!(expr, ast::Expr::IndexAccess { .. });
+                let mark_non_owning = reads_element
+                    && !owns_element
+                    && !owns_heap_read
+                    && !owns_fn_read
+                    && !owns_fn_field
+                    && !owns_shared_field
+                    && !owns_shared_elem;
 
                 // Track closures with captures for direct-call optimization.
                 // NEVER for a closure that mutates one of its captures: it
@@ -6647,6 +6680,9 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                 }
                 if let Some(slot) = drop_fresh_src {
                     ctx.emit(Instruction::Drop { local: slot });
+                }
+                if std::mem::take(&mut ctx.pending_let_shared_retain) && !retain_shared_container {
+                    ctx.emit(Instruction::ArcRetain { ptr: local });
                 }
                 if let Some(kind) = dup_array_kind {
                     // local currently shares the source array; replace it with
@@ -8653,13 +8689,24 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
             // leaked it (`fn name(self: S) -> str { return self.name }` leaked
             // the whole S per call once params became callee-owned).
             let ret_field_ty = value.as_ref().map(|e| infer_expr_type(ctx, e));
-            let ret_field_owns = matches!(
-                ret_field_ty,
-                Some(MirType::Str)
-                    | Some(MirType::Array(_, _))
-                    | Some(MirType::Map { .. })
-                    | Some(MirType::DynTrait(_))
-            );
+            // `return b.h` of a `shared` field: the read is an alias, so the
+            // returned handle takes its own arc reference here and the source
+            // struct keeps its drop (it used to be excluded and leaked whole).
+            let ret_shared_field = matches!(value.as_ref(), Some(ast::Expr::FieldAccess { .. }))
+                && matches!(ret_field_ty, Some(MirType::Shared(_)));
+            if ret_shared_field && !ret_cloned {
+                if let Some(id) = returned_local_id {
+                    ctx.emit(Instruction::ArcRetain { ptr: LocalId(id) });
+                }
+            }
+            let ret_field_owns = ret_shared_field
+                || matches!(
+                    ret_field_ty,
+                    Some(MirType::Str)
+                        | Some(MirType::Array(_, _))
+                        | Some(MirType::Map { .. })
+                        | Some(MirType::DynTrait(_))
+                );
             let ret_field_share = matches!(value.as_ref(), Some(ast::Expr::FieldAccess { .. }))
                 && ret_field_ty
                     .as_ref()
@@ -9548,7 +9595,9 @@ fn lower_for(
     // value the variable still read (empty string / use-after-free).
     let value_elem_owned = matches!(pattern, ast::Pattern::Ident { .. })
         && (is_owned_struct_ty(ctx, &elem_type) || is_owned_enum_ty(ctx, &elem_type));
-    let loop_var_owned = (matches!(elem_type, MirType::Str | MirType::Array(_, _) | MirType::Map { .. })
+    // A `shared` element read retains on both backends too (`xs[i]` of a
+    // `[shared T]`), so the loop variable owns that reference.
+    let loop_var_owned = (matches!(elem_type, MirType::Str | MirType::Array(_, _) | MirType::Map { .. } | MirType::Shared(_))
         && matches!(pattern, ast::Pattern::Ident { .. }))
         || tuple_elem_owned
         || value_elem_owned;
@@ -13460,6 +13509,11 @@ fn consume_call_args(ctx: &mut LoweringContext, dest: LocalId, func: &str, args:
                             // dyn param is borrowed, and one that keeps it
                             // takes its own reference (dyn_own).
                             | MirType::DynTrait(_)
+                            // A `shared` argument is lent too: a callee that
+                            // keeps the handle takes its own arc reference
+                            // (`retain_for_ty`), so the caller's reference is
+                            // released at its own scope end.
+                            | MirType::Shared(_)
                     ))
             {
                 // An async callee runs after this frame is gone: its future
@@ -15671,6 +15725,16 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 .enumerate()
                 .map(|(i, a)| {
                     let operand = lower_expr_to_operand(ctx, a);
+                    // `push(xs, b.h)` of a `shared` field: the read is an alias
+                    // (the struct keeps its handle), so the slot's reference is
+                    // taken here, on the unnamed temp the push then takes over.
+                    if func_name == "push" && i == 1 && matches!(a, ast::Expr::FieldAccess { .. }) {
+                        if let Operand::Local(l) = &operand {
+                            if matches!(infer_expr_type(ctx, a), MirType::Shared(_)) {
+                                ctx.emit(Instruction::ArcRetain { ptr: *l });
+                            }
+                        }
+                    }
                     // `push(xs, if c { q } else { P { .. } })`: every branch
                     // hands the hidden slot a reference of its own, which the
                     // array takes over; sharing it too left the slot's
@@ -16569,6 +16633,11 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                                         // dyn_own retains a trait object read
                                         // out of a field.
                                         | MirType::DynTrait(_)
+                                        // A `shared` field read is an alias: every
+                                        // consumer that keeps the handle takes its
+                                        // own arc reference (`retain_for_ty`), so
+                                        // the struct keeps its drop and its arc.
+                                        | MirType::Shared(_)
                                 );
                                 if !is_copy_type(ctx, &field_ty) && !retained_read {
                                     ctx.partial_moved_locals.insert(source_id.0);
@@ -18459,6 +18528,15 @@ fn suppress_enum_field_arg_drops(
         let fn_field = matches!(lty, MirType::Function { .. })
             && matches!(a, ast::Expr::FieldAccess { .. })
             && !is_variant_expr(ctx, a);
+        // A `shared` FIELD read (`Some(b.h)`) is an alias: the payload takes
+        // its own arc reference and the struct keeps its handle.
+        let shared_field = matches!(lty, MirType::Shared(_))
+            && matches!(a, ast::Expr::FieldAccess { .. })
+            && !is_variant_expr(ctx, a);
+        if shared_field {
+            ctx.emit(Instruction::ArcRetain { ptr: *l });
+            continue;
+        }
         if fn_field {
             let sink = ctx.alloc_temp(MirType::I64);
             ctx.emit(Instruction::Assign {
@@ -20642,6 +20720,15 @@ fn retain_or_move_literal_element(ctx: &mut LoweringContext, e: &ast::Expr, op: 
     {
         emit_value_share(ctx, *id);
         return true;
+    }
+    // `(*a, 3)` / `[*a, *a]` of a `shared` struct: `*a` is an unretained
+    // alias of the arc's contents, which the arc frees when it is released,
+    // so the slot takes its own owner (no source mark: `a` keeps its own).
+    if let ast::Expr::Deref { inner, .. } = e {
+        if matches!(infer_expr_type(ctx, inner), MirType::Shared(_)) && is_owned_value_ty(ctx, &ty) {
+            emit_value_share(ctx, *id);
+            return false;
+        }
     }
     // A closure FIELD read (`[mkh(i).f]`, `[hs[0].f]`): the struct drop
     // releases function fields, so the slot takes its own reference. (An

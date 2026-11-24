@@ -64,7 +64,7 @@ else
 fi
 PROBE="$ROOT/tests/mem/shared_leak.kry"
 ITERS=3
-EXPECTED_ROWS=22
+EXPECTED_ROWS=28
 
 # ---------------------------------------------------------------------------
 # EXPECTED-STATE TABLE.
@@ -100,6 +100,12 @@ index_read     llvm 0     0     mode index_read sum 180
 index_read     cl   0     0     mode index_read sum 180
 bind_consumers llvm 0     0     mode bind_consumers sum 12
 bind_consumers cl   0     0     mode bind_consumers sum 12
+forin_shared   llvm 0     0     mode forin_shared sum 9
+forin_shared   cl   0     0     mode forin_shared sum 9
+field_read     llvm 0     0     mode field_read sum 54
+field_read     cl   0     0     mode field_read sum 54
+tuple_copy     llvm 0     0     mode tuple_copy sum 42
+tuple_copy     cl   0     0     mode tuple_copy sum 42
 '
 # Backend canary: plain_embedded box ALLOCS differ by backend (LLVM keeps the
 # struct inline, Cranelift boxes it).
