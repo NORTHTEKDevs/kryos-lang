@@ -8,51 +8,54 @@ results table is [`benchmarks/results_table.md`](./benchmarks/results_table.md),
 copied verbatim; it and the startup floors come from `benchmarks/results.json`,
 written by the same run, and are not hand-edited.
 
-Measured at commit: `cbd88996d1b11ae2172fe8e511bbce37fb1cf21b` (Kryos 1.3.0)
+Measured at commit: `9a0dc8ccdf43e8e029963c0bb3e97b3c15b3db6a` (Kryos 1.3.0 plus the 1.3.1 memory wave, unreleased)
 
-- date: 2026-11-03, 19:19 to 19:36 UTC (the whole run took 16 min 40 s)
+- date: 2026-11-24, about 08:22 to 08:37 local time, UTC-9 (about 15 min). A first run of the same commit was discarded: it started while two killed earlier runs may still have held a benchmark binary, and its Cranelift binary_trees build failed silently (n/a).
 - machine: AMD RYZEN AI MAX+ 395 w/ Radeon 8060S (16 cores, 32 threads), 31.6 GB RAM, Windows 11 Home 10.0.26200
-- toolchains: kryos 1.3.0 (the release build of this commit's compiler), rustc 1.95.0, clang and clang++ 21.1.8, go 1.25.7, CPython 3.14.2; no `mojo` on PATH
-- load: a working desktop, not an idle benchmark host. Total CPU use, sampled every 10 s during the run, had a median of about 12% (6.1% to 20.3%); 4.1 GB of RAM was free at the start.
+- toolchains: kryos 1.3.0 (the release build of this commit's compiler), rustc 1.95.0, clang and clang++ 21.1.8, go 1.25.7, CPython 3.14.2; no `mojo` on PATH (tool versions as in the 1.3.0 run, not re-queried)
+- load: a working desktop, not an idle benchmark host, shared with other build and measurement sessions. CPU use was not sampled this time; no run holding the measurement lock was active during it, but nothing outside that lock was checked. Read the spreads in `results.json`.
 - outputs: `check_outputs.py` PASS, every port of every benchmark printed the same output
 
 ## Headline
 
-On Kryos 1.3.0 the LLVM backend (`kryos build --release`) is level with Rust
+On this commit the LLVM backend (`kryos build --release`) is level with Rust
 on four of the seven benchmarks, faster than Rust on one, and clearly behind
 on two.
 
-- **Behind Rust:** binary_trees **1.88x** and nbody **1.34x**. On binary_trees,
-  C (0.691 s) and Go (0.492 s) are also faster than Kryos (1.455 s).
-- **binary_trees has regressed.** It was 1.42x at 1.0.0-rc.2 (2026-07-10).
-  Built by each release's own compiler and timed side by side on this machine
-  (interleaved, 7 runs each after a warmup): rc.2 1.065 s, 0.9.0 1.223 s,
-  1.0.0 1.250 s, 1.0.1 1.217 s, 1.1.0 1.387 s, 1.2.0 1.392 s, 1.3.0 1.436 s,
-  against Rust's 0.742 s. It slowed in two steps of about 15% each: between
-  rc.2 and 0.9.0, and between 1.0.1 and 1.1.0. 1.3.0 is within 4% of 1.1.0 and
-  1.2.0, inside run-to-run spread. Found after this run: most of it is a memory
-  leak. The tree's `shared` nodes are never freed (since 0.9.0 in this program,
-  since 1.1.0 for any `shared` structure), and the run peaks at 1.1 GB, against
-  24 MB at rc.2: [LEDGER item 137](./tools/loop/LEDGER.md).
-- **Level with Rust (0.96x to 1.04x, inside run-to-run spread):** fib 1.01x,
-  mandelbrot 1.00x, fannkuch 1.04x, matmul 0.96x. On matmul Go is faster than
-  all of them (0.561 s against Kryos's 0.620 s).
-- **Faster than Rust:** hashmap 0.59x (and 5.7x faster than clang++ with
+- **Behind Rust:** binary_trees **2.00x** and nbody **1.32x**. On binary_trees,
+  C (0.733 s) and Go (0.491 s) are also faster than Kryos (1.597 s).
+- **binary_trees: the leak is fixed, the time is not.** The tree's `shared`
+  nodes used to be never freed (since 1.1.0) and the run peaked at 1.1 GB;
+  they are freed now and it peaks at 24 MB (checksum 14723759 on both). The
+  wall time did not change: master and this commit, built from the same
+  program and run interleaved 7 times each in one session, took 1.44 to 1.96 s
+  (median 1.77) and 1.54 to 1.71 s (median 1.56). The table run below gives a
+  median of 1.597 s with a 1.448 to 1.827 spread, so its minimum equals the
+  1.455 s of the 1.3.0 run. The ratio went from 1.88x to 2.00x mostly because
+  this run's Rust came out at 0.799 s against 0.772 s. The earlier note that
+  most of the slowdown "is a memory leak" was wrong about the time: the leak
+  was most of the memory, and the time is the allocator and the reference
+  counting (LEDGER item 137). The history of the slowdown is in the "What
+  changed (2026-11-03)" section below.
+- **Level with Rust (0.95x to 1.03x, inside run-to-run spread):** fib 1.03x,
+  mandelbrot 1.00x, fannkuch 1.03x, matmul 0.95x. On matmul Go is faster than
+  all of them (0.572 s against Kryos's 0.626 s).
+- **Faster than Rust:** hashmap 0.70x (and 4.0x faster than clang++ with
   `std::unordered_map`).
-- **Against Python:** 1.6x faster on binary_trees, 7.8x on hashmap, and 32x to
-  307x on the other five.
+- **Against Python:** 1.35x faster on binary_trees, 5.8x on hashmap, and 31x to
+  320x on the other five.
 
 ## Results (medians of 5, seconds)
 
 | Benchmark | kryos-llvm | kryos-cranelift | rust -O | clang -O2 | clang++ -O2 | mojo | go | python | kryos-llvm / rust |
 |---|---|---|---|---|---|---|---|---|---|
-| fib | 0.362s | 4.955s | 0.358s | 0.356s | 0.357s | n/a | 0.722s | 17.758s | 1.01x |
-| mandelbrot | 0.383s | 0.431s | 0.381s | 0.381s | 0.373s | n/a | 0.391s | 20.466s | 1.00x |
-| nbody | 0.150s | 0.969s | 0.112s | 0.154s | 0.158s | n/a | 0.258s | 46.104s | 1.34x |
-| binary_trees | 1.455s | 3.291s | 0.772s | 0.691s | 0.732s | n/a | 0.492s | 2.389s | 1.88x |
-| fannkuch | 0.204s | 0.918s | 0.196s | 0.192s | 0.187s | n/a | 0.197s | 6.542s | 1.04x |
-| matmul | 0.620s | 0.614s | 0.645s | 0.645s | 0.643s | n/a | 0.561s | 34.818s | 0.96x |
-| hashmap | 0.086s | 0.091s | 0.147s | n/a | 0.487s | n/a | 0.159s | 0.671s | 0.59x |
+| fib | 0.358s | 5.160s | 0.349s | 0.356s | 0.355s | n/a | 0.720s | 17.521s | 1.03x |
+| mandelbrot | 0.375s | 0.426s | 0.373s | 0.376s | 0.375s | n/a | 0.387s | 20.562s | 1.00x |
+| nbody | 0.146s | 0.931s | 0.110s | 0.152s | 0.152s | n/a | 0.250s | 46.988s | 1.32x |
+| binary_trees | 1.597s | 3.107s | 0.799s | 0.733s | 0.769s | n/a | 0.491s | 2.160s | 2.00x |
+| fannkuch | 0.203s | 0.943s | 0.197s | 0.192s | 0.191s | n/a | 0.201s | 6.373s | 1.03x |
+| matmul | 0.626s | 0.655s | 0.658s | 0.657s | 0.654s | n/a | 0.572s | 33.223s | 0.95x |
+| hashmap | 0.086s | 0.085s | 0.124s | n/a | 0.342s | n/a | 0.119s | 0.496s | 0.70x |
 
 | Benchmark | Workload |
 |---|---|
@@ -65,9 +68,9 @@ on two.
 | hashmap | 1,000,000 inserts, then 1,000,000 lookups |
 
 Each cell is the median of 5 timed runs after one warmup run; the min..max of
-every cell is in `results.json`. 34 of the 48 cells vary by 10% or less
-between their fastest and slowest run; most of the other 14 have one slow run
-(clang++ fannkuch 0.182..0.338, clang nbody 0.148..0.263). Differences of a few
+every cell is in `results.json`. 32 of the 48 cells vary by 10% or less
+between their fastest and slowest run; most of the other 16 have one slow run
+(clang++ fannkuch 0.189..0.523, Kryos hashmap 0.080..0.418, Rust nbody 0.109..0.442). Differences of a few
 percent between toolchains are inside that spread: treat them as ties.
 
 hashmap has no C port (n/a); the clang++ port uses `std::unordered_map`. The
@@ -101,8 +104,8 @@ The residual 1.45x vs Rust is mostly Rc refcount traffic vs Rust's `Box`
 unique-ownership; Go (0.488s) wins via its GC bump allocator. checksum
 14723759, identical on both backends. (Measured 2026-06. It is no longer true:
 since 1.1.0 the `shared` nodes are never freed, the run peaks at 1.1 GB, and on
-1.3.0 binary_trees is 1.88x. See the headline and LEDGER item 137, which
-frees them: peak 24 MB after the fix, wall time within about 6% of 1.3.0.)
+1.3.0 binary_trees is 1.88x. LEDGER item 137 frees them again: peak 24 MB,
+and the wall time is level with 1.3.0, see the headline.)
 
 ## Methodology
 
@@ -114,6 +117,25 @@ frees them: peak 24 MB after the fix, wall time within about 6% of 1.3.0.)
 4. **Same answer required**: `check_outputs.py` runs every measured port once
    and fails unless all ports of a benchmark print identical output.
 5. **Broken/absent ports are labeled n/a, not buried, and never fabricated.**
+
+## What changed (2026-11-24, 1.3.1 memory wave re-measure)
+
+Re-measured because the compiler changed after the 1.3.0 numbers
+(`tools/loop/check-bench-current.sh` fails on a stale table). The change that
+matters here is that `shared` nodes are freed (LEDGER item 137).
+
+- Kryos/Rust ratios, 1.3.0 -> this commit: fib 1.01x -> 1.03x, mandelbrot
+  1.00x -> 1.00x, nbody 1.34x -> 1.32x, binary_trees 1.88x -> 2.00x, fannkuch
+  1.04x -> 1.03x, matmul 0.96x -> 0.95x, hashmap 0.59x -> 0.70x. Rust's hashmap
+  time moved (0.147 s -> 0.124 s), which is most of the hashmap ratio change;
+  Kryos's was 0.086 s both times.
+- Apart from binary_trees, every Kryos LLVM time is within 3% of the 1.3.0
+  table.
+- binary_trees: see the headline. Peak memory 1.1 GB -> 24 MB; time unchanged
+  within the spread.
+- The tests/mem probes that exist to measure leaks (a tree or a list built and
+  dropped in a loop) run 25 to 30% longer than on master at 1000 iterations,
+  because master never freed anything and these programs do nothing else.
 
 ## What changed (2026-11-03, 1.3.0 re-measure)
 
@@ -175,9 +197,9 @@ bootstrap (stage-2 == stage-3 == stage-4, fixed point held):
 
 ## Still planned
 
-- binary_trees: fix the `shared` leak and the extra reference counting behind
-  most of its slowdown (LEDGER item 137), then re-measure. Beyond that, a
-  unique-ownership `Box` (no refcount) or an arena would close most of the
+- binary_trees: the `shared` leak is fixed (LEDGER item 137) but the time is
+  not better. The extra reference counting and the allocator are what is left;
+  a unique-ownership `Box` (no refcount) or an arena would close most of the
   remaining gap to Rust.
 - nbody's residual 1.34x: fair loop unroll/vectorize hints (the trip count is a
   runtime `let n = 5`, blocking full unroll).
@@ -190,9 +212,9 @@ bootstrap (stage-2 == stage-3 == stage-4, fixed point held):
 
 | Runtime | Floor |
 |---|---|
-| kryos native exe | 9.6ms |
-| rust native exe | 9.1ms |
-| python interpreter | 561.5ms |
+| kryos native exe | 9.3ms |
+| rust native exe | 8.6ms |
+| python interpreter | 329.4ms |
 
 Process start on Windows depends on antivirus scanning and file-cache state:
 the rc.2 sweep (July) measured these floors at 6.0, 5.5 and 364.7 ms. Treat
