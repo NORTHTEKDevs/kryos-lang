@@ -4546,8 +4546,11 @@ fn drop_unescaped_str_temps(
                 // previously freed a still-shared element out from under the
                 // container (the split_join regression) and that path's
                 // retain/consume accounting has not been re-audited.
-                // Only an ELEMENT read hands a `shared` temp its own reference.
-                if matches!(cand_ty, MirType::Shared(_)) && !matches!(value, RValue::Index { .. }) {
+                // Only an ELEMENT read or a fresh `shared x` hands a `shared` temp
+                // its own reference (the uses below decide whether it is released).
+                if matches!(cand_ty, MirType::Shared(_))
+                    && !matches!(value, RValue::Index { .. } | RValue::ArcAlloc { .. })
+                {
                     continue 'cand;
                 }
                 owns = match value {
@@ -4577,6 +4580,8 @@ fn drop_unescaped_str_temps(
                     // backends (Cranelift returns the element's box, LLVM loads
                     // a shallow aggregate copy) -- it owns nothing.
                     RValue::Index { .. } => !matches!(cand_ty, MirType::Struct(_) | MirType::Enum(_)),
+                    // A fresh `shared x`: its one reference is this temp's.
+                    RValue::ArcAlloc { .. } => matches!(cand_ty, MirType::Shared(_)),
                     // A fresh struct literal / enum construction: one owner, this temp.
                     RValue::Struct { .. } => matches!(cand_ty, MirType::Struct(_)),
                     RValue::EnumVariant { .. } => matches!(cand_ty, MirType::Enum(_)),
@@ -6729,7 +6734,12 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                         dest: local,
                         value: RValue::Use(Operand::Local(dup_tmp)),
                     });
-                } else if retain_shared_container {
+                } else if retain_shared_container
+                    // A `shared` PARAM source was already retained for the
+                    // binding by `emit_param_source_retain` above.
+                    && !(matches!(holder_ty_for_retain, Some(MirType::Shared(_)))
+                        && param_src.is_some_and(|src| ctx.param_locals.contains(&src.0)))
+                {
                     if let Some(ref ty) = holder_ty_for_retain {
                         if let Some(rf) = retain_for_ty(ty) {
                             let sink = ctx.alloc_temp(MirType::I64);

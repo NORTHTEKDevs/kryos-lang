@@ -24,6 +24,10 @@
 //   field_read     item 137: a struct that owns a `shared` field, read through
 //                  it (`(*b.h).v`), returned (`return b.h`), pushed, wrapped in
 //                  `Some`, bound with `let`, and passed by value
+//   fresh_arg      item 137: a fresh `shared x` passed straight to a user
+//                  function that reads it, returns it, keeps it in a struct
+//                  literal, pushes it or wraps it in `Some` (the reader also
+//                  `let`-aliases its param)
 //   tuple_copy     item 137: `return (*a, 3)` of a `shared` struct, read after
 //                  allocator churn (the tuple owns its copy, the arc frees its
 //                  own contents)
@@ -132,6 +136,34 @@ fn field_read(i: i64) -> i64 {
     let l = box_let(i + 3)
     let mut t = (*b.h).v + box_rd(b) + (*r).v + (*p[0]).v + (*l).v
     match box_some(i + 4) {
+        Option.Some(x) => { t = t + (*x).v },
+        Option.None => { t = t + 0 },
+    }
+    return t
+}
+
+fn id_arg(h: shared N) -> shared N { return h }
+fn keep_arg(h: shared N) -> Box1 { return Box1 { h: h, k: 1 } }
+fn push_arg(h: shared N) -> [shared N] {
+    let mut xs: [shared N] = []
+    xs = push(xs, h)
+    return xs
+}
+fn wrap_arg(h: shared N) -> Option<shared N> { return Some(h) }
+fn rd_arg(h: shared N) -> i64 {
+    let b = h
+    return (*b).v + len((*h).tag)
+}
+fn fresh(i: i64) -> N { return N { v: i, tag: "a" + to_string(i) + "-pad-pad" } }
+
+fn fresh_arg(i: i64) -> i64 {
+    let a = id_arg(shared fresh(i))
+    let b = keep_arg(shared fresh(i + 1))
+    let c = push_arg(shared fresh(i + 2))
+    let d = wrap_arg(shared fresh(i + 3))
+    let z = churn(i * 100)
+    let mut t = (*a).v + (*b.h).v + (*c[0]).v + rd_arg(shared fresh(i + 4)) + z * 0
+    match d {
         Option.Some(x) => { t = t + (*x).v },
         Option.None => { t = t + 0 },
     }
@@ -255,6 +287,8 @@ fn main() {
             sum = sum + forin(i)
         } elif mode == "field_read" {
             sum = sum + field_read(i)
+        } elif mode == "fresh_arg" {
+            sum = sum + fresh_arg(i)
         } elif mode == "tuple_copy" {
             sum = sum + tuple_copy(i)
         } elif mode == "array_tree" {

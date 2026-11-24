@@ -64,7 +64,7 @@ else
 fi
 PROBE="$ROOT/tests/mem/shared_leak.kry"
 ITERS=3
-EXPECTED_ROWS=28
+EXPECTED_ROWS=30
 
 # ---------------------------------------------------------------------------
 # EXPECTED-STATE TABLE.
@@ -104,6 +104,8 @@ forin_shared   llvm 0     0     mode forin_shared sum 9
 forin_shared   cl   0     0     mode forin_shared sum 9
 field_read     llvm 0     0     mode field_read sum 54
 field_read     cl   0     0     mode field_read sum 54
+fresh_arg      llvm 0     0     mode fresh_arg sum 75
+fresh_arg      cl   0     0     mode fresh_arg sum 75
 tuple_copy     llvm 0     0     mode tuple_copy sum 42
 tuple_copy     cl   0     0     mode tuple_copy sum 42
 '
