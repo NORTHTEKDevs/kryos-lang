@@ -167,7 +167,7 @@ reaching the block through parameters, locals, containers, struct fields, actor
 state, `spawn`, generics, `dyn` and the other shapes in section 2 of
 [10-capabilities.md](10-capabilities.md): gate `tests/security_gate.sh`
 (gate, run for the 1.3.0 revision: PASS, 342 `ok` lines, 0 FAIL) and `tools/loop/escape_status.sh` (263 of 263 repros rejected,
-executed 2026-11-22 on the `closeout/cap` branch). **Exceptions: none of the 263 repros is still accepted (4.1); the
+executed 2026-11-23 on the `closeout/cap` branch). **Exceptions: none of the 263 repros is still accepted (4.1); the
 unknown shapes are what the list cannot show.** `deny!` does not bound a callee that is handed a closure (N16, B6).
 
 **G4. `@pure` functions call no gated or impure builtin.**
