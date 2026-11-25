@@ -354,12 +354,6 @@ pub struct LoweringContext {
     /// the subject for the whole match. Lets a `shared` payload bind decide
     /// whether the subject can be released under it (`shared_bind_needs_ref`).
     match_subject_roots: HashMap<String, Option<String>>,
-    /// Set just before lowering a `*s` whose consumer MOVES the value on
-    /// without taking an owner itself (a returned value, a variant payload);
-    /// consumed by the `Expr::Deref` arm.
-    deref_own: bool,
-    /// Set by `let x = *s`: the `let` copies the alias itself.
-    deref_let_copy: bool,
     /// Set by `Stmt::Return` immediately before lowering a directly-returned
     /// Lambda literal, when the ENCLOSING function's return type
     /// (`current_ret_ty`) is a concrete `Function` type of matching arity.
@@ -574,8 +568,6 @@ impl LoweringContext {
             pending_let_fn_retain: false,
             pending_let_expected: None,
             match_subject_roots: HashMap::new(),
-            deref_own: false,
-            deref_let_copy: false,
             pending_lambda_ret_hint: None,
         }
     }
@@ -3977,8 +3969,6 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
     // out of src" -- only the former is safe to reverse.
     let partial_moved_before = ctx.partial_moved_locals.clone();
     lower_stmt_inner(ctx, stmt);
-    ctx.deref_let_copy = false;
-    ctx.deref_own = false;
     drop_unescaped_str_temps(ctx, inst_mark, block_mark, locals_mark, &partial_moved_before, None);
     // A statement that created blocks is skipped above (its temps need not
     // dominate the end). Its LAST block, though, follows all of its branching
@@ -5439,9 +5429,6 @@ fn rooted_at_local(ctx: &LoweringContext, e: &ast::Expr) -> bool {
             find_local_by_name(ctx, name).is_some() || ctx.mutable_globals.contains_key(name.as_str())
         }
         ast::Expr::FieldAccess { object, .. } | ast::Expr::IndexAccess { object, .. } => rooted_at_local(ctx, object),
-        // `(*n).next`: a field of the arc's contents, which `n` still owns --
-        // a place, not a temporary.
-        ast::Expr::Deref { inner, .. } => rooted_at_local(ctx, inner),
         _ => false,
     }
 }
@@ -6139,15 +6126,7 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                     }
                     RValue::Use(wrapped)
                 } else {
-                    // `let x = *s` of a `shared` struct: the binding below copies
-                    // a local struct (value semantics), so the read hands over
-                    // a plain alias temp and takes no owner of its own.
-                    if matches!(expr, ast::Expr::Deref { .. }) {
-                        ctx.deref_let_copy = true;
-                    }
-                    let rv = lower_expr_to_rvalue(ctx, expr);
-                    ctx.deref_let_copy = false;
-                    rv
+                    lower_expr_to_rvalue(ctx, expr)
                 };
                 let reads_element = matches!(
                     expr,
@@ -6678,11 +6657,6 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
             // the new value, not the old lambda's direct-call shortcut.
             if let ast::Expr::Identifier { name, .. } = target {
                 ctx.closure_locals.remove(name.as_str());
-                // `y = *s` of a `shared` struct: the assignment copies a local
-                // struct (value semantics), like `let y = *s`.
-                if matches!(value, ast::Expr::Deref { .. }) && *op == ast::AssignOp::Assign {
-                    ctx.deref_let_copy = true;
-                }
             }
             // Check if the target is an actor state field (self.field).
             let actor_field_target = if let ast::Expr::FieldAccess { object, field, .. } = target {
@@ -8384,15 +8358,10 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
             let ret_block_mark = ctx.next_block;
             let ret_locals_mark = ctx.locals.len();
             let ret_partial_moved_before = ctx.partial_moved_locals.clone();
-            // `return *s` of a `shared` struct hands the caller an owner.
-            if matches!(value, Some(ast::Expr::Deref { .. })) {
-                ctx.deref_own = true;
-            }
             let mut operand = value.as_ref().map(|e| {
                 let op = lower_expr_to_operand(ctx, e);
                 coerce_to_dyn_if_needed(ctx, op, &ret_ty, e)
             });
-            ctx.deref_own = false;
             // A closure field read: the struct drop releases function
             // fields, so the returned closure takes its own reference -- here,
             // before the drops below release the struct -- and the source
@@ -15404,18 +15373,8 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                     None => enum_name,
                 };
                 let partial_before_args = ctx.partial_moved_locals.clone();
-                let mut mir_args: Vec<Operand> = args
-                    .iter()
-                    .map(|a| {
-                        // `Some(*s)` of a `shared` struct: the payload gets an owner.
-                        if matches!(a, ast::Expr::Deref { .. }) {
-                            ctx.deref_own = true;
-                        }
-                        let op = lower_expr_to_operand(ctx, a);
-                        ctx.deref_own = false;
-                        op
-                    })
-                    .collect();
+                let mut mir_args: Vec<Operand> =
+                    args.iter().map(|a| lower_expr_to_operand(ctx, a)).collect();
                 // A bare heap-local passed directly as a variant field is moved
                 // into the enum -- the field is a bit-copy with no retain. Mark
                 // the local drop-suppressed so its scope-end drop does not free
@@ -16731,34 +16690,7 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
 
         ast::Expr::Deref { inner, .. } => {
             // *x → load from reference
-            let own = std::mem::take(&mut ctx.deref_own);
-            let let_copy = std::mem::take(&mut ctx.deref_let_copy);
-            let inner_ty = infer_expr_type(ctx, inner);
             let inner_op = lower_expr_to_operand(ctx, inner);
-            // `*s` of a `shared` struct/enum is a bit-copy ALIAS of the arc's
-            // contents. Read through (`(*s).f`, a call argument) or handed to a
-            // consumer that takes its own owner (a struct literal field, a
-            // push, an assignment) the alias is fine. A consumer that keeps it
-            // WITHOUT an owner of its own would free what the arc still owns --
-            // and the arc, which now frees its contents, would free it a second
-            // time (LEDGER item 137): `let x = *s` copies the alias (value
-            // semantics), and a returned value or a variant payload gets an
-            // owner here.
-            if own || let_copy {
-                if let MirType::Shared(t) = &inner_ty {
-                    if is_owned_value_ty(ctx, t) {
-                        let tmp = ctx.alloc_temp(t.as_ref().clone());
-                        ctx.emit(Instruction::Assign {
-                            dest: tmp,
-                            value: RValue::Deref { operand: inner_op },
-                        });
-                        if own {
-                            emit_value_share(ctx, tmp);
-                        }
-                        return RValue::Use(Operand::Local(tmp));
-                    }
-                }
-            }
             RValue::Deref { operand: inner_op }
         }
 

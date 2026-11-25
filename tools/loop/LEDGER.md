@@ -8674,15 +8674,9 @@ debug builds 36, 318 MB vs 5 MB). A freed arc costs the system heap's free: the 
 new struct, then the allocator churned before the read; plus the arm that releases the subject under a deref-only bind) FAILS with the
 bind's own reference removed (`survivor v 7 want 0` on both backends, measured by disabling step 1) and
 `tests/mem/shared_ownership.kry` stays green; both run under `tests/no_double_free.sh` (diag, real frees, both backends).
-Found while testing the fix, and fixed in the same change (all three were broken on master too): `*s` of a `shared` struct is a
-bit-copy alias of the arc's contents, so a consumer that kept it freed what the arc still owned, and once the arc frees its contents
-that is a double free (`let x = *a` crashed the JIT and the Cranelift build of a probe that passed on master). The `Expr::Deref` arm now
-copies the alias for `let x = *s` and `y = *s` (the binding's value-semantics copy), gives `return *s` and `Some(*s)` an owner of their
-own (a struct share on the temp), and leaves it a bare alias for field reads, method receivers, call arguments (the callee's struct
-param shares at entry), pushes, struct literal fields (each takes its own owner); and `rooted_at_local` sees through `(*n)`, so
-`cur = (*n).next` takes its own owner of the field it steps onto (the Cranelift JIT and debug AOT crashed on that list traversal on
-master). Pinned by `tests/conformance/conf_shared_deref_ownership.kry`: it fails on the master binary (JIT and Cranelift AOT crash in
-`sum`, release AOT crashes) and passes on both backends here with arc and box live 0. Also incidental:
+Found and NOT fixed (pre-existing, same on master): `let x = *s` / `return *s` of a `shared` struct yields an alias of the arc's
+contents, not an owner, so the value dangles once the arc is freed (real-free AOT prints a wrong sum, `KRYOS_FREE_DIAG` the right
+one); and `cur = (*n).next` list traversal crashes on the Cranelift backend (JIT and debug AOT) on master and here. Also incidental:
 item 138's repro (`fn wrap(x: L) -> shared L { return shared x }`, linked into a list) no longer corrupts the heap, because the
 arc now takes its own owner of `x` (master: 0xC0000374 / wrong values on every backend); the conformance probe above pins it.
 
