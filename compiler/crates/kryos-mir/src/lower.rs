@@ -11812,34 +11812,6 @@ fn infer_one_arm_type(
 /// releases it through the ordinary return-path drops). Not when an arm binds
 /// the WHOLE subject (`other => other` would alias what is released) or for a
 /// struct/tuple subject (their pattern bindings alias fields).
-/// True when every payload of every variant of the enum `ty` either is a
-/// scalar or gets its OWN reference at a match payload bind (str/array/map,
-/// an owned struct/enum): a bind of any other payload is a bare alias of the
-/// subject, so the subject must outlive the arm.
-fn enum_payloads_own_refs(ctx: &LoweringContext, ty: &MirType) -> bool {
-    let MirType::Enum(name) = ty else { return false };
-    let Some(variants) = ctx.enum_defs.get(name.as_str()) else { return false };
-    variants.iter().all(|v| {
-        v.fields.iter().all(|f| {
-            is_copy_type(ctx, f)
-                || matches!(
-                    f,
-                    MirType::Str
-                        | MirType::Array(_, _)
-                        | MirType::Map { .. }
-                        | MirType::I8
-                        | MirType::I16
-                        | MirType::U16
-                        | MirType::U32
-                        | MirType::U64
-                        | MirType::Char
-                )
-                || is_owned_struct_ty(ctx, f)
-                || is_owned_enum_ty(ctx, f)
-        })
-    })
-}
-
 fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::MatchArm]) -> Operand {
     let fresh = matches!(
         subject,
@@ -11853,37 +11825,6 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
     );
     if fresh || retained_read {
         let sty = infer_expr_type(ctx, subject);
-        // An enum read out of a struct FIELD (`match h.o { .. }`): the read
-        // is a bit-copy alias that marked the struct partially moved, so the
-        // struct (a callee-owned param, a local) was never dropped and its
-        // reference leaked (LEDGER item 139). The struct keeps its field and
-        // its drop; every payload bind takes its OWN reference (see
-        // `enum_payloads_own_refs`), so the alias is only read to dispatch
-        // and bind and needs neither a reference nor a release of its own.
-        let field_enum_read = matches!(subject, ast::Expr::FieldAccess { .. })
-            && is_owned_enum_ty(ctx, &sty)
-            && enum_payloads_own_refs(ctx, &sty);
-        let binds_whole_field = arms.iter().any(|a| {
-            matches!(&a.pattern, ast::Pattern::Ident { name, .. }
-                if find_enum_variant(ctx, name).is_none())
-        });
-        if field_enum_read && !binds_whole_field {
-            let partial_before = ctx.partial_moved_locals.clone();
-            let op = lower_expr_to_operand(ctx, subject);
-            let added: Vec<u32> =
-                ctx.partial_moved_locals.difference(&partial_before).copied().collect();
-            for id in added {
-                ctx.partial_moved_locals.remove(&id);
-            }
-            let hidden = format!("__match_subj_{}", ctx.locals.len());
-            let subj = ctx.alloc_local(Some(hidden.clone()), sty, false);
-            ctx.borrowed_locals.insert(subj.0);
-            ctx.emit(Instruction::Assign { dest: subj, value: RValue::Use(op) });
-            let ident = ast::Expr::Identifier { name: hidden, span: subject.span() };
-            let result = lower_match_inner(ctx, &ident, arms);
-            ctx.hidden_locals.insert(subj.0);
-            return result;
-        }
         let owned = matches!(sty, MirType::Str | MirType::Array(_, _) | MirType::Map { .. })
             || (fresh && is_owned_enum_ty(ctx, &sty))
             // A fresh tuple: its pattern bindings retain str/array/map

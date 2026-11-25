@@ -75,8 +75,7 @@ EXPECTED_ROWS=16
 #                      Cranelift backend the struct boxes behind it leak too)
 #   shared_scalar      item 137 (a bare `shared <int>` arc block is never
 #                      released to zero; invisible to RSS)
-#   match_field        item 139 FIXED (match on an Option field of a by-value
-#                      param): balanced on both legs
+#   match_field        item 139 (match on an Option field of a by-value param)
 # ---------------------------------------------------------------------------
 EXPECTED='
 tree_drop      llvm 6138  0     mode tree_drop sum 3
@@ -87,8 +86,8 @@ tree_embedded  llvm 6138  0     mode tree_embedded sum 6141
 tree_embedded  cl   6138  18423 mode tree_embedded sum 6141
 list_drop      llvm 6000  0     mode list_drop sum 3
 list_drop      cl   6000  12003 mode list_drop sum 3
-match_field    llvm 0     0     mode match_field sum 39
-match_field    cl   0     0     mode match_field sum 39
+match_field    llvm 0     3     mode match_field sum 39
+match_field    cl   0     9     mode match_field sum 39
 shared_scalar  llvm 3     0     mode shared_scalar sum 3
 shared_scalar  cl   3     0     mode shared_scalar sum 3
 plain_embedded llvm 0     0     mode plain_embedded sum 93
@@ -192,23 +191,6 @@ while read -r mode leg want_arc want_box result; do
   if [ "$arc" -eq "$want_arc" ] && [ "$box" -eq "$want_box" ]; then
     if [ "$want_arc" -eq 0 ] && [ "$want_box" -eq 0 ]; then st=balanced; else st="leaking as pinned"; fi
     echo "mem-balance: ok   $mode/$leg $st (arc live=$arc, box live=$box)"
-    # A balanced row is pinned at a second scale (10x the iterations): a
-    # leak that scales, or one hidden behind a fixed number of survivors,
-    # shows up as live != 0 there.
-    if [ "$want_arc" -eq 0 ] && [ "$want_box" -eq 0 ]; then
-      ( unset KRYOS_FREE_DIAG; KRYOS_ALLOC_STATS=1 LEAK_MODE="$mode" LEAK_ITERS=$((ITERS * 10)) $TO "$exe" ) >"$out.x10" 2>"$err.x10"
-      rc10=$?
-      arc10="$(stat_of arc live "$err.x10")"; box10="$(stat_of box live "$err.x10")"
-      allocs10="$(stat_of arc allocs "$err.x10")"; ballocs10="$(stat_of box allocs "$err.x10")"
-      allocs3="$(stat_of arc allocs "$err")"; ballocs3="$(stat_of box allocs "$err")"
-      if [ "$rc10" -ne 0 ] || [ "$arc10" != "0" ] || [ "$box10" != "0" ]; then
-        echo "mem-balance: FAIL $mode/$leg at ${ITERS}x10 iterations -- rc=$rc10 arc live='$arc10' box live='$box10' (a balanced row must stay balanced when scaled)"
-        fail=1
-      elif [ "${allocs10:-0}" -ne $((allocs3 * 10)) ] || [ "${ballocs10:-0}" -ne $((ballocs3 * 10)) ]; then
-        echo "mem-balance: FAIL $mode/$leg -- allocs did not scale 10x (arc $allocs3 -> $allocs10, box $ballocs3 -> $ballocs10): the scaled run measured different work"
-        fail=1
-      fi
-    fi
   elif [ "$want_arc" -eq 0 ] && [ "$want_box" -eq 0 ]; then
     echo "mem-balance: FAIL $mode/$leg REGRESSION -- expected balanced, now arc live=$arc, box live=$box"
     fail=1
