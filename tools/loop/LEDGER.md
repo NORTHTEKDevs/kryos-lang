@@ -8721,35 +8721,12 @@ handle takes its own arc reference: `return b.h`, `push(xs, b.h)`, `Some(b.h)` (
 churn between the source going away and the read. (d) `let h = xs[i]` of a `[shared T]` owns the reference the element read took.
 (e) A `shared` argument is lent to a user function like a struct or str is (`consume_call_args`): passing a named `shared` local to any
 user function used to consume it, so the handle was never released (`c09`, a recursion passing a handle down leaked one per level);
-a `shared` element temp or a fresh `shared x` lent to a user function is released at the statement end (`rd(shared mk(i))` leaked
-an arc per call), and `let b = a` of a `shared` param took two references and released one (`emit_param_source_retain` and the
-let's own retain). Pinned by `conf_shared_copies.kry` (`check(rf, ..)` style calls) and the `fresh_arg` gate rows (30 rows); the
-round-1 recursion leaks `c09` and `n24` now balance. The residual shapes below are leaks of the kind master has; none is a use-after-free.
-Evidence for round 2 (compiler built from the round-2 head): `tests/mem_balance_gate.sh` 30 rows, every row 0 / 0 on LLVM and Cranelift (and
-at 10x iterations). Built from the round-1 sources (lower.rs of e7f16887) the gate fails 6 rows: forin_shared arc live 6 on both,
-field_read arc live 3 (LLVM) and 3 with box live 18 (Cranelift), and tuple_copy returns the wrong sum (12 on LLVM, 366 on Cranelift,
-want 42); `conf_shared_copies.kry` fails there on the JIT, release AOT and Cranelift AOT (`CONF FAIL: tuple v 102`). The `fresh_arg` rows fail on the first round-2 commit (9a0dc8cc, arc live 15 on both legs) and pass here. Built from the
-base sources (53d24db7) 25 rows fail, among them field_read/llvm (rc 3, a crash) and tuple_copy/llvm (sum 0 for 42);
-forin_shared/llvm is balanced on base (the arcs there are never counted live), so that row's pin is the Cranelift leg and round 1.
-`conf_shared_copies.kry` on the pristine master binary: release AOT `CONF FAIL: tuple v 0`, JIT and Cranelift AOT print
-`KRYOS-FREE-DIAG ... double free` (caught by `tests/no_double_free.sh`, which runs it with real frees). Peak working set is flat at
-4 to 5 MB for tree_drop, tree_let_call, tree_embedded, list_drop at 100 / 1000 / 10000 iterations and for every other mode at
-10000 / 100000 / 1000000, release AOT and Cranelift AOT. 750 runs (conf_shared_copies, conf_shared_consumers, conf_shared_ownership,
-conf_shared_deref_ownership, tests/mem/shared_ownership; 50 each on the JIT, release AOT and Cranelift AOT): 0 mismatches, 0 crashes,
-0 diagnostics. Repros of the round-1 refutations on this tree: s7 (by-value param read through its field), s2, r2 and s6 live 0 on
-JIT and release AOT; q04, q03 (for-in over `[shared T]`) live 0; q08 prints 314868 (master's value) on the JIT, Cranelift AOT and
-release AOT; attack set n01 to n26 and q01 to q08: no output differs from master where master runs, and the only leaks left are the
-residual shapes below (n05, n06, n07, n10, n11, n15, n26). Full `allgates.sh` (89 gates including bootstrap, fuzz, e2e and
-package gates, run on the final compiler): 0 nonzero, `gatediff` against gates_base1: no regressions, `mem_balance_gate` ADDED rc 0, `check-bench-current` now
-passes (BENCHMARKS.md re-measured at 9a0dc8cc). Oracle snapshot diff against base_A: only the 7 ADDED test files, SUMMARY bad=0.
-Performance: binary_trees master 1.44 to 1.96 s (median 1.77, bimodal) vs 1.54 to 1.71 s (median 1.56) interleaved, 7 runs each;
-the leak probes at 1000 iterations, release AOT: tree_drop 0.23 s master vs 0.30 s here, list_drop 0.22 vs 0.27, tree_let_call 0.24
-vs 0.33 (a freed block costs the system heap's free; master never freed), which is more than the 10% of landing rule A for those
-probes and is the price of freeing at all.
-RESIDUAL, NOT FIXED (measured on this tree after round 2; none of these balances on either backend): (1) `match h.o` where the Option
+a `shared` element temp lent to a user function is released at the statement end. Pinned by `conf_shared_copies.kry` (`check(rf, ..)`
+style calls). The residual shapes below are leaks of the kind master has; none is a use-after-free.
+RESIDUAL, NOT FIXED (measured on this tree after round 2; every one balances on neither backend): (1) `match h.o` where the Option
 payload is a TUPLE (also a closure or a trait object) keeps the old behavior: `HT { o: Option<(str, i64)> }` passed by value and matched
-leaks the struct and its payload boxes (no gate row covers it; repro: `struct HT { o: Option<(str, i64)>, n: i64 }` matched in a callee,
-box allocs=2000 frees=0 at 1000 iterations on the JIT). A tuple payload bind takes no reference, and the post-pass
+leaks the struct and its payload boxes (tests: `LEAK_MODE` is not covered by a gate row; repro `struct HT { o: Option<(str, i64)>, n: i64 }`
+matched in a callee: box allocs=2000 frees=0 at 1000 iterations on the JIT). A tuple payload bind takes no reference, and the post-pass
 `strip_escaping_tuple_drops` removes the arm-end drop of a share, so a bind that took one could not release it; a fix needs that pass
 and the tuple bind designed together. Without a match the same struct drops fine, so this is the match's field-read handling, not the
 struct drop. Item 139 is CLOSED for payloads that own a reference at the bind (scalars, str/array/map, owned struct/enum, which is the
