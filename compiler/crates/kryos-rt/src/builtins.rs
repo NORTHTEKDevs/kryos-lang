@@ -1368,6 +1368,7 @@ pub unsafe extern "C" fn kryos_buf_free(handle: i64) {
 
 #[no_mangle]
 pub unsafe extern "C" fn kryos_builtin_exit(code: i64) {
+    crate::allocstats::report();
     std::process::exit(code as i32);
 }
 

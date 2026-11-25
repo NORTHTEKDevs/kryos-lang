@@ -276,6 +276,7 @@ pub extern "C" fn kryos_calloc(count: i64, size: i64) -> *mut u8 {
             if box_diag() {
                 box_diag_note_alloc(p);
             }
+            crate::allocstats::note_box_alloc();
             return p;
         }
     }
@@ -294,6 +295,7 @@ pub extern "C" fn kryos_calloc(count: i64, size: i64) -> *mut u8 {
                 if box_diag() {
                     box_diag_note_alloc(p);
                 }
+                crate::allocstats::note_box_alloc();
                 p
             }
         }
@@ -309,6 +311,7 @@ pub extern "C" fn kryos_calloc(count: i64, size: i64) -> *mut u8 {
                 if box_diag() {
                     box_diag_note_alloc(p);
                 }
+                crate::allocstats::note_box_alloc();
                 p
             }
         }
@@ -362,6 +365,7 @@ pub extern "C" fn kryos_free(ptr: *mut u8) {
         box_diag_note_free(ptr);
     }
     if plain_alloc() {
+        crate::allocstats::note_box_free();
         unsafe { *(block as *mut u64) = CLASS_POISON };
         unsafe { free(block) };
         return;
@@ -374,6 +378,7 @@ pub extern "C" fn kryos_free(ptr: *mut u8) {
         return;
     }
     if class == CLASS_SYSTEM {
+        crate::allocstats::note_box_free();
         unsafe { *(block as *mut u64) = CLASS_POISON };
         unsafe { free(block) };
         return;
@@ -389,6 +394,7 @@ pub extern "C" fn kryos_free(ptr: *mut u8) {
     }
     // Poison BEFORE publishing on the freelist: from this moment the block may
     // be handed out again, so a stale pointer to it must be detectable.
+    crate::allocstats::note_box_free();
     unsafe { *(block as *mut u64) = CLASS_POISON };
     POOL.with(|p| p.borrow_mut().freelists[class as usize].push(block));
 }

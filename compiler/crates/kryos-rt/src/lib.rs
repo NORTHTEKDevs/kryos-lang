@@ -256,6 +256,7 @@ impl HeaderPool {
 
 pub mod actor;
 pub mod alloc;
+pub mod allocstats;
 pub mod arc;
 pub mod array;
 pub mod builtins;
