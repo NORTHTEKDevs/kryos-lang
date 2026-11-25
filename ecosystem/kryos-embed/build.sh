@@ -80,7 +80,7 @@ echo "[5/6] link DLL: $OUT_DLL"
 if zig cc -target x86_64-windows-msvc -shared \
        -o "$OUT_DLL" "$LL_EXP" \
        "$KRYOS_RT" "$KRYOS_STD" \
-       -lntdll -luserenv -lws2_32 -ldbghelp -luser32 -lbcrypt -ladvapi32 \
+       -lntdll -luserenv -lws2_32 -ldbghelp -luser32 -lbcrypt -ladvapi32 -lsynchronization \
        -Wno-override-module >/dev/null 2>&1; then
     echo "  PASS  link-dll ($(du -sh "$OUT_DLL" | cut -f1))"
 else

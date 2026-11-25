@@ -54,7 +54,7 @@ link.exe /NOLOGO /SUBSYSTEM:CONSOLE /ENTRY:mainCRTStartup /OUT:"%OUTPUT%" /Brepr
     "%HERE%..\target\release\kryos_stdlib_native.lib" ^
     /NODEFAULTLIB:libcmt.lib msvcrt.lib vcruntime.lib ucrt.lib ^
     legacy_stdio_definitions.lib kernel32.lib ws2_32.lib advapi32.lib ^
-    userenv.lib bcrypt.lib ntdll.lib user32.lib
+    userenv.lib bcrypt.lib ntdll.lib user32.lib synchronization.lib
 if errorlevel 1 exit /b 1
 
 echo done: %OUTPUT%

@@ -130,19 +130,19 @@ fn main() {
 
 | Benchmark (medians of 5) | Kryos LLVM | Rust -O | ratio vs Rust |
 |---|---|---|---|
-| hashmap 1M+1M | 0.086s | 0.147s | 0.59x (beats Rust) |
-| matmul 512^2 | 0.620s | 0.645s | 0.96x |
-| mandelbrot 1000^2 x1000 | 0.383s | 0.381s | 1.00x |
-| fib(40) | 0.362s | 0.358s | 1.01x |
-| fannkuch-redux(10) | 0.204s | 0.196s | 1.04x |
-| nbody 2M steps | 0.150s | 0.112s | 1.34x |
-| binary_trees d16 | 1.455s | 0.772s | 1.88x |
+| hashmap 1M+1M | 0.084s | 0.144s | 0.58x (beats Rust) |
+| matmul 512^2 | 0.622s | 0.697s | 0.89x |
+| mandelbrot 1000^2 x1000 | 0.385s | 0.373s | 1.03x |
+| fib(40) | 0.357s | 0.348s | 1.02x |
+| fannkuch-redux(10) | 0.194s | 0.200s | 0.97x |
+| nbody 2M steps | 0.152s | 0.109s | 1.39x |
+| binary_trees d16 | 1.463s | 0.795s | 1.84x |
 
-Kryos is level with Rust (within 4%) on four of the 7 benchmarks and beats it
-outright on hashmap (0.59x). It trails on nbody (1.34x; level with clang and
-clang++ -O2 at 0.154s and 0.158s) and on binary_trees (1.88x; it was 1.42x at
+Kryos is level with Rust (0.89x to 1.03x, inside the spreads of this noisy run) on four of the 7 benchmarks and beats it
+outright on hashmap (0.58x). It trails on nbody (1.39x; level with clang and
+clang++ -O2 at 0.150s and 0.150s) and on binary_trees (1.84x; it was 1.42x at
 1.0.0-rc.2, and most of the slowdown is a memory leak: its `shared` nodes are
-never freed, LEDGER item 137). Measured on 1.3.0, 2026-11-03. Full methodology,
+never freed, LEDGER item 137). Measured on 1.3.0, 2026-11-22. Full methodology,
 spreads, and the per-benchmark analysis: [BENCHMARKS.md](../BENCHMARKS.md).
 
 The compiler applies five MIR-level optimization passes before handing off to the backend:

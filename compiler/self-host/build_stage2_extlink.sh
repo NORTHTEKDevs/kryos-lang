@@ -44,6 +44,6 @@ VCVARS="C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools\\VC\\
 RT="target/release/kryos_rt.lib"
 STD="target/release/kryos_stdlib_native.lib"
 echo "linking $OUT ..."
-cmd.exe /c "call \"$VCVARS\" >NUL && link.exe /NOLOGO /SUBSYSTEM:CONSOLE /ENTRY:mainCRTStartup /STACK:33554432 /Brepro /OUT:$(cygpath -w "$OUT") $(cygpath -w "$OBJ") $(cygpath -w "$RT") $(cygpath -w "$STD") /NODEFAULTLIB:libcmt.lib msvcrt.lib vcruntime.lib ucrt.lib legacy_stdio_definitions.lib kernel32.lib ws2_32.lib advapi32.lib userenv.lib bcrypt.lib ntdll.lib user32.lib" 2>&1 | grep -iE "error|unresolved|warning LNK" | head -20
+cmd.exe /c "call \"$VCVARS\" >NUL && link.exe /NOLOGO /SUBSYSTEM:CONSOLE /ENTRY:mainCRTStartup /STACK:33554432 /Brepro /OUT:$(cygpath -w "$OUT") $(cygpath -w "$OBJ") $(cygpath -w "$RT") $(cygpath -w "$STD") /NODEFAULTLIB:libcmt.lib msvcrt.lib vcruntime.lib ucrt.lib legacy_stdio_definitions.lib kernel32.lib ws2_32.lib advapi32.lib userenv.lib bcrypt.lib ntdll.lib user32.lib synchronization.lib" 2>&1 | grep -iE "error|unresolved|warning LNK" | head -20
 [ ! -f "$OUT" ] && { echo "FAIL: link did not produce $OUT"; exit 1; }
 echo "stage-2: $(wc -c < "$OUT") bytes -> $OUT"

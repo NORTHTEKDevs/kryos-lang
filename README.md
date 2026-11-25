@@ -45,7 +45,7 @@ kryos run hello.kry
 
 ## In one minute
 
-- **It's fast.** Native binaries via LLVM. On 1.3.0 Kryos takes 0.59x to 1.04x of Rust's time on five of seven benchmarks and 1.34x and 1.88x on the other two, and is 32x to 307x faster than Python on five of them. Measured medians, methodology, and where Kryos loses (and why) in [BENCHMARKS.md](BENCHMARKS.md).
+- **It's fast.** Native binaries via LLVM. On 1.3.0 Kryos takes 0.58x to 1.03x of Rust's time on five of seven benchmarks and 1.39x and 1.84x on the other two, and is 33x to 294x faster than Python on five of them. Measured medians, methodology, and where Kryos loses (and why) in [BENCHMARKS.md](BENCHMARKS.md).
 - **It's safe.** Memory safety by construction (ARC + move semantics), no `'a` lifetime annotations, no GC pauses. This is a Swift-like ownership model - simpler than Rust's borrow checker, and not equivalent to its compile-time guarantees (no data-race freedom proofs). Known exceptions on 1.3.0: values linked through `shared` pointers are never freed, one `shared` shape corrupts the heap in release builds, and a `match` on an `Option` field of a struct parameter leaks its payload (LEDGER items 137 to 139). Capability-typed effects catch I/O leaks at compile time.
 - **It's small.** One binary, no LLVM dependency for development, ~20 MB compiler, ~700 MB to build from source.
 - **It runs anywhere.** Native (Linux / macOS / Windows / Intel / Apple Silicon) from the same source, plus an explicit-subset WebAssembly target (scalars, strings, closures, host-import I/O - anything outside the subset is a clear compile error, never a miscompile; see [docs/wasm-contract.md](docs/wasm-contract.md)).
@@ -234,15 +234,15 @@ Medians of 5 runs on Kryos 1.3.0, in seconds (lower is better). [BENCHMARKS.md](
 
 | Benchmark | Kryos (LLVM) | Rust -O | clang -O2 | clang++ -O2 | Go | Python | Kryos / Rust |
 |---|---|---|---|---|---|---|---|
-| fib | 0.362 | 0.358 | 0.356 | 0.357 | 0.722 | 17.758 | 1.01x |
-| mandelbrot | 0.383 | 0.381 | 0.381 | 0.373 | 0.391 | 20.466 | 1.00x |
-| nbody | 0.150 | 0.112 | 0.154 | 0.158 | 0.258 | 46.104 | 1.34x |
-| binary_trees | 1.455 | 0.772 | 0.691 | 0.732 | 0.492 | 2.389 | 1.88x |
-| fannkuch | 0.204 | 0.196 | 0.192 | 0.187 | 0.197 | 6.542 | 1.04x |
-| matmul | 0.620 | 0.645 | 0.645 | 0.643 | 0.561 | 34.818 | 0.96x |
-| hashmap | 0.086 | 0.147 | n/a | 0.487 | 0.159 | 0.671 | 0.59x |
+| fib | 0.357 | 0.348 | 0.356 | 0.371 | 0.720 | 17.145 | 1.02x |
+| mandelbrot | 0.385 | 0.373 | 0.380 | 0.427 | 0.495 | 20.121 | 1.03x |
+| nbody | 0.152 | 0.109 | 0.150 | 0.150 | 0.309 | 44.592 | 1.39x |
+| binary_trees | 1.463 | 0.795 | 0.746 | 0.769 | 0.490 | 2.333 | 1.84x |
+| fannkuch | 0.194 | 0.200 | 0.217 | 0.192 | 0.198 | 6.406 | 0.97x |
+| matmul | 0.622 | 0.697 | 0.653 | 0.653 | 0.592 | 34.344 | 0.89x |
+| hashmap | 0.084 | 0.144 | n/a | 0.585 | 0.228 | 0.548 | 0.58x |
 
-Kryos is level with Rust (within 4%) on recursion and on floating-point and integer loops (fib, mandelbrot, fannkuch, matmul), and faster on map-heavy code (hashmap). It trails on nbody (1.34x) and on allocation-heavy recursion (binary_trees, 1.88x). binary_trees was 1.42x at 1.0.0-rc.2; most of the slowdown is a memory leak: its `shared` nodes are never freed (LEDGER item 137). The per-benchmark analysis, "where we lose and why", is in [BENCHMARKS.md](BENCHMARKS.md).
+Kryos is level with Rust (0.89x to 1.03x, inside this run's noisy spreads) on recursion and on floating-point and integer loops (fib, mandelbrot, fannkuch, matmul), and faster on map-heavy code (hashmap). It trails on nbody (1.39x) and on allocation-heavy recursion (binary_trees, 1.84x). binary_trees was 1.42x at 1.0.0-rc.2; most of the slowdown is a memory leak: its `shared` nodes are never freed (LEDGER item 137). The per-benchmark analysis, "where we lose and why", is in [BENCHMARKS.md](BENCHMARKS.md).
 
 ---
 

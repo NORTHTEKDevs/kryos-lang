@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Windows AOT builds (`kryos build --release`) failed to link with a current Rust toolchain (rustc 1.100: `LNK2019 unresolved
+  external symbol __imp_WakeByAddressSingle`). The runtime link line now includes `synchronization`.
+
 ## [1.3.0] - 2026-11-03
 
 Capability-boundary release. It closes the ways a program or a shipped binary

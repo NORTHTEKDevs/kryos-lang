@@ -6,14 +6,17 @@ name: Publish VS Code extension
 #      -> New Token -> Organization: "All accessible organizations",
 #      Scopes: Marketplace -> Manage. Copy it.
 #   3. gh secret set VSCE_PAT -R NORTHTEKDevs/kryos-lang
-# Then run this workflow (Actions tab -> Publish VS Code extension -> Run),
-# or it fires automatically when a release is published.
+# Then run this workflow by hand (Actions tab -> Publish VS Code extension -> Run).
+# The `release: published` trigger below does NOT fire for releases cut by
+# release.yml: that release is created with the default GITHUB_TOKEN, and
+# GitHub starts no workflow from an event raised by that token (open item A23,
+# tools/loop/LEDGER.md). Until a workflow_call from release.yml is proven on a
+# real tag, publishing is manual.
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag whose .vsix to publish"
-        default: "v1.0.0"
+        description: "Release tag whose .vsix to publish (e.g. v1.3.0)"
         required: true
       verify_only:
         description: "Only verify the stored VSCE_PAT (no publish) -- use after rotating the token"
