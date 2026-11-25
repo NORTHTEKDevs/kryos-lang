@@ -6648,9 +6648,7 @@ fn translate_rvalue<M: Module>(
                 .and_then(|variant| variant.fields.get(*field_idx as usize))
                 .cloned();
             match payload_mir_ty {
-                // (A `shared` payload is a pure bit-copy like the others: the
-                // MIR bind retains it when the binding must own a reference.)
-                Some(MirType::Function { .. }) => {
+                Some(MirType::Function { .. }) | Some(MirType::Shared(_)) => {
                     let retain_ref = ensure_func_ref_with_args(
                         "kryos_arc_retain",
                         builder,

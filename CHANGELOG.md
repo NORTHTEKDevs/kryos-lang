@@ -16,11 +16,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `return *s`, `Some(*s)`, `cur = (*n).next`) takes its own owner. Release
   builds of the item 138 repro (`return shared x` of a struct parameter, linked
   into a list) no longer corrupt the heap.
-- Dropping a very long `shared` chain no longer recurses the native stack (a
-  300000-node list is freed iteratively), `enum` variants with `shared`
-  payloads and `[shared T]` arrays are freed on both backends, and a `shared`
-  handle stored in a struct literal, an array literal, a field or a `let`
-  alias takes its own reference.
 - A `match` on an `Option` field of a struct passed by value frees the struct
   and the field's payload (LEDGER item 139), about 100 bytes per call.
 

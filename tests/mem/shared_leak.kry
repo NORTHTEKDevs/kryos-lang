@@ -14,12 +14,6 @@
 //   shared_scalar  control: `let a = shared <int>`
 //   plain_embedded control: plain struct with a str field, `sum = sum + f(p)`
 //   array_tree     control: recursive struct built from arrays
-//   enum_shared    item 137: user enum whose variants hold `shared` payloads,
-//                  passed by value to a matching function
-//   index_read     item 137: `[shared N]` built with push, an element read
-//                  through `(*arr[j]).v`
-//   bind_consumers item 137: a `shared` handle moved into a struct literal, an
-//                  array literal, a field assignment and a let alias
 // Every mode prints one deterministic line: `mode <mode> sum <n>`.
 use std::option::{Option}
 
@@ -29,52 +23,6 @@ struct P { name: str, n: i64 }
 struct Node { kids: [Node], v: i64 }
 struct In { s: str }
 struct Hold { o: Option<In>, n: i64 }
-enum Lst { Nil, Cons(i64, shared Lst) }
-struct N { v: i64, tag: str }
-struct Box1 { h: shared N, k: i64 }
-
-fn build_lst(d: i64) -> Lst {
-    if d == 0 { return Lst.Nil() }
-    return Lst.Cons(d, shared build_lst(d - 1))
-}
-
-fn sum_lst(e: Lst) -> i64 {
-    match e {
-        Lst.Nil => { return 0 },
-        Lst.Cons(n, a) => { return n + sum_lst(*a) },
-    }
-}
-
-fn fill(i: i64) -> [shared N] {
-    let mut arr: [shared N] = []
-    let mut j = 0
-    while j < 5 {
-        let s: shared N = shared N { v: i * 10 + j, tag: "e" + to_string(j) }
-        arr = push(arr, s)
-        j = j + 1
-    }
-    return arr
-}
-
-fn read_arr(arr: [shared N]) -> i64 {
-    let mut t = 0
-    let mut j = 0
-    while j < 5 {
-        t = t + (*arr[j]).v
-        j = j + 1
-    }
-    return t
-}
-
-fn consumers(i: i64) -> i64 {
-    let a: shared N = shared N { v: i, tag: "c" + to_string(i) }
-    let b = Box1 { h: a, k: 1 }
-    let c = [a, a]
-    let mut d = Box1 { h: shared N { v: 0, tag: "z" }, k: 2 }
-    d.h = a
-    let e = a
-    return b.k + d.k + 1
-}
 
 fn make(depth: i64) -> Tree {
     if depth == 0 {
@@ -160,13 +108,6 @@ fn main() {
         } elif mode == "match_field" {
             let h = Hold { o: Some(In { s: "payload-" + to_string(i) + "-pad" }), n: i }
             sum = sum + hold_len(h)
-        } elif mode == "enum_shared" {
-            sum = sum + sum_lst(build_lst(20))
-        } elif mode == "index_read" {
-            let arr = fill(i)
-            sum = sum + read_arr(arr)
-        } elif mode == "bind_consumers" {
-            sum = sum + consumers(i)
         } elif mode == "array_tree" {
             let t = mk_node(10)
             sum = sum + count(t)

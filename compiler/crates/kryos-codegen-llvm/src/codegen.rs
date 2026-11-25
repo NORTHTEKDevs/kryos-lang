@@ -2796,17 +2796,6 @@ impl LlvmCodegen {
             self.emit_line("}");
             self.emit_blank();
         }
-        // `shared <enum>`: the arc's drop function releases the payload (the
-        // arc block itself is freed by `kryos_arc_release`).
-        let arc_enum_names: Vec<String> = self.enum_defs.keys().cloned().collect();
-        for name in arc_enum_names {
-            self.emit_line(&format!("define internal void @__kryos_arc_drop_enum_{name}(ptr %ptr) {{"));
-            self.emit_line("entry:");
-            self.emit_enum_drop_payload("%ptr", &name, &dummy);
-            self.emit_line("  ret void");
-            self.emit_line("}");
-            self.emit_blank();
-        }
         // The enum analog: a map's enum value is an arc box holding the
         // inline `{ tag, words.. }`; released like a map-slot overwrite
         // releases one (payload, then the box).
@@ -8153,14 +8142,6 @@ impl LlvmCodegen {
                             Some(MirType::Function { .. }) => Some(("kryos_fn_retain", false)),
                             _ => None,
                         };
-                        // A `shared` element: the reader owns an arc reference
-                        // (as on Cranelift), released by its binding's drop or
-                        // by the statement-end cleanup of a read-only temp.
-                        if matches!(elem_mir, Some(MirType::Shared(_))) {
-                            let p = self.next_temp();
-                            self.emit_line(&format!("  {p} = inttoptr i64 {raw} to ptr"));
-                            self.emit_line(&format!("  call void @kryos_arc_retain(ptr {p})"));
-                        }
                         if let Some((rf, as_ptr)) = retain {
                             if as_ptr {
                                 let p = self.next_temp();
@@ -8302,20 +8283,6 @@ impl LlvmCodegen {
                             self.emit_line(&format!(
                                 "  call void @kryos_arc_set_drop(ptr {target_name}, ptr @__kryos_arc_drop_{sname})"
                             ));
-                        }
-                    }
-                    // An enum value (an inline `{ tag, words.. }`): released
-                    // with its payload (a `shared` child, a str, ..) at the
-                    // last owner, like a struct's fields.
-                    if let Operand::Local(l) = inner {
-                        if let Some(MirType::Enum(en)) =
-                            func.locals.iter().find(|x| x.id == *l).map(|x| &x.ty)
-                        {
-                            if self.enum_defs.contains_key(en.as_str()) {
-                                self.emit_line(&format!(
-                                    "  call void @kryos_arc_set_drop(ptr {target_name}, ptr @__kryos_arc_drop_enum_{en})"
-                                ));
-                            }
                         }
                     }
                 } else {
