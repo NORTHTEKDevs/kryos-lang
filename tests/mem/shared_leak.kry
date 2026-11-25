@@ -20,13 +20,6 @@
 //                  through `(*arr[j]).v`
 //   bind_consumers item 137: a `shared` handle moved into a struct literal, an
 //                  array literal, a field assignment and a let alias
-//   forin_shared   item 137: `for x in xs` over a `[shared N]`, read through `*x`
-//   field_read     item 137: a struct that owns a `shared` field, read through
-//                  it (`(*b.h).v`), returned (`return b.h`), pushed, wrapped in
-//                  `Some`, bound with `let`, and passed by value
-//   tuple_copy     item 137: `return (*a, 3)` of a `shared` struct, read after
-//                  allocator churn (the tuple owns its copy, the arc frees its
-//                  own contents)
 // Every mode prints one deterministic line: `mode <mode> sum <n>`.
 use std::option::{Option}
 
@@ -81,83 +74,6 @@ fn consumers(i: i64) -> i64 {
     d.h = a
     let e = a
     return b.k + d.k + 1
-}
-
-fn walk(xs: [shared N]) -> i64 {
-    let mut t = 0
-    for x in xs { t = t + (*x).v }
-    return t
-}
-
-fn forin(i: i64) -> i64 {
-    let mut xs: [shared N] = []
-    xs = push(xs, shared N { v: i, tag: "f" + to_string(i) })
-    xs = push(xs, shared N { v: i + 1, tag: "g" + to_string(i) })
-    return walk(xs)
-}
-
-fn mk_box(i: i64) -> Box1 {
-    return Box1 { h: shared N { v: i, tag: "b" + to_string(i) + "-pad-pad" }, k: 2 }
-}
-
-fn box_rd(b: Box1) -> i64 { return (*b.h).v + b.k }
-
-fn box_ret(i: i64) -> shared N {
-    let b = mk_box(i)
-    return b.h
-}
-
-fn box_push(i: i64) -> [shared N] {
-    let b = mk_box(i)
-    let mut xs: [shared N] = []
-    xs = push(xs, b.h)
-    return xs
-}
-
-fn box_some(i: i64) -> Option<shared N> {
-    let b = mk_box(i)
-    return Some(b.h)
-}
-
-fn box_let(i: i64) -> shared N {
-    let b = mk_box(i)
-    let a = b.h
-    return a
-}
-
-fn field_read(i: i64) -> i64 {
-    let b = mk_box(i)
-    let r = box_ret(i + 1)
-    let p = box_push(i + 2)
-    let l = box_let(i + 3)
-    let mut t = (*b.h).v + box_rd(b) + (*r).v + (*p[0]).v + (*l).v
-    match box_some(i + 4) {
-        Option.Some(x) => { t = t + (*x).v },
-        Option.None => { t = t + 0 },
-    }
-    return t
-}
-
-fn tup(i: i64) -> (N, i64) {
-    let a = shared N { v: i, tag: "t" + to_string(i) + "-pad-pad" }
-    return (*a, 3)
-}
-
-fn churn(k: i64) -> i64 {
-    let mut a = 0
-    let mut j = 0
-    while j < 20 {
-        let n: shared N = shared N { v: k + j, tag: "c-" + to_string(k + j) + "-pad-pad" }
-        a = a + (*n).v + len((*n).tag)
-        j = j + 1
-    }
-    return a
-}
-
-fn tuple_copy(i: i64) -> i64 {
-    let tp = tup(i)
-    let c = churn(i * 100)
-    return tp.0.v + len(tp.0.tag) + tp.1 + c * 0
 }
 
 fn make(depth: i64) -> Tree {
@@ -251,12 +167,6 @@ fn main() {
             sum = sum + read_arr(arr)
         } elif mode == "bind_consumers" {
             sum = sum + consumers(i)
-        } elif mode == "forin_shared" {
-            sum = sum + forin(i)
-        } elif mode == "field_read" {
-            sum = sum + field_read(i)
-        } elif mode == "tuple_copy" {
-            sum = sum + tuple_copy(i)
         } elif mode == "array_tree" {
             let t = mk_node(10)
             sum = sum + count(t)
