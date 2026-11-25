@@ -1,59 +1,623 @@
-{
-  "project": "kryos-lang",
-  "features": [
-    {
-      "id": "nested_binop_corruption",
-      "title": "Parsing a nested binary expression must not corrupt a later tokenize",
-      "acceptance_test": "cd compiler/self-host && ../target/release/kryos.exe run known_failure_nested_binop.kry | tail -1 | grep -q 'after parse: 31 tokens'",
-      "status": "passing",
-      "priority": "high",
-      "blocked": false,
-      "blocked_reason": ""
-    },
-    {
-      "id": "selfhost_mini_parser",
-      "title": "stage1_mini_parser.kry runs to completion with 0 double-frees",
-      "acceptance_test": "cd compiler/self-host && ../target/release/kryos.exe run stage1_mini_parser.kry | tail -1 | grep -q 'stage 1 mini-parser: ok'",
-      "status": "failing",
-      "priority": "high",
-      "blocked": false,
-      "blocked_reason": ""
-    },
-    {
-      "id": "spawn_loop_capture",
-      "title": "Cranelift must not share one box for a loop-local aggregate captured by spawn",
-      "acceptance_test": "compiler/target/release/kryos.exe run tests/known_failures/spawn_loop_capture.kry -- expect four distinct values, not 30 30 30 30",
-      "status": "failing",
-      "priority": "medium",
-      "blocked": false,
-      "blocked_reason": ""
-    },
-    {
-      "id": "struct_arg_leak",
-      "title": "Passing a struct with heap fields across a call boundary must not leak (~86MB/1M)",
-      "acceptance_test": "tests/mem/struct_arg_leak.kry -- heap_field_method peak RSS must not scale with iteration count (compare 250k vs 1M, repeat each 3x)",
-      "status": "failing",
-      "priority": "medium",
-      "blocked": false,
-      "blocked_reason": ""
-    },
-    {
-      "id": "comptime_docs",
-      "title": "comptime{} runs at runtime while docs sell compile-time -- correct the docs",
-      "acceptance_test": "docs no longer claim compile-time evaluation guarantees for comptime{}",
-      "status": "failing",
-      "priority": "low",
-      "blocked": false,
-      "blocked_reason": ""
-    },
-    {
-      "id": "dyn_array_e0110",
-      "title": "[dyn Handler] should report E0110, not a confusing E0100",
-      "acceptance_test": "a program with `let hs: [dyn Handler] = [A{}, B{}]` reports E0110",
-      "status": "failing",
-      "priority": "low",
-      "blocked": false,
-      "blocked_reason": ""
-    }
-  ]
-}
+[
+  {
+    "id": "swa_closure",
+    "title": "swa:closure: 19 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(swa:closure/swa\\-undeclared\\-payload\\-type\\-afe805d7/a2_arr_ctor_println|swa:closure/swa\\-undeclared\\-payload\\-type\\-afe805d7/a2_ctor_in_ternary_if|swa:closure/swa\\-undeclared\\-payload\\-type\\-afe805d7/a2_for_ctor_array|swa:closure/swa\\-undeclared\\-payload\\-type\\-afe805d7/a2_generic_pr|swa:closure/swa\\-undeclared\\-payload\\-type\\-afe805d7/a2_let_println|swa:closure/swa\\-undeclared\\-payload\\-type\\-afe805d7/a2_ret_ctor_unannot_fn|swa:closure/swa\\-undeclared\\-payload\\-type\\-afe805d7/m1_array_lit|swa:closure/swa\\-undeclared\\-payload\\-type\\-afe805d7/m1_concat|swa:closure/swa\\-undeclared\\-payload\\-type\\-afe805d7/m1_f64|swa:closure/swa\\-undeclared\\-payload\\-type\\-afe805d7/m1_for_concat|swa:closure/swa\\-undeclared\\-payload\\-type\\-afe805d7/m1_in_closure|swa:closure/swa\\-undeclared\\-payload\\-type\\-afe805d7/m1_in_method|swa:closure/swa\\-undeclared\\-payload\\-type\\-afe805d7/m1_interp_concat|swa:closure/swa\\-undeclared\\-payload\\-type\\-afe805d7/m1_method_len|swa:closure/swa\\-undeclared\\-payload\\-type\\-afe805d7/m1_std_qualified_let|swa:closure/swa\\-undeclared\\-payload\\-type\\-afe805d7/m1_to_string_idx|swa:closure/swa\\-undeclared\\-payload\\-type\\-afe805d7/m1_while_cond|swa:closure/swa\\-undeclared\\-payload\\-type\\-afe805d7/m1_len_idx|swa:closure/swa\\-undeclared\\-payload\\-type\\-afe805d7/m1_unobserved_opt)$'",
+    "status": "failing",
+    "priority": "high",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "6",
+    "title": "6: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(6)$'",
+    "status": "failing",
+    "priority": "high",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "a8",
+    "title": "A8: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(A8)$'",
+    "status": "failing",
+    "priority": "high",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "122_typecheck",
+    "title": "122-typecheck: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(122\\-typecheck)$'",
+    "status": "failing",
+    "priority": "high",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "a1",
+    "title": "A1: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(A1)$'",
+    "status": "failing",
+    "priority": "high",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "m3",
+    "title": "M3: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(M3)$'",
+    "status": "failing",
+    "priority": "high",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "a6",
+    "title": "A6: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(A6)$'",
+    "status": "failing",
+    "priority": "high",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "a5",
+    "title": "A5: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(A5)$'",
+    "status": "failing",
+    "priority": "high",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "a4",
+    "title": "A4: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(A4)$'",
+    "status": "failing",
+    "priority": "high",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "nan_neg0_divergence",
+    "title": "NaN-neg0-divergence: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(NaN\\-neg0\\-divergence)$'",
+    "status": "failing",
+    "priority": "high",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "libm_constfold",
+    "title": "libm-constfold: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(libm\\-constfold)$'",
+    "status": "failing",
+    "priority": "high",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "a20",
+    "title": "A20: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(A20)$'",
+    "status": "failing",
+    "priority": "high",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "m6",
+    "title": "M6: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(M6)$'",
+    "status": "failing",
+    "priority": "high",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "m2",
+    "title": "M2: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(M2)$'",
+    "status": "failing",
+    "priority": "high",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "swa_attacks",
+    "title": "swa:attacks: 15 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(swa:attacks/swa\\-undeclared\\-payload\\-type\\-afe805d7/b12|swa:attacks/swa\\-undeclared\\-payload\\-type\\-afe805d7/c01|swa:attacks/swa\\-undeclared\\-payload\\-type\\-afe805d7/c03|swa:attacks/swa\\-undeclared\\-payload\\-type\\-afe805d7/c04|swa:attacks/swa\\-undeclared\\-payload\\-type\\-afe805d7/c05|swa:attacks/swa\\-undeclared\\-payload\\-type\\-afe805d7/c06|swa:attacks/swa\\-undeclared\\-payload\\-type\\-afe805d7/c09|swa:attacks/swa\\-undeclared\\-payload\\-type\\-afe805d7/d01|swa:attacks/swa\\-undeclared\\-payload\\-type\\-afe805d7/d02|swa:attacks/swa\\-undeclared\\-payload\\-type\\-afe805d7/d05|swa:attacks/swa\\-undeclared\\-payload\\-type\\-afe805d7/d10|swa:attacks/swa\\-undeclared\\-payload\\-type\\-afe805d7/f01|swa:attacks/swa\\-undeclared\\-payload\\-type\\-afe805d7/f02|swa:attacks/swa\\-undeclared\\-payload\\-type\\-afe805d7/f03|swa:attacks/swa\\-undeclared\\-payload\\-type\\-afe805d7/f04)$'",
+    "status": "failing",
+    "priority": "high",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "136",
+    "title": "136: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(136)$'",
+    "status": "failing",
+    "priority": "high",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "docs_stability_stale",
+    "title": "docs-stability-stale: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(docs\\-stability\\-stale)$'",
+    "status": "failing",
+    "priority": "high",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "docs_claude_narrow_int",
+    "title": "docs-claude-narrow-int: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(docs\\-claude\\-narrow\\-int)$'",
+    "status": "failing",
+    "priority": "high",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "2c_hardrule6",
+    "title": "2c-hardrule6: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(2c\\-hardrule6)$'",
+    "status": "failing",
+    "priority": "high",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "m7",
+    "title": "M7: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(M7)$'",
+    "status": "failing",
+    "priority": "high",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "a7",
+    "title": "A7: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(A7)$'",
+    "status": "failing",
+    "priority": "high",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "a3",
+    "title": "A3: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(A3)$'",
+    "status": "failing",
+    "priority": "high",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "a9",
+    "title": "A9: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(A9)$'",
+    "status": "failing",
+    "priority": "high",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "asi_nonw0001_tokens",
+    "title": "ASI-nonW0001-tokens: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(ASI\\-nonW0001\\-tokens)$'",
+    "status": "failing",
+    "priority": "high",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "135",
+    "title": "135: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(135)$'",
+    "status": "failing",
+    "priority": "high",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "buf_get_byte_sentinel",
+    "title": "buf_get_byte-sentinel: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(buf_get_byte\\-sentinel)$'",
+    "status": "failing",
+    "priority": "high",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "abort_undefined",
+    "title": "abort-undefined: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(abort\\-undefined)$'",
+    "status": "failing",
+    "priority": "high",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "import_shadows_builtin",
+    "title": "import-shadows-builtin: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(import\\-shadows\\-builtin)$'",
+    "status": "failing",
+    "priority": "high",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "import_struct_reachability",
+    "title": "import-struct-reachability: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(import\\-struct\\-reachability)$'",
+    "status": "failing",
+    "priority": "high",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "turbofish_struct",
+    "title": "turbofish-struct: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(turbofish\\-struct)$'",
+    "status": "failing",
+    "priority": "high",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "a21",
+    "title": "A21: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(A21)$'",
+    "status": "failing",
+    "priority": "high",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "a22",
+    "title": "A22: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(A22)$'",
+    "status": "failing",
+    "priority": "high",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "a23",
+    "title": "A23: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(A23)$'",
+    "status": "failing",
+    "priority": "high",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "m4",
+    "title": "M4: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(M4)$'",
+    "status": "failing",
+    "priority": "high",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "run_tmp_1",
+    "title": "RUN-TMP-1: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(RUN\\-TMP\\-1)$'",
+    "status": "failing",
+    "priority": "high",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "ci_win_1",
+    "title": "CI-WIN-1: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(CI\\-WIN\\-1)$'",
+    "status": "failing",
+    "priority": "high",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "esc",
+    "title": "esc: 23 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(esc:122:attack_deny_trait_default_method_unchecked|esc:125d:attack_fwd_builder_relay_returns_container|esc:125e:attack_fwd_fill_relay_struct_field_after_main|esc:125f:attack_fwd_fill_relay_struct_field_before_main|esc:124g:attack_fwd_mainfirst_verify_actor_to_actor_message|esc:124d:attack_fwd_param_chain_actor_in_deny|esc:124b:attack_fwd_param_chain_container_in_deny|esc:124a:attack_fwd_param_chain_invoke_in_deny|esc:124c:attack_fwd_param_chain_method_in_deny|esc:124e:attack_fwd_rev_hotparam_forward_via_local_alias|esc:124f:attack_fwd_rev_slot_param_helper_chain|esc:125b:attack_fwd_store_relay_global_slot|esc:125c:attack_fwd_store_relay_method|esc:125a:attack_fwd_store_relay_two_hop|esc:123c:attack_slot_dyn_registrar_store|esc:119c:attack_slot_param_array_of_option|esc:119b:attack_slot_param_container_in_result|esc:119a:attack_slot_param_container_in_tuple|esc:123a:attack_slot_param_fn_value_factory|esc:119d:attack_slot_param_option_of_nested_array|esc:123b:attack_slot_param_trait_bound_dispatch|esc:119e:attack_slot_param_tuple_of_two_arrays|esc:escape_status\\.sh)$'",
+    "status": "failing",
+    "priority": "medium",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "cap_r2_storage_paths",
+    "title": "cap:r2-storage-paths: 66 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^cap:r2\\-storage\\-paths[-:/]'",
+    "status": "failing",
+    "priority": "medium",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "cap_r4_select_spawn",
+    "title": "cap:r4-select-spawn: 4 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(cap:r4\\-select\\-spawn\\-8ddd3526/a_t26|cap:r4\\-select\\-spawn\\-c752e8c2/c2|cap:r4\\-select\\-spawn\\-c752e8c2/t13|cap:r4\\-select\\-spawn\\-c752e8c2/t13b)$'",
+    "status": "failing",
+    "priority": "medium",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "cap_residual",
+    "title": "cap:residual: 61 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^cap:residual[-:/]'",
+    "status": "failing",
+    "priority": "medium",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "cap_root_f_declaration_order",
+    "title": "cap:root-f-declaration-order: 729 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^cap:root\\-f\\-declaration\\-order[-:/]'",
+    "status": "failing",
+    "priority": "medium",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "cap_trait_default_body",
+    "title": "cap:trait-default-body: 75 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^cap:trait\\-default\\-body[-:/]'",
+    "status": "failing",
+    "priority": "medium",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "assault_f1_f3",
+    "title": "ASSAULT-F1-F3: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(ASSAULT\\-F1\\-F3)$'",
+    "status": "failing",
+    "priority": "medium",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "assault_f6",
+    "title": "ASSAULT-F6: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(ASSAULT\\-F6)$'",
+    "status": "failing",
+    "priority": "medium",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "138",
+    "title": "138: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(138)$'",
+    "status": "failing",
+    "priority": "medium",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "mem_attacks",
+    "title": "mem:attacks: 94 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^mem:attacks[-:/]'",
+    "status": "failing",
+    "priority": "medium",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "mem_closure",
+    "title": "mem:closure: 71 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^mem:closure[-:/]'",
+    "status": "failing",
+    "priority": "medium",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "a10",
+    "title": "A10: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(A10)$'",
+    "status": "failing",
+    "priority": "medium",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "a11",
+    "title": "A11: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(A11)$'",
+    "status": "failing",
+    "priority": "medium",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "m5",
+    "title": "M5: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(M5)$'",
+    "status": "failing",
+    "priority": "medium",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "a17",
+    "title": "A17: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(A17)$'",
+    "status": "failing",
+    "priority": "medium",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "a18",
+    "title": "A18: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(A18)$'",
+    "status": "failing",
+    "priority": "medium",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "a19",
+    "title": "A19: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(A19)$'",
+    "status": "failing",
+    "priority": "medium",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "a16",
+    "title": "A16: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(A16)$'",
+    "status": "failing",
+    "priority": "medium",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "a14",
+    "title": "A14: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(A14)$'",
+    "status": "failing",
+    "priority": "medium",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "a15",
+    "title": "A15: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(A15)$'",
+    "status": "failing",
+    "priority": "medium",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "a13",
+    "title": "A13: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(A13)$'",
+    "status": "failing",
+    "priority": "medium",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "a12",
+    "title": "A12: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(A12)$'",
+    "status": "failing",
+    "priority": "medium",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "leakmode",
+    "title": "leakmode: 2 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(leakmode:throw_locals|leakmode:clo_nested_tuple_arr)$'",
+    "status": "failing",
+    "priority": "medium",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "copy_assign_leak",
+    "title": "copy-assign-leak: 4 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(copy\\-assign\\-leak|copy\\-assign\\-leak:cp_copy_const|copy\\-assign\\-leak:cp_copy_ints|copy\\-assign\\-leak:cp_struct_nocopyvar)$'",
+    "status": "failing",
+    "priority": "medium",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "137",
+    "title": "137: 9 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(137|137:e1|137:e2|137:b19|137:c2|137:d3|137:b17|137:l06|137:n26)$'",
+    "status": "failing",
+    "priority": "medium",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "139",
+    "title": "139: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(139)$'",
+    "status": "failing",
+    "priority": "medium",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "137_perf",
+    "title": "137-perf: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(137\\-perf)$'",
+    "status": "failing",
+    "priority": "medium",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "b5",
+    "title": "B5: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(B5)$'",
+    "status": "failing",
+    "priority": "low",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "b6",
+    "title": "B6: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(B6)$'",
+    "status": "failing",
+    "priority": "low",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "b7",
+    "title": "B7: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(B7)$'",
+    "status": "failing",
+    "priority": "low",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "b9",
+    "title": "B9: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(B9)$'",
+    "status": "failing",
+    "priority": "low",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "41",
+    "title": "41: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(41)$'",
+    "status": "failing",
+    "priority": "low",
+    "blocked": false,
+    "blocked_reason": ""
+  },
+  {
+    "id": "b_latent_intrinsics",
+    "title": "B-latent-intrinsics: 1 failing finish-line entries",
+    "acceptance_test": "bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ --only '^(B\\-latent\\-intrinsics)$'",
+    "status": "failing",
+    "priority": "low",
+    "blocked": false,
+    "blocked_reason": ""
+  }
+]

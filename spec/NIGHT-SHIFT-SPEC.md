@@ -1,77 +1,67 @@
-# Night-Shift Spec -- kryos-lang
+# Night-Shift Spec -- Kryos close-out to v1.4.0
 
 ## Goal
 
-Harden kryos-lang until it can be handed to the public with confidence. "Done"
-means no known silent-wrong-answer or memory-corruption bugs, the capability
-model actually attenuates, and the self-host compiler runs clean. The immediate
-blocker is the last known corruption: parsing a nested binary expression
-corrupts a LATER tokenize on the Cranelift backend.
+Close every live defect in the Kryos 1.3.0 inventory on the integration branch `closeout/integration`
+(worktree ~/projects/experiments/kryos-integ = master + the four closeout tracks merged), so the tree is
+ready to release as v1.4.0. Done means the external acceptance check below exits 0: every finish-line
+item passes on a fresh release build, every control still passes, and the full gate/oracle diff against
+master shows no regression.
 
 ## Acceptance Check
 
 ```bash
-bash tests/acceptance.sh
+bash C:/Users/Krist/projects/experiments/kryos-oracle/finish/accept.sh
 ```
 
-Runs in ~230s. Three conditions, all required: the tier-1 gate ladder, the
-security gate (capability attenuation), and the self-host nested-binop repro
-printing `after parse: 31 tokens`. Manually verified to exit 1 today, failing
-on exactly the third condition while the first two pass.
+accept.sh builds this tree (kbuild.sh), runs finish/run.sh (fail-fast, cheapest items first), and only
+when every item passes runs the gate diff and the run-oracle diff. It lives OUTSIDE the repo on purpose.
+Per-item status: `bash .../finish/run.sh C:/Users/Krist/projects/experiments/kryos-integ` (no --fast)
+prints `PASS|FAIL <id> <reason>` for every item. Read finish/README.md for what each item checks.
 
-## Feature List
+## Order of work (priority field in features.json)
 
-See `spec/features.json`. Ranked by seriousness for the intended use case
-(capability-attenuated agent infrastructure), NOT by which gate is red:
-trust-model hole > silent wrong answer > blocks CI > leak > papercut.
+1. swa (silent wrong answers): A2, bare-result-option, 6, A8, 122-typecheck, A1, M1, M3, M6, A20, A5 ...
+   A prior UNVERIFIED revision of the bare Result/Option work exists as
+   kryos-oracle/swa_uncommitted_revision_2026-11-21.patch. It was abandoned mid-round: reuse only what
+   you re-verify against finish/run.sh.
+2. misc: RUN-TMP-1 (kryos run must link to a unique per-invocation path), parser/import items, docs items,
+   crashes/ICEs (A7, A3, A9, 135, A22, ...).
+3. cap: escape_status.sh must reach STILL ESCAPING 0 with every ctl_* control accepted. Items 124/125
+   were reopened by the 2026-11-24 revert; read the "Revert wave: residual verdict" LEDGER entry first --
+   its verifier findings are the wall.
+4. mem: 137/138/139 and the A10-A19 leaks. Read the LEDGER entry "Wave: shared-ownership REVERTED"
+   before writing any code. The required design: ONE ownership rule for shared handles in the MIR -- a
+   handle slot owns exactly one reference, every copy retains, every overwrite and scope exit releases.
+   Per-consumer-shape patches are forbidden (they failed twice). Perf budget (owner-approved
+   2026-11-25): binary_trees release AOT within 1.10x of the budget in finish/README.md and bounded
+   peak memory. A cheaper arc release (non-atomic count for arcs that never cross a thread, skipping
+   bounded-drain bookkeeping on the shallow case) is in scope if needed to meet budget.
+5. doc items (B5, B6, B7, 41, B-latent-intrinsics, B9): document as known limitations in STABILITY.md
+   with id and workaround, exactly as finish/README.md specifies.
 
-## Working method -- follow this, it is what has worked
+## Intended behaviour changes
 
-Read `tools/loop/LEDGER.md` FIRST. It carries the ranked queue, what has
-already been RULED OUT for each bug, and the measurement traps. Do not
-re-derive a disproven theory; several are recorded specifically to stop that.
+Stage 3b compares every repo program's runtime output against master. A fix that corrects a wrong
+answer changes master's output on purpose: list each such program in tools/loop/closeout_targets.txt
+as `<path>  # <item id>: <why master's output was wrong>`. Never list a program to silence a change you
+cannot explain; an independent verifier re-checks every line before release.
 
-1. **Reproduce before theorising.** `tools/loop/kryos-loop.sh repro <file>`.
-   Three attributions were wrong in one session from reading code instead of
-   measuring it.
-2. **Bisect mechanically** -- commit-level (`git cherry-pick` into a worktree)
-   or program reduction. Never hand-edit a hypothesis in and treat the result
-   as evidence; one such edit silently removed more than intended and produced
-   a confident wrong answer.
-3. **Prove both directions.** A test that cannot fail is not a test. Verify it
-   fails without the fix.
-4. **Run `tools/loop/kryos-loop.sh gates 2` before committing.** The acceptance
-   check only runs tier 1 for speed; tier 2 must be green too.
-5. **Update the LEDGER in the same commit**, including anything newly ruled out.
+## Safety Rules
 
-## Known measurement traps (each cost real time)
-
-- `cargo build -p kryos-cli` does NOT regenerate the staticlib archives an
-  AOT program links. Runtime edits are invisible until a full
-  `cargo build --release`. Run `kryos-loop.sh preflight` first, every time.
-- Bootstrap fails spuriously with rc=127 on rotating modules under load. Only a
-  failure reproduced on a SOLO run is real. It is excluded from the acceptance
-  check for this reason.
-- A single peak-RSS reading is noise. Repeat it three times before believing a
-  leak number -- an "82% reduction" this session was a sampling artifact.
-- `KRYOS_FREE_DIAG=1` completing while the program normally crashes means the
-  crash IS memory corruption, not the reported error.
-- `kryos_string_clone` is a refcount bump returning the SAME pointer, not a
-  deep copy.
-
-## Safety rules
-
-- NEVER delete or weaken a test to make the check pass. Making a gate unable to
-  fail is the worst possible outcome here.
-- NEVER modify `tests/acceptance.sh`, this spec, or `spec/features.json`
-  except the `status` field.
-- NEVER revert the security gate or the raw-memory capability gating.
-- NEVER force-push. Commit and push to `master` normally.
-- If a change does not fix its target, REVERT it rather than leaving it in.
-- Prefer a truthful BLOCKED over a green achieved by lowering the bar.
-
-## Test command
-
-```bash
-bash tests/acceptance.sh
-```
+- Work ONLY in ~/projects/experiments/kryos-integ on branch closeout/integration. Never checkout, commit
+  to, or reset any other branch or worktree (parallel sessions drive kryos-lang). Never push.
+- Never edit anything under ~/projects/experiments/kryos-oracle (the check and its programs).
+- Never delete, weaken, or skip an existing test or gate. Add tests; each new pin must FAIL on master
+  (kryos-co-nov binary) and pass on this tree -- show both outputs in the commit message body.
+- One feature per iteration. Before marking a feature passing: its run.sh line is PASS on a fresh build
+  AND `bash run.sh <tree> --fast` shows no item that passed before now failing.
+- If a fix needs a change you cannot make sound in this iteration, revert your partial edit (git checkout
+  of the files you touched) rather than committing a half-fix, and record the wall in tools/loop/LEDGER.md.
+- Every fix gets a LEDGER.md entry: item id, root cause, files, both-ways evidence, residual shapes you
+  know are NOT covered. Never write DONE/closed for a shape you did not execute.
+- Cargo is at ~/.rustup/toolchains/stable-x86_64-pc-windows-msvc/bin (not on PATH). Build with
+  `bash C:/Users/Krist/projects/experiments/kryos-oracle/kbuild.sh <tree>` (machine-wide build slots).
+- Windows Defender quarantines some Kryos test exes (ML false positive, Bearfoos): a missing exe after a
+  build is that, not your bug; re-run.
+- `kryos run` uses a fixed temp path until RUN-TMP-1 is fixed: never run two same-name programs at once.
