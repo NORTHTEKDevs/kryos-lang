@@ -10,6 +10,73 @@ green CI) > (leak) > (papercut). A silent wrong answer outranks a crash - a
 crash announces itself. A trust-model hole outranks both: nothing above it in
 the stack can be sound if the boundary leaks.
 
+## Wave: shared-ownership REVERTED -- items 137 and 139 stay OPEN; two revision rounds did not survive independent verification (2026-11-24)
+
+The wave (11 commits 8b14d6e4..67941974 on closeout/mem, base 53d24db7) was reverted
+commit by commit; `git diff 53d24db7 HEAD -- compiler tests` is empty. None of it is
+on the branch. This entry exists so the next attempt starts from the wall.
+
+ATTEMPTED
+- 139: free a struct whose Option field was matched (lower.rs). Closed only payloads
+  that own a reference at the bind (Option<struct with str>, Option<str>, array).
+- 137: free values linked through `shared` pointers: kryos-rt arc.rs bounded recursive
+  free (32 KB stack bound, MAX_DROP_STACK, DROP_BASE / DROP_PENDING thread-locals),
+  Cranelift arc drop thunk, shared enum arc drop, `*s` copy owns its reference, a shared
+  payload bind owns its reference, a shared field read is an alias (never a move) and
+  each consumer takes its own retain (return b.h, push(xs, b.h), Some(b.h), let a = b.h),
+  for-in over [shared T] releases the per-element reference, a named or fresh shared
+  argument lent to a user fn is released, `let b = a` of a shared param no longer
+  retains twice. Mostly compiler/crates/kryos-mir/src/lower.rs plus both codegens.
+- Result at the time: binary_trees peak 1126 MB -> 24 MB, tests/mem leak probes
+  balanced, 750 50-run loops clean, full allgates 89 run / 0 nonzero, oracle diff bad=0.
+
+VERIFIER FAILURES (all against head 67941974)
+1. Landing rule A performance clause NOT MET. Release AOT, LEAK_ITERS=1000, interleaved:
+   tree_drop master 222-230 ms vs head 296-307 (+30%), list_drop ~221-224 vs 275-277
+   (+24%), tree_let_call 239-248 vs 331-335 (+36%). binary_trees AOT median 1450 vs
+   1564 (+7.8%, min +7.6%); the closure verifier measured best-vs-best +10.5% under load.
+   Cause: master never frees these values, so the cost is the free itself; no cheaper
+   free path was found.
+2. Item 137 not closed for a canonical shape (attack verifier): the linked-list build
+   `cur = shared L { next: Some(cur), .. }` in a loop leaks ~100% of nodes on all
+   backends (allocs=3000 frees=3 live=2997; b19: 300200/205/299995). Programs:
+   kryos-oracle/attacks/mem-shared-ownership-67941974/e1.kry, e2.kry, b19.kry.
+3. `pass(pass(h))` (a call-result temp passed to a user fn) leaks the handle: c2.kry,
+   allocs=30 frees=0.
+4. A fresh struct holding a shared chain passed to a user fn inside a `try` block leaks
+   even when nothing throws: d3.kry allocs=3996 frees=0; b17.kry live=199996.
+   (d1 outside try and d4 named inside try balance.)
+5. Residual shapes still leaking with correct output (closure verifier, x_*.kry under
+   kryos-oracle/closure/mem-shared-ownership-67941974/): tuple holding a shared handle
+   `let t = (b.h, 3)` arc live=200; `xs = []` after pushing shared elements live=400;
+   `z.h = z.h` live=200; element overwrite of [shared T]; globals, spawn captures, weak,
+   static; struct with [shared L] plus Option<shared L> rebuilt in a loop (n26).
+   Regression-lens programs l06.kry ([shared Rec] field built in a loop, live=1020) and
+   l12.kry (pick(xs, i), live=12).
+6. Item 139 not closed for an Option payload that is a tuple, closure or trait object:
+   `struct HT { o: Option<(str, i64)>, n: i64 }` matched in a callee leaks the box
+   (allocs=2000 frees=0 at 1000 iterations on the JIT). A tuple payload bind takes no
+   reference and strip_escaping_tuple_drops removes the arm-end drop of a share; the fix
+   needs that pass and the bind designed together (n139_f).
+7. Pins that do not fail on master on every backend (rule G): conf_shared_consumers and
+   conf_shared_deep_drop pass on the master JIT and debug AOT (master never freed), and
+   forin_shared/llvm is balanced on base; they pinned round-1 regressions only.
+
+WALL FOR THE NEXT ATTEMPT
+- Ownership was decided per consumer shape (each read kind plus each consumer takes or
+  skips a retain), so every unenumerated shape leaks or double frees. Round 1 introduced
+  a use-after-free (`return (*a, 3)` / `[*a, *a]` printed 317968 for 314868); round 2
+  fixed it shape by shape. A sound fix needs one ownership rule for shared handles in
+  the MIR (a handle slot owns exactly one reference; every copy retains; every
+  overwrite and scope exit releases), not per-consumer patches.
+- The free is not free: budget +25-35% on pure alloc/drop probes and +8% on binary_trees,
+  or make the arc release cheaper (non-atomic count when the arc never crosses a thread;
+  skip the bounded-drain bookkeeping on the shallow common case).
+- Item 138 (not this track) stopped corrupting the heap only as a side effect of the
+  wave; it is open again with the revert.
+
+ITEMS: 137 OPEN (NOT FIXED), 139 OPEN (NOT FIXED), 138 OPEN.
+
 ## Wave: release freeze -- the findings of the item-77 wave and its two verifiers recorded on master, the fix deferred past 1.3.0 (items 124-134 open; 70 repros added: 80 escaping of 260) (2026-11-02)
 
 Record-only change on branch `fin/v1.3-finish` off master `7cab5799` (PR #40). No compiler change. Every number below is the
