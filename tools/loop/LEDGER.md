@@ -8742,8 +8742,7 @@ release AOT; attack set n01 to n26 and q01 to q08: no output differs from master
 residual shapes below (n05, n06, n07, n10, n11, n15, n26). Full `allgates.sh` (89 gates including bootstrap, fuzz, e2e and
 package gates, run on the final compiler): 0 nonzero, `gatediff` against gates_base1: no regressions, `mem_balance_gate` ADDED rc 0, `check-bench-current` now
 passes (BENCHMARKS.md re-measured at 9a0dc8cc). Oracle snapshot diff against base_A: only the 7 ADDED test files, SUMMARY bad=0.
-Performance: binary_trees master 1.41 to 1.78 s (median 1.47) vs 1.55 to 1.91 s (median 1.59) interleaved, 7 runs each, about 8%
-slower (the table run: 1.513 s vs 1.455 s on 1.3.0, +4%; checksum 14723759, peak 24 MB vs 1.1 GB);
+Performance: binary_trees master 1.44 to 1.96 s (median 1.77, bimodal) vs 1.54 to 1.71 s (median 1.56) interleaved, 7 runs each;
 the leak probes at 1000 iterations, release AOT: tree_drop 0.23 s master vs 0.30 s here, list_drop 0.22 vs 0.27, tree_let_call 0.24
 vs 0.33 (a freed block costs the system heap's free; master never freed), which is more than the 10% of landing rule A for those
 probes and is the price of freeing at all.
