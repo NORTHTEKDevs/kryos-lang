@@ -209,7 +209,8 @@ being a category of bug. [Chapter 5](05-control-flow.md) covers `if let`/
 writing out the full `match`.
 
 **Always write the `<T>`.** A bare `Option` (or `Result`) on a function
-signature erases the payload to a raw `i64` slot -- annotate the full generic
+signature erases the payload to a raw `i64` slot, so binding the payload out of
+one (`Some(v) => ..`) is a compile error (`E0110`) -- annotate the full generic
 form (`Option<i64>`, `Option<str>`, ...) every time it appears in a signature,
 never the bare type name.
 

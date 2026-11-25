@@ -217,7 +217,8 @@ assuming the two always match.
 ### `Result<T, E>`
 The recoverable-error return type, from `std::result` (`Ok(x)` / `Err(e)`).
 Must be explicitly annotated on a function signature -- a bare `Result`
-(no type arguments) erases the payload to `i64`. Taught in
+(no type arguments) erases the payload to `i64`, and binding its payload is a
+compile error (`E0110`). Taught in
 [Chapter 12](learn/book/12-error-handling.md).
 
 ### `throw`

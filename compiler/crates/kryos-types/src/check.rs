@@ -83,6 +83,36 @@ pub struct TypeChecker {
     /// ever constrains one, no code can read it typed, so the export gives it
     /// the same i64 slot the MIR gives an unbound enum parameter.
     bridge_open_vars: Vec<u32>,
+    /// The type of every call-, tuple- or array-literal-shaped expression that is
+    /// consumed by its TYPE with no `let` to retype it: a `match` scrutinee (`match Ok("v1") {..}`,
+    /// `match f(x) {..}`, and the `?` / `if let` / `while let` desugars), an
+    /// interpolated part (`"{Ok("v1")}"`) and an argument of `to_string` /
+    /// `println` / `print` / `format`. Keyed by the expression's span, with
+    /// whether it sits inside a generic declaration. Resolved at end-of-check
+    /// and exported next to `let_types`: the MIR types a call from its
+    /// arguments or the callee alone, so a constructor or an unannotated
+    /// closure result in such a position lost the payload type the checker
+    /// already knew and bound `Ok(p)` as an i64 (a `str` printed as a raw
+    /// pointer).
+    exported_expr_types: Vec<(Span, Type, bool)>,
+    /// The latest inferred type of every call-shaped expression (and whether
+    /// it sits in a generic declaration), so an argument's type can be read
+    /// back by span after the call that consumes it has been checked.
+    call_types: std::collections::HashMap<Span, (Type, bool)>,
+    /// Call sites of a generic free function with a type parameter that
+    /// appears only in its RETURN type (`to_array<T>(r: Result) -> [T]`), as
+    /// `(key span, callee, the call site's fresh var for that parameter,
+    /// inside a generic declaration)`. Nothing at the call can ever bind such
+    /// a parameter except the surrounding context; when none does (a
+    /// `println(to_array(r)[0])`, `for x in to_array(r)`) the element type is
+    /// unknown to the MIR and a `str` prints as a raw pointer. Swept at
+    /// end-of-check by `report_unbound_generic_calls`.
+    unbindable_calls: Vec<(Span, String, u32, bool)>,
+    /// Spans of identifiers that are the callee of a call expression.
+    call_callee_spans: std::collections::HashSet<Span>,
+    /// Key spans `report_unbindable_generic_call` (the `let`-binding check)
+    /// already reported, so the end-of-check sweep does not report them twice.
+    unbindable_reported: std::collections::HashSet<Span>,
     /// Number of enclosing generic declarations (fn / impl / trait): inside
     /// one, an unresolved var may be a type parameter, never defaulted.
     generic_scope_depth: u32,
@@ -235,6 +265,11 @@ impl TypeChecker {
             lambda_expected_types: std::collections::HashMap::new(),
             resolved_lambda_params: std::collections::HashMap::new(),
             resolved_let_types: std::collections::HashMap::new(),
+            exported_expr_types: Vec::new(),
+            call_types: std::collections::HashMap::new(),
+            unbindable_calls: Vec::new(),
+            call_callee_spans: std::collections::HashSet::new(),
+            unbindable_reported: std::collections::HashSet::new(),
             resolved_result_lets: std::collections::HashMap::new(),
             bridge_open_vars: Vec::new(),
             generic_scope_depth: 0,
@@ -3976,6 +4011,57 @@ impl TypeChecker {
         }
     }
 
+    /// Remember each call-site var of a generic parameter that appears only in
+    /// the callee's return type (see `unbindable_calls`).
+    fn track_unbindable_generics(
+        &mut self,
+        sig: &FunctionSig,
+        var_map: &std::collections::HashMap<u32, u32>,
+        key: Span,
+    ) {
+        for gid in &sig.generic_var_ids {
+            if type_mentions_var(&sig.ret, *gid)
+                && !sig.params.iter().any(|(_, pty)| type_mentions_var(pty, *gid))
+            {
+                if let Some(new_id) = var_map.get(gid) {
+                    self.unbindable_calls.push((
+                        key,
+                        sig.name.clone(),
+                        *new_id,
+                        self.generic_scope_depth > 0,
+                    ));
+                }
+            }
+        }
+    }
+
+    /// End-of-check: a call whose return-only generic parameter was never
+    /// bound by ANY context (not an annotation, not a typed parameter it was
+    /// passed to) is rejected with the same E0110 the `let`-binding form gets.
+    fn report_unbound_generic_calls(&mut self) {
+        let calls = std::mem::take(&mut self.unbindable_calls);
+        let mut seen: std::collections::HashSet<Span> = std::collections::HashSet::new();
+        for (key, name, var, in_generic) in calls {
+            if in_generic
+                || !self.call_callee_spans.contains(&key)
+                || self.unbindable_reported.contains(&key)
+                || !seen.insert(key)
+            {
+                continue;
+            }
+            if !matches!(self.engine.resolve(&Type::Var(var)), Type::Var(_)) {
+                continue;
+            }
+            self.error_with_code(
+                format!(
+                    "cannot infer the generic type parameter of `{name}(..)` from this call -- `{name}`'s generic type does not appear in any of its parameter types, so no argument can ever bind it, and nothing around this call (an annotation, or a typed parameter it is passed to) does either. Left unbound the element type is lost and a `str` prints as a raw pointer instead of text. Bind the result to an annotated `let`, e.g. `let x: [str] = {name}(..)`, and use `x`"
+                ),
+                key,
+                kryos_errors::codes::E0110,
+            );
+        }
+    }
+
     /// If `value` is a direct call to a free function whose own generic type
     /// parameter never appears in its own parameter list (so it can never be
     /// inferred from any argument, ever -- see `type_mentions_var`), emit
@@ -4001,9 +4087,9 @@ impl TypeChecker {
         // return. Erring toward NOT reporting is the safe direction for a
         // name collision here -- a missed diagnostic on an exotic shape beats
         // rejecting sound code.
-        let (callee_name, span) = match value {
+        let (callee_name, span, key_span) = match value {
             Expr::FnCall { callee, span, .. } => match callee.as_ref() {
-                Expr::Identifier { name, .. } => (name, span),
+                Expr::Identifier { name, span: cspan } => (name, span, *cspan),
                 _ => return,
             },
             Expr::StaticMethodCall {
@@ -4018,7 +4104,7 @@ impl TypeChecker {
                 {
                     return;
                 }
-                (method, span)
+                (method, span, *span)
             }
             _ => return,
         };
@@ -4030,6 +4116,7 @@ impl TypeChecker {
                 })
         });
         if unbindable {
+            self.unbindable_reported.insert(key_span);
             self.error_with_code(
                 format!(
                     "cannot infer the generic type parameter of `{callee_name}(..)` from this unannotated binding -- `{callee_name}`'s generic type does not appear in any of its parameter types, so it can never be inferred from an argument here or at any call site. Left unannotated this would silently default to the raw erased representation at runtime (e.g. printing a pointer instead of a string). Add an explicit type annotation on the binding, e.g. `let x: [str] = {callee_name}(..)`"
@@ -4169,6 +4256,44 @@ impl TypeChecker {
             } => {
                 // Resolve the subject first so type variables don't slip through.
                 let resolved_subject = self.engine.resolve(subject_ty);
+                // A BARE `Result` / `Option` (written without type arguments in
+                // a signature, field or annotation) erases its payload to i64:
+                // binding `Ok(v)` out of one types `v` as `any`, so a `str`
+                // payload printed as a raw pointer on both backends with no
+                // diagnostic (CLAUDE.md gotcha 13). Where the argument-built
+                // constructor carries its generics, the payload type is known;
+                // a bare scrutinee carries none, so it cannot be known here.
+                // Only the stdlib's own erased `any` API (see `is_stdlib_fn`) may
+                // bind through one.
+                if let Type::Enum { name: en, generics } = &resolved_subject {
+                    let binds_payload = matches!(variant.as_str(), "Ok" | "Err" | "Some")
+                        && fields.iter().any(|f| !matches!(f, Pattern::Wildcard { .. }));
+                    if generics.is_empty()
+                        && binds_payload
+                        && (en == "Result" || en == "Option")
+                        && !self
+                            .current_function_name
+                            .as_deref()
+                            .is_some_and(is_stdlib_fn)
+                        && self.env.lookup_enum(en).is_some_and(|e| {
+                            e.generic_var_ids.is_empty()
+                                && e.variants.iter().all(|(_, tys)| tys.iter().all(|t| *t == Type::Error))
+                        })
+                    {
+                        let (ann, art) = if en == "Result" {
+                            ("Result<T, E>", "a")
+                        } else {
+                            ("Option<T>", "an")
+                        };
+                        self.error_with_code(
+                            format!(
+                                "cannot bind the payload `{variant}(..)` of a bare `{en}` -- {art} `{en}` written without type arguments erases its payload type to i64, so a `str` (or any non-i64) payload would print as a raw pointer. Annotate the type with its parameters, e.g. `{ann}`, in the signature or binding this value comes from"
+                            ),
+                            *enum_pat_span,
+                            kryos_errors::codes::E0110,
+                        );
+                    }
+                }
                 // Option<T> / Result<T,E> are DISTINCT Type variants from
                 // Type::Enum - derive their payload types directly from the
                 // generic arguments. Without this they fall to the enum-name
@@ -4781,6 +4906,39 @@ impl TypeChecker {
     }
 
     pub fn infer_expr(&mut self, expr: &Expr) -> Type {
+        let ty = self.infer_expr_inner(expr);
+        let call_shaped = |e: &Expr| {
+            matches!(
+                e,
+                Expr::FnCall { .. }
+                    | Expr::MethodCall { .. }
+                    | Expr::StaticMethodCall { .. }
+                    | Expr::TupleLiteral { .. }
+                    | Expr::ArrayLiteral { .. }
+            )
+        };
+        if call_shaped(expr) {
+            self.call_types
+                .insert(expr.span(), (ty.clone(), self.generic_scope_depth > 0));
+            // Arguments of a formatting builtin are consumed by their type.
+            if let Expr::FnCall { callee, args, .. } = expr {
+                if matches!(callee.as_ref(), Expr::Identifier { name, .. }
+                    if matches!(name.as_str(), "to_string" | "println" | "print" | "format"))
+                {
+                    for arg in args {
+                        if call_shaped(arg) {
+                            if let Some((aty, in_generic)) = self.call_types.get(&arg.span()).cloned() {
+                                self.exported_expr_types.push((arg.span(), aty, in_generic));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        ty
+    }
+
+    fn infer_expr_inner(&mut self, expr: &Expr) -> Type {
         match expr {
             // Literals.
             Expr::IntLiteral { .. } => Type::I64,
@@ -4793,6 +4951,9 @@ impl TypeChecker {
                 for part in parts {
                     if let kryos_ast::StringPart::Expr(e) = part {
                         let ty = self.infer_expr(e);
+                        if let Some((cty, in_generic)) = self.call_types.get(&e.span()).cloned() {
+                            self.exported_expr_types.push((e.span(), cty, in_generic));
+                        }
                         // Only scalars and `str` have a built-in string form.
                         // Interpolating an AGGREGATE (struct/enum/array/tuple/
                         // map/set/Option/Result/fn) fell through to the i64/
@@ -4856,6 +5017,7 @@ impl TypeChecker {
                     // generic type pinning across call sites).
                     let sig = sig.clone();
                     let (params, ret, var_map, cap_var_map) = self.engine.instantiate_sig(&sig);
+                    self.track_unbindable_generics(&sig, &var_map, *span);
                     // Carry the sig's trait bounds onto the fresh call-site
                     // vars so unify can enforce them (backlog #89).
                     for (old_id, new_id) in &var_map {
@@ -5250,6 +5412,24 @@ impl TypeChecker {
 
             // Function call.
             Expr::FnCall { callee, args, span } => {
+                if let Expr::Identifier { span: cspan, name: cname } = callee.as_ref() {
+                    self.call_callee_spans.insert(*cspan);
+                    // `len(f(..))` never observes the element type, so an
+                    // unbound return-only generic of `f` cannot misprint there.
+                    if cname == "len" && args.len() == 1 {
+                        match &args[0] {
+                            Expr::FnCall { callee: inner, .. } => {
+                                if let Expr::Identifier { span: ispan, .. } = inner.as_ref() {
+                                    self.unbindable_reported.insert(*ispan);
+                                }
+                            }
+                            Expr::StaticMethodCall { span: ispan, .. } => {
+                                self.unbindable_reported.insert(*ispan);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
                 // Extract callee name for attribute checks.
                 let callee_name_str = match callee.as_ref() {
                     Expr::Identifier { name, .. } => Some(name.clone()),
@@ -6305,6 +6485,8 @@ impl TypeChecker {
                     self.check_pure_free_call(method, *span);
                     let sig = self.env.lookup_function(method).cloned().unwrap();
                     let (params, ret, var_map, cap_var_map) = self.engine.instantiate_sig(&sig);
+                    self.call_callee_spans.insert(*span);
+                    self.track_unbindable_generics(&sig, &var_map, *span);
                     for (old_id, new_id) in &var_map {
                         if let Some(bounds) = self.generic_var_bounds.get(old_id).cloned() {
                             self.engine.set_var_bounds(*new_id, bounds);
@@ -6773,6 +6955,20 @@ impl TypeChecker {
                 span,
             } => {
                 let subject_ty = self.infer_expr(subject);
+                if matches!(
+                    subject.as_ref(),
+                    Expr::FnCall { .. }
+                        | Expr::MethodCall { .. }
+                        | Expr::StaticMethodCall { .. }
+                        | Expr::TupleLiteral { .. }
+                        | Expr::ArrayLiteral { .. }
+                ) {
+                    self.exported_expr_types.push((
+                        subject.span(),
+                        subject_ty.clone(),
+                        self.generic_scope_depth > 0,
+                    ));
+                }
                 if arms.is_empty() {
                     return Type::Void;
                 }
@@ -7651,6 +7847,31 @@ fn concrete_type_to_type_expr(ty: &Type) -> Option<TypeExpr> {
         },
         _ => return None,
     })
+}
+
+thread_local! {
+    /// Names (as merged into the compiled module) of the functions that came
+    /// from the stdlib, filled by the driver's import resolution. Spans cannot
+    /// tell stdlib code from user code (every module is lexed with file id 0).
+    static STDLIB_FNS: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
+/// Forget the stdlib function names of the previous compile.
+pub fn reset_stdlib_fns() {
+    STDLIB_FNS.with(|s| s.borrow_mut().clear());
+}
+
+/// Record that the merged function `name` was imported from the stdlib.
+pub fn mark_stdlib_fn(name: &str) {
+    STDLIB_FNS.with(|s| {
+        s.borrow_mut().insert(name.to_string());
+    });
+}
+
+/// Was the merged function `name` imported from the stdlib?
+pub fn is_stdlib_fn(name: &str) -> bool {
+    STDLIB_FNS.with(|s| s.borrow().contains(name))
 }
 
 pub fn type_check(module: &Module) -> Vec<Diagnostic> {
@@ -10075,6 +10296,7 @@ fn type_check_with_lambda_params_inner(
     });
 
     checker.check_module(module);
+    checker.report_unbound_generic_calls();
 
     // `KRYOS_DUMP_FN_EFFECTS=1` debug dump (Stage 1 -- capability-typed fn
     // values, docs/capability-effects-spec.md): print every logged
@@ -10121,6 +10343,40 @@ fn type_check_with_lambda_params_inner(
         }
         if let Some(te) = concrete_type_to_type_expr(&resolved) {
             let_types.insert(*span, te);
+        }
+    }
+    // Every module is lexed with file id 0, so a scrutinee in an imported module
+    // can share a span with one in the user's file. Two records at one span that
+    // resolve to different types are ambiguous: export neither.
+    {
+        let mut seen: std::collections::HashMap<Span, (String, Option<TypeExpr>)> =
+            std::collections::HashMap::new();
+        let mut ambiguous: std::collections::HashSet<Span> = std::collections::HashSet::new();
+        for (span, ty, in_generic) in checker.exported_expr_types.iter() {
+            let mut resolved = checker.engine.resolve(ty);
+            if !*in_generic {
+                resolved = default_open_vars(&resolved, &open_roots);
+            }
+            let key = format!("{resolved:?}");
+            let te = if type_mentions_result(&resolved) {
+                concrete_type_to_type_expr(&resolved)
+            } else {
+                None
+            };
+            match seen.get(span) {
+                Some((k, _)) if *k != key => {
+                    ambiguous.insert(*span);
+                }
+                Some(_) => {}
+                None => {
+                    seen.insert(*span, (key, te));
+                }
+            }
+        }
+        for (span, (_, te)) in seen {
+            if let (Some(te), false) = (te, ambiguous.contains(&span)) {
+                let_types.entry(span).or_insert(te);
+            }
         }
     }
     (

@@ -29,6 +29,62 @@ Branch `closeout/misc` off master `dd637a90`.
   GitHub Actions run 44951808664 (ci.yml, workflow_dispatch at `3a34ec83`) green on all 9 jobs including build-and-test-windows.
 - A23 NOT-FIXED (the workflow_call fix is in history, commit `3a34ec83`, and was reverted in this wave). Mechanism, confirmed: `publish-vscode.yml` listened to `release: published`, but `release.yml` creates the release with the default `GITHUB_TOKEN`, and GitHub starts no workflow from an event that token raised; `gh run list --workflow publish-vscode.yml` shows 4 runs, all `workflow_dispatch`, none for v1.0.0 to v1.3.0. The fix written (publish-vscode.yml also `workflow_call`, a `publish-vscode` job in release.yml after `create-release`) could not be executed: it only runs on a `v*` tag push, and cutting a tag on the public repo was out of scope, so it never met landing rule A. Two walls found while checking it: (1) the stored `VSCE_PAT` (set 2026-07-07) is expired (`gh run view 37545182927 --log`: "You're using an expired Personal Access Token"), so the first stable tag after the chain is wired would end its Release run red after the release is already created; only the owner can mint a new PAT (`publish-vscode.yml` `verify_only` checks it). (2) `editors/vscode/package.json` is hardcoded `1.3.0`, so a later tag would publish a duplicate marketplace version unless the version is tied to the tag. What landed instead: only the false claim is removed from the `publish-vscode.yml` header (it said the workflow "fires automatically when a release is published"; it now says publishing is manual and why) and the stale `default: "v1.0.0"` dispatch tag is gone. To finish: rotate `VSCE_PAT`, tie the extension version to the tag, `git revert` the revert of `3a34ec83`, cut a tag and watch the `publish-vscode` job of the Release run.
 - Benchmark stamp. `tools/loop/check-bench-current.sh` fails on ANY change under `compiler/crates` after the stamped commit, and this wave touches `kryos-driver/src/runtime.rs` (a link-line list and a test; no code generation or runtime behavior), so the suite was re-run under the machine-wide lock (`benchmarks/measure.py`, 2026-11-22 05:58 to 06:17 UTC, rustc on PATH; `check_outputs.py` PASS, every port printed the same output) and BENCHMARKS.md, benchmarks/results*.{json,md}, benchmarks/RESULTS.md, README.md and docs/WHY_KRYOS.md were re-stamped at `60071762`; the check now passes. The run was NOT on a quiet host (9 of 48 cells within 10% spread, against 34 of 48 on 2026-11-03) and BENCHMARKS.md says so; the medians agree with the previous run to within spread (Kryos LLVM within 5% on every benchmark). A first attempt ran without rustc on PATH and published a table with an empty Rust column; it was discarded, never committed. Any other branch that changes `compiler/crates` will trip this check again at merge: one re-stamp after the last merge settles it. The other five `check-*.sh` pass.
+## Wave: undeclared payload type -- a `Result` / `Option` constructor as a `match` scrutinee, a bare `Result` / `Option` in a signature and an unbound return-only generic printed a raw pointer (A2, bare-result-option and M1-to_array-direct-index closed) (2026-11-21)
+
+Silent wrong answer on both backends, exit 0, no diagnostic: a payload or element type that is never declared was treated as
+i64 and a `str` printed as a raw pointer (a struct field read as `0`, an `f64` as `0`). Master `dd637a90`, `kryos run` and
+`kryos build --release`, every program below.
+- A2. `match Ok("v1") { Ok(p) => println(p), Err(e) => println("err") }` printed `140697043910656` (JIT; AOT a stable pointer
+  per binary). The same shape with `Err("bad")` (`Err(e) => println(e)`), `let s = match Ok("v2") { Ok(p) => p, Err(e) => e }`,
+  `Some(Ok("n1"))`, `Ok(Some("os"))`, `Ok(P { .. })` (field read as a pointer), `Ok(2.5)` (printed `0`), `Result.Ok("q1")` and an
+  unannotated closure `let f = |x: str| Ok(x)  match f("c1") { .. }` all printed a pointer / wrong value; `match Ok("v1")` on AOT
+  also failed to build with a clang `'%_30' defined with type 'ptr' but expected 'i64'`. The annotated twin printed `v1`.
+  Cause: `Ok("v1")` binds only `T`; `E` is open, so `infer_generic_variant_instance` (kryos-mir/src/lower.rs) returned None and the
+  MIR typed the scrutinee as the payload-less `Result` stub whose payload is the erased i64 slot. The previous wave
+  (2026-10-30 residual 1) fixed a `let` only, because the checker had no per-expression export. The same stub typing made
+  `println(to_string(Ok("a")))` and `"{Ok("b")}"` print `Ok(140697890639872)` and `match (Ok("t1"), 1) { (Ok(p), n) => .. }`
+  print a pointer (a tuple / array literal of constructors). Fix (structural, not one more shape): the checker records the type
+  of every call-, tuple- or array-literal-shaped expression that is CONSUMED BY ITS TYPE with no `let` to retype it (`exported_expr_types`,
+  check.rs): a `match` scrutinee (the `?`, `if let` and `while let` desugars are `MatchExpr` too), an interpolated part, and an
+  argument of `to_string` / `println` / `print` / `format`. It resolves each at end-of-check, giving the never-constrained `Ok` /
+  `Err` slot the i64 slot the MIR gives an unbound parameter (`default_open_vars`), and exports it in the existing `let_types` map; the
+  MIR (`exported_subject_type`, consulted at the top of `infer_expr_type` for a call, tuple or array literal) types the expression as
+  that instance, so every consumer of the type (the pattern binders, the match value type, the hidden subject local, the
+  `to_string` / interpolation formatter) agrees. Only those spans are exported: a constructor in any other position (an
+  argument, a field) keeps the type, and the build, it always had. A first version typed and BUILT every constructor as the
+  instance; it cloned an array payload, so it closed capability-escape row 119b `attack_slot_param_container_in_result` at run
+  time (the oracle reports that as CLOSED-RUNTIME) and moved ownership in argument positions; it was dropped. Spans are not
+  unique across modules (every module is lexed with file id 0), so two records at one span that resolve differently are exported
+  as neither. A module that declares its own `enum Result` / `Option` is untouched (the exported type is used only when the
+  builtin enum is the all-i64 stub).
+- bare-result-option. `fn get(s: str) -> Result { return Ok(s) }` then `match get("hello") { Ok(v) => println(v), .. }` (or
+  `let r = get(..)` then `match r`, a bare `Option`, a bare `Result` parameter) printed a pointer. A bare `Result` / `Option`
+  is the stdlib's hand-rolled `enum Result { Ok(any), Err(any) }`; the payload of a bare scrutinee is `any`, so it cannot be known.
+  Decision by measurement (criterion C): 1858 programs of tests/ examples/ ecosystem/ packages/ compiler/stdlib/ and the
+  test-runner corpus were checked on the master binary and on this one (`kryos check`, code and rc compared): the only difference is
+  `compiler/stdlib/result.kry` itself (the stdlib declares its erased API bare, so it is exempt, see below); no shipped program
+  and no stdlib API a program calls is rejected, and the one user-visible bare spelling (`fn f() -> Result`) has no inferable
+  alternative for the stdlib's own `any` returns (`unwrap`, `map` ...). So the rule is: BINDING a payload (`Ok(v)`, `Err(e)`, `Some(v)`;
+  not `_`) out of a bare-typed scrutinee is E0110 `cannot bind the payload .. of a bare Result -- annotate Result<T, E>` (check.rs,
+  `bind_pattern_with_mut`, Enum arm). By construction it covers a call result, a local, a parameter, a field, a `?` and an
+  `if let`. `Ok(_)`, `is_ok(r)`-style use and every annotated form are unchanged. The stdlib's own bodies and a stdlib file
+  checked directly are exempt: spans cannot tell stdlib code from user code, so the driver tells the checker which merged
+  functions came from the trusted stdlib (`kryos_types::mark_stdlib_fn`, kryos-driver/src/resolve.rs; the trusted dir ignores
+  `KRYOS_STDLIB_DIR`, like the raw-memory gate). Not done: inferring a bare return type from the function body. The stdlib's
+  `unwrap` / `map` / `unwrap_or` return `any` (item 6) and `println(unwrap(Ok("a")))` still prints a pointer: that is the `any`
+  hole, not this one.
+- M1-to_array-direct-index. `println(to_array(r)[0])` (also `for x in to_array(r)`, `"{to_array(r)[0]}"`,
+  `result::to_array(r)[0]`) printed a pointer: item 40c/48 rejected only a `let`. `to_array<T>(r: Result) -> [T]` can never bind
+  `T` from its argument. Fix: every call of a generic free function whose type parameter appears only in its return type is
+  tracked (`unbindable_calls`), and at end-of-check one whose parameter is still an unresolved var is E0110 at the call (the
+  existing message's sibling; `let` forms keep their own earlier report and are not reported twice). `show(to_array(r))` with a typed
+  parameter and `let a: [str] = to_array(r)` still bind it; `len(to_array(r))` never observes the element and stays accepted.
+  Inside a generic declaration nothing is reported (the var may be a type parameter).
+- Pins. `tests/conformance/conf_ctor_scrutinee.kry` (both backends; fails on master: JIT `CONF FAIL: Ok scrutinee`, AOT clang
+  build error) and 12 probes in `tests/type_soundness.sh` (`want_reject_e0110` x 8, `want_pass` x 4; the 8 reject probes print
+  `HOLE` on the master binary).
+- Docs. CLAUDE.md gotcha 13, docs/stdlib/result.md `to_array`, book chapters 2 and 12 (the chapter-12 bare-`Result` example printed
+  `err: 140697634537472`; it is now an error demo), book chapter 20, docs/glossary.md.
 
 ## Wave: release freeze -- the findings of the item-77 wave and its two verifiers recorded on master, the fix deferred past 1.3.0 (items 124-134 open; 70 repros added: 80 escaping of 260) (2026-11-02)
 
@@ -1446,7 +1502,7 @@ crash (`kryos: stack overflow (unbounded recursion?)`, rc=132/253, free diag
   included) x 6 legs: 0 with a problem; gen1 + gen2 + gen3 together (206
   programs, 6 legs, same-named programs from later generators overwrite earlier
   ones): 0 with a problem.
-- Residual. (1) A variant constructor used DIRECTLY as the `match` scrutinee,
+- Residual. (1) [CLOSED 2026-11-21, wave "undeclared payload type" at the top of this file.] A variant constructor used DIRECTLY as the `match` scrutinee,
   `match Ok("v1") { Ok(p) => println(p), .. }`, still prints a raw pointer on all
   three backends (re-measured after the fix): the MIR types the temporary with
   the stub, there is no `let` to retype, and the checker has no per-expression

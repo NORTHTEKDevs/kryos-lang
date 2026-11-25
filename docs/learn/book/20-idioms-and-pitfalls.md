@@ -198,7 +198,7 @@ the index, not a replacement for reading the worked example there.
 | Struct-argument leak | Passing a struct with heap fields across a call boundary leaks ~85 bytes/call -- read fields directly in a hot loop instead | [Ch 6](06-structs-and-enums.md), [Ch 10](10-ownership-and-arc.md) |
 | Capability precision cost | 41 of 75 enumerated pure-closure-through-container shapes need `@capabilities(all)` under the fail-closed design -- deliberate, not a bug | [Ch 11](11-capabilities.md) |
 | `Result`/`Option` erasure | A bare, unannotated `Result`/`Option` signature erases the payload to `i64` -- always annotate `Result<T, E>`/`Option<T>` | [Ch 12](12-error-handling.md) |
-| `std::result::to_array<T>` | Needs an explicit type annotation to stay type-safe; unannotated it renders a raw pointer | [Ch 12](12-error-handling.md) |
+| `std::result::to_array<T>` | Needs an explicit type annotation (or a typed parameter to pass the result to); unbound it is a clean `E0110` compile error | [Ch 12](12-error-handling.md) |
 | Two concurrency-primitive hangs | A `ChanWaitGroup` with two `wg_wait` callers only releases one; a shared mutating closure's lock held across a coop-yield point deadlocks | [Ch 13](13-concurrency.md), [Ch 14](14-async.md) |
 | `dyn Trait` containers | Cannot be stored inside `[dyn T]`/`Option<dyn T>`/a tuple or map value -- clean `E0110`; use an enum + `match` instead | [Ch 9](09-generics-and-traits.md) |
 | `comptime {}` is expression-only | Write `let x = comptime { ... }`; a statement-position block or a side-effecting statement inside one is a clean `E0110` | [Ch 5](05-control-flow.md) |

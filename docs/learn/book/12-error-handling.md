@@ -232,9 +232,11 @@ ships.)
 
 ## Common mistakes
 
-**Writing a bare `Result` instead of `Result<T, E>`.** This compiles, and
-silently corrupts the payload:
+**Writing a bare `Result` instead of `Result<T, E>`.** A `Result` written
+without type arguments erases its payload to `i64`, so matching on one and
+binding the payload is a compile error (`E0110`):
 
+<!-- docs-example: skip -->
 ```kryos
 use std::result::{Result, Ok, Err}
 
@@ -253,25 +255,31 @@ fn main() {
 }
 ```
 
-Output:
-
 ```
-err: 140697634537472
+error[E0110]: cannot bind the payload `Err(..)` of a bare `Result` -- a
+`Result` written without type arguments erases its payload type to i64, so a
+`str` (or any non-i64) payload would print as a raw pointer. Annotate the type
+with its parameters, e.g. `Result<T, E>`, in the signature or binding this
+value comes from
 ```
 
-That number is a raw pointer, not the string `"division by zero"` --
-`Result` with no type arguments erases its payload to `i64` (the same
-erasure CLAUDE.md's gotcha #13 documents for `Option`), and printing an
-`i64`-erased `str` prints the bit pattern instead of the text. The fix is
-the annotated signature from the top of this chapter: `Result<i64, str>`.
+Before this was a diagnostic the same program compiled and printed
+`err: 140697634537472` -- a raw pointer, not the string `"division by zero"`
+(the erasure CLAUDE.md's gotcha #13 documents for `Option` too). The fix is the
+annotated signature from the top of this chapter: `Result<i64, str>`. Matching
+a bare `Result` WITHOUT binding the payload (`Ok(_) => ..`) is still fine, and
+the constructor forms (`match Ok("v1") { Ok(p) => println(p), .. }`) carry the
+payload type from their argument, so they print the value.
 
-A related shape, `std::result::to_array<T>`, does NOT reproduce this
-silent failure -- it fails louder instead. `to_array`'s `T` has nothing to
+A related shape, `std::result::to_array<T>`, is rejected the same way. `to_array`'s `T` has nothing to
 bind against on the argument side (its parameter is the untyped `Result`
 enum, not a real `Result<T, E>`), so it can only be resolved from an
-explicit annotation on the binding. Leaving the binding bare is a clean
-`E0110` at check time (not a runtime raw-pointer output -- this was fixed
-as [LEDGER item 40c](../../../tools/loop/LEDGER.md)):
+explicit annotation on the binding, or from a typed parameter the result is
+passed to. Leaving it unbound -- a bare `let`, or an index / `for` / interpolation
+position such as `println(to_array(r)[0])` -- is a clean
+`E0110` at check time (not a runtime raw-pointer output -- fixed
+as [LEDGER item 40c](../../../tools/loop/LEDGER.md), and for the index / argument
+positions in the undeclared-payload-type wave):
 
 <!-- docs-example: skip -->
 ```kryos
@@ -359,11 +367,12 @@ the recoverable one.
   idiomatic Kryos -- pick based on whether you want the type signature to
   force callers to handle failure.
 - Always write the full `Result<T, E>` on a signature -- a bare `Result`
-  erases its payload to `i64` and silently corrupts a `str`/struct value on
-  read-back. `std::result::to_array<T>` needs the same explicit annotation
-  on its binding, but fails differently: leaving it bare is a clean
-  `E0110` compile error, not a silent wrong answer (LEDGER item 40c,
-  fixed).
+  erases its payload to `i64`, so binding its payload (`Ok(v) => ..`) is an
+  `E0110` compile error rather than a `str`/struct value that prints as a raw
+  pointer. `std::result::to_array<T>` needs the same explicit annotation
+  on its binding: leaving it unbound (bare `let`, index, `for`) is a clean
+  `E0110` compile error, not a silent wrong answer (LEDGER items 40c, 48 and
+  the undeclared-payload-type wave).
 - `?` on a `Result`-returning call unwraps `Ok` or returns the `Err` early;
   it only works inside a function that itself returns a compatible
   `Result`.

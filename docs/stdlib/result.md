@@ -278,12 +278,14 @@ Return `[v]` if `Ok(v)`, or `[]` if `Err`.
 inferred from `r` -- `r`'s own type is the hand-rolled `std::result::Result`
 enum, whose payload is `any`, so there is nothing on the argument side for `T`
 to bind against; it is fixed only by an explicit annotation at the call site
-(or by something else later in the same function that pins `T` down, e.g.
-passing the array element into a real, non-`any` typed parameter). An
-unannotated call whose element type is never established anywhere
-(`let a = to_array(ok("hi"))  println(a[0])`) is a clean `E0110` compile
-error, not a silent wrong answer -- add the annotation the diagnostic
-suggests. `std::iter::count` is NOT affected (its `T` binds from a real `[T]`
+(or by a typed parameter the result is passed straight to, e.g.
+`show(to_array(r))` with `fn show(a: [str])`). A call whose element type is
+never established anywhere is a clean `E0110` compile error, not a silent wrong
+answer -- whether it is a bare binding (`let a = to_array(ok("hi"))`) or sits
+directly in an index, `for` or interpolation position
+(`println(to_array(r)[0])`, `for x in to_array(r)`). Add the annotation the
+diagnostic suggests. `len(to_array(r))` never observes the element and is
+accepted. `std::iter::count` is NOT affected (its `T` binds from a real `[T]`
 argument).
 
 ---

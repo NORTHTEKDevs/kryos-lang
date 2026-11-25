@@ -13597,6 +13597,9 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
         ast::Expr::UnaryOp { operand, .. } => infer_expr_type(ctx, operand),
 
         ast::Expr::FnCall { callee, args, .. } => {
+            if let Some(t) = exported_subject_type(ctx, expr) {
+                return t;
+            }
             // If the callee is a simple identifier, look up the return type.
             if let ast::Expr::Identifier { name, .. } = callee.as_ref() {
                 // Bare (unqualified) enum-variant construction: `Circle(2)` /
@@ -13696,6 +13699,9 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
         }
 
         ast::Expr::MethodCall { object, method, args, .. } => {
+            if let Some(t) = exported_subject_type(ctx, expr) {
+                return t;
+            }
             // Check if this is an enum variant constructor.
             if let ast::Expr::Identifier { name, .. } = object.as_ref() {
                 if ctx.enum_defs.contains_key(name.as_str()) {
@@ -13898,6 +13904,9 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
         ast::Expr::StaticMethodCall {
             type_name, method, args, ..
         } => {
+            if let Some(t) = exported_subject_type(ctx, expr) {
+                return t;
+            }
             // `Enum::Variant(..)` constructs an enum value (see the matching branch
             // in lower_expr_to_rvalue); its type is the enum, not Void. Returning
             // Void here made AOT emit a `store void` for `let x = Opt::Some(7)`.
@@ -13945,6 +13954,9 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
             MirType::Struct(resolve_struct_literal_name(ctx, name, fields))
         }
         ast::Expr::ArrayLiteral { elements, .. } => {
+            if let Some(t) = exported_subject_type(ctx, expr) {
+                return t;
+            }
             // Infer element type from the first element.
             let elem_ty = elements
                 .first()
@@ -13953,6 +13965,9 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
             MirType::Array(Box::new(elem_ty), Some(elements.len() as u64))
         }
         ast::Expr::TupleLiteral { elements, .. } => {
+            if let Some(t) = exported_subject_type(ctx, expr) {
+                return t;
+            }
             // Infer the tuple's type element-wise. Returning a scalar here
             // (the old stub) gave destructure temporaries the wrong type, so
             // the Cranelift field-access guard (`match l.ty { Tuple(_) => .. }`)
@@ -20456,6 +20471,41 @@ fn infer_generic_variant_instance(
     let concrete: Option<Vec<MirType>> =
         template.generic_params.iter().map(|g| bound.get(g).cloned()).collect();
     Some(monomorphize_enum(ctx, enum_name, &concrete?))
+}
+
+/// The type the type checker resolved for an expression consumed by its type
+/// with no `let` to retype it (a `match` scrutinee, an interpolated part, an
+/// argument of `to_string` / `println`), when it is or contains a `Result` /
+/// `Option` instance (`match Ok("v1") { Ok(p) => .. }`, `"{Ok("v1")}"`,
+/// `match f("c1")` over an unannotated closure that returns `Ok(x)`, `match
+/// (Ok("t"), 1) { .. }`). The MIR types a call from its arguments or callee
+/// alone, so the payload of the stub was an i64 and a `str` printed as a raw
+/// pointer. Only those spans are exported, so a constructor in any other
+/// position (an argument, a field) keeps the type, and the build, it always
+/// had. `None` for
+/// any other expression and for a module that declares its own enum named
+/// `Result` / `Option`.
+fn exported_subject_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> Option<MirType> {
+    fn mentions_instance(t: &MirType) -> bool {
+        match t {
+            MirType::Enum(n) => n.starts_with("Result___") || n.starts_with("Option___"),
+            MirType::Array(e, _) | MirType::Shared(e) | MirType::Ptr(e) => mentions_instance(e),
+            MirType::Tuple(es) => es.iter().any(mentions_instance),
+            MirType::Map { key, value } => mentions_instance(key) || mentions_instance(value),
+            _ => false,
+        }
+    }
+    let builtin_shape = ["Result", "Option"].iter().all(|n| {
+        ctx.enum_defs
+            .get(*n)
+            .is_none_or(|vs| vs.iter().all(|v| v.fields.iter().all(|f| *f == MirType::I64)))
+    });
+    if !builtin_shape {
+        return None;
+    }
+    let te = ctx.let_types.get(&expr.span()).cloned()?;
+    let exported = ctx.resolve_type(&te);
+    mentions_instance(&exported).then_some(exported)
 }
 
 fn monomorphize_enum(ctx: &mut LoweringContext, enum_name: &str, type_args: &[MirType]) -> String {

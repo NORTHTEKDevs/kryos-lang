@@ -472,6 +472,14 @@ thread_local! {
 /// Reset the per-compile import-origin table. Call before a fresh resolve.
 pub fn reset_import_origins() {
     IMPORT_ORIGINS.with(|o| o.borrow_mut().clear());
+    kryos_types::reset_stdlib_fns();
+}
+
+/// Tell the type checker which merged functions are the stdlib's own.
+fn mark_stdlib_decl(decl: &Decl, from_stdlib: bool) {
+    if let (true, Decl::Function { name, .. }) = (from_stdlib, decl) {
+        kryos_types::mark_stdlib_fn(name);
+    }
 }
 
 fn record_origin(fn_name: &str, module_last: &str) {
@@ -789,6 +797,14 @@ pub fn resolve_imports(
     resolved_decls: &mut Vec<Decl>,
     verbose: bool,
 ) -> Result<(), Vec<Diagnostic>> {
+    // A stdlib module compiled or checked directly is the stdlib's own code.
+    let root_from_stdlib = find_trusted_stdlib_dir(importing_file).is_some_and(|d| {
+        fs::canonicalize(importing_file)
+            .is_ok_and(|c| c.starts_with(fs::canonicalize(&d).unwrap_or(d)))
+    });
+    for decl in &module.declarations {
+        mark_stdlib_decl(decl, root_from_stdlib);
+    }
     // Pre-scan the whole import graph for per-module selection unions before
     // any module is resolved (see SelectionUnions).
     let mut unions: SelectionUnions = HashMap::new();
@@ -846,6 +862,10 @@ fn resolve_imports_inner(
                 module_path.display()
             );
         }
+
+        let from_stdlib = find_trusted_stdlib_dir(importing_file).is_some_and(|d| {
+            canonical.starts_with(fs::canonicalize(&d).unwrap_or(d))
+        });
 
         // Parse the imported module.
         let (imported_module, _source_map) = match parse_module_file(&module_path) {
@@ -1011,6 +1031,7 @@ fn resolve_imports_inner(
                     }
                 }
                 if !matches!(decl, Decl::Import { .. }) {
+                    mark_stdlib_decl(&decl, from_stdlib);
                     resolved_decls.push(decl);
                 }
             }
@@ -1110,6 +1131,7 @@ fn resolve_imports_inner(
                             record_origin(&name, last);
                         }
                     }
+                    mark_stdlib_decl(&decl, from_stdlib);
                     resolved_decls.push(decl);
                 } else {
                     if !rename_map.is_empty() {
