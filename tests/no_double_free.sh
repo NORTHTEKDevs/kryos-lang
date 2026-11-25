@@ -478,7 +478,7 @@ no_df_both array_contains "$ROOT/tests/conformance/conf_array_contains.kry"
 no_df_both empty_string_and_tuple_pop "$ROOT/tests/conformance/conf_empty_string_and_tuple_pop.kry"
 # `match h.o` on an Option field of a by-value struct (LEDGER item 139): the
 # struct is now dropped, so an escaped payload must own its reference.
-no_df_both shared_deep_drop "$ROOT/tests/conformance/conf_shared_deep_drop.kry"
+no_df_both match_field_ownership "$ROOT/tests/conformance/conf_match_field_ownership.kry"
 # `shared` structure ownership (LEDGER item 137): trees, lists and one shared
 # leaf aliased by two parents, with the arcs now really freed. Plus the
 # use-after-free probe that reuses the freed blocks before reading what a
