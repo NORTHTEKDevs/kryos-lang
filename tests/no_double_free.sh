@@ -479,11 +479,10 @@ no_df_both empty_string_and_tuple_pop "$ROOT/tests/conformance/conf_empty_string
 # `match h.o` on an Option field of a by-value struct (LEDGER item 139): the
 # struct is now dropped, so an escaped payload must own its reference.
 no_df_both match_field_ownership "$ROOT/tests/conformance/conf_match_field_ownership.kry"
-# `shared` structure ownership (LEDGER item 137): trees, lists and one shared
-# leaf aliased by two parents, with the arcs now really freed. Plus the
-# use-after-free probe that reuses the freed blocks before reading what a
-# payload bind escaped with (it fails with the bind's own reference removed).
-no_df_both shared_ownership_reuse "$ROOT/tests/conformance/conf_shared_ownership.kry"
+# `shared` structure ownership (1.3.1 memory-fix wave): trees, lists and one
+# shared leaf aliased by two parents. Green today only because the shared arcs
+# are never freed (LEDGER item 137); it is the use-after-free tripwire for the
+# fix, which turns those arcs into real frees.
 no_df_both shared_ownership "$ROOT/tests/mem/shared_ownership.kry"
 
 if [ "$fail" -eq 0 ]; then

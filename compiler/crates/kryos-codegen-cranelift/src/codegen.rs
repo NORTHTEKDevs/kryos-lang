@@ -605,7 +605,6 @@ pub fn compile_module_with_options(
     // These break compile-time recursion when array elements are structs/enums
     // that themselves contain heap fields (e.g. strings inside structs inside arrays).
     let mut type_drop_ids: HashMap<String, FuncId> = HashMap::new();
-    let mut arc_drop_ids: Vec<(String, FuncId)> = Vec::new();
     {
         let call_conv = object_module.isa().default_call_conv();
         let has_heap_fields = |fields: &[(String, MirType)]| -> bool {
@@ -655,27 +654,6 @@ pub fn compile_module_with_options(
                 type_drop_ids.insert(name.clone(), id);
                 func_ids.insert(drop_name, id);
             }
-        }
-        // `shared T` over a struct/enum: the arc block holds ONE pointer to
-        // T's box. Its drop function (set at the `arc_alloc`, run when the
-        // last reference is released) releases that box through T's own drop
-        // helper -- without it a released arc never freed its contents and
-        // every value linked through `shared` leaked (LEDGER item 137 C).
-        // @copy structs are never boxed this way and keep no drop function.
-        let mut names: Vec<&String> = module
-            .struct_defs
-            .keys()
-            .filter(|n| n.as_str() != "Map" && !module.copy_structs.contains(n.as_str()))
-            .chain(module.enum_defs.keys())
-            .collect();
-        names.sort();
-        for name in names {
-            let thunk_name = format!("__kryos_arc_drop_{name}");
-            let mut sig = Signature::new(call_conv);
-            sig.params.push(AbiParam::new(types::I64)); // arc user ptr
-            let id = object_module.declare_function(&thunk_name, Linkage::Local, &sig)?;
-            arc_drop_ids.push((name.clone(), id));
-            func_ids.insert(thunk_name, id);
         }
     }
 
@@ -2431,40 +2409,6 @@ pub fn compile_module_with_options(
         let mut ctx = Context::for_function(cl_func);
         object_module
             .define_function(drop_id, &mut ctx)
-            .map_err(CodegenError::Module)?;
-    }
-
-    // Arc drop thunks: load the box pointer the arc block holds and release
-    // it through the type's drop helper (a plain free when the type has no
-    // heap fields).
-    for (type_name, thunk_id) in &arc_drop_ids {
-        let call_conv = object_module.isa().default_call_conv();
-        let mut sig = Signature::new(call_conv);
-        sig.params.push(AbiParam::new(types::I64));
-        let mut cl_func =
-            Function::with_name_signature(UserFuncName::user(0, thunk_id.as_u32()), sig);
-        {
-            let mut builder = FunctionBuilder::new(&mut cl_func, &mut fb_ctx);
-            let entry = builder.create_block();
-            builder.append_block_params_for_function_params(entry);
-            builder.switch_to_block(entry);
-            let slot = builder.block_params(entry)[0];
-            let boxed = builder.ins().load(types::I64, MemFlags::new(), slot, 0);
-            let helper = format!("__kryos_drop_{type_name}");
-            let target = if func_ids.contains_key(&helper) {
-                func_ids[&helper]
-            } else {
-                func_ids["kryos_free"]
-            };
-            let target_ref = object_module.declare_func_in_func(target, builder.func);
-            builder.ins().call(target_ref, &[boxed]);
-            builder.ins().return_(&[]);
-            builder.seal_all_blocks();
-            builder.finalize();
-        }
-        let mut ctx = Context::for_function(cl_func);
-        object_module
-            .define_function(*thunk_id, &mut ctx)
             .map_err(CodegenError::Module)?;
     }
 
@@ -6442,33 +6386,6 @@ fn translate_rvalue<M: Module>(
             let ptr = builder.inst_results(call_inst)[0];
             // 3. Store the inner value at the allocated pointer.
             builder.ins().store(MemFlags::new(), val, ptr, 0);
-            // A struct/enum payload is a box the arc owns: register the drop
-            // thunk that releases it with the last reference.
-            let inner_ty = match inner {
-                Operand::Local(id) => translator
-                    .mir_func
-                    .locals
-                    .iter()
-                    .find(|l| l.id == *id)
-                    .map(|l| l.ty.clone()),
-                _ => None,
-            };
-            if let Some(MirType::Struct(n) | MirType::Enum(n)) = inner_ty {
-                let thunk = format!("__kryos_arc_drop_{n}");
-                if translator.func_ids.contains_key(&thunk) {
-                    let set_drop_ref = ensure_func_ref_with_args(
-                        "kryos_arc_set_drop",
-                        builder,
-                        translator,
-                        module,
-                        2,
-                    )?;
-                    let thunk_ref =
-                        ensure_func_ref_with_args(&thunk, builder, translator, module, 1)?;
-                    let thunk_addr = builder.ins().func_addr(types::I64, thunk_ref);
-                    builder.ins().call(set_drop_ref, &[ptr, thunk_addr]);
-                }
-            }
             Ok(Some(ptr))
         }
 

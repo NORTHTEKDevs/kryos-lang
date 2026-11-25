@@ -8599,7 +8599,7 @@ printed by `kryos build --help`) predates the fix of bypass B8: the cache is con
 the program in that build's mode, and its key covers the mode and every module file read (docs/STDLIB.md, `KRYOS_CACHE=1`). The
 help text understates the checking, it does not overstate it. Not changed in 1.3.0 because the release changes no compiler source. Closing: rewrite the doc comment.
 
-### 137. LEAK + PERF -- values linked through `shared` pointers are never freed (release builds since 1.1.0, debug builds on every version), which also makes binary_trees 1.88x of Rust -- CLOSED (1.3.1 mem wave; residuals below)
+### 137. LEAK + PERF -- values linked through `shared` pointers are never freed (release builds since 1.1.0, debug builds on every version), which also makes binary_trees 1.88x of Rust -- NOT FIXED
 
 Found by the 1.3.0 benchmark run (2026-11-03, BENCHMARKS.md, measured at `cbd88996`); investigated the same day after the v1.3.0 tag
 was prepared (workflows `ledger137-binary-trees` and `shared-leak-fix-design`: investigators plus adversarial verifiers; their
@@ -8647,44 +8647,9 @@ subject its own short-lived reference and keeping the param's drop; (4) fix C or
 r7 and binary_trees (peak at two scales, the binary_trees ceiling 40 MB with checksum 14723759), a live-arc counter if the runtime
 can expose one, and real-free runs with exit-code and heap-corruption checks. Related: items 138 and 139.
 
-CLOSED (1.3.1 mem wave). Steps 1 to 4 of the order above, all in this change (step 3 is item 139's commit). Causes confirmed by
-building the commits: A (typed temp), B (match on a field, item 139) and C (Cranelift arc drop). Mechanism, per file:
-- `kryos-mir/src/lower.rs`: (1) a `shared` payload bind in a `match` retains the arc and releases it at the arm's end unless the arm
-  escapes it (the existing arm-owned-payload machinery); a bind the arm only dereferences, while the subject stays alive (the arm
-  assigns no part of the named place the subject was read from, uses that name only through its fields, which is a struct local or
-  param), borrows the subject's reference and skips the atomic pair (`shared_bind_needs_ref`; binary_trees' `check` was 15% slower
-  with the retain). (2) `infer_expr_type` gets an arm for `shared X` (it typed Void), so `Some(shared X)` is typed `Option<shared X>`
-  and the temp is an owned enum that is dropped after the literal; a bare `None()` placed in a struct field takes the field's declared
-  instance type (`retype_bare_variant_temp`), which on Cranelift (boxed enums) was a leaked box per leaf. (3) `let a = shared x` no
-  longer takes a second reference at the `let` (the local's scope-end drop could never reach zero). (4) `Some(a)` of a `shared` local
-  retains instead of moving the handle (`Tree { left: Some(lf), right: Some(lf) }` built two owners of one arc), and `shared x` of a
-  named local, param or field read takes its own owner of the value, so the source's drop no longer frees what the arc points at.
-- `kryos-codegen-cranelift/src/codegen.rs`: `ArcAlloc` of a struct or enum registers a per-type thunk `__kryos_arc_drop_<T>` (load
-  the box the arc holds, drop it through `__kryos_drop_<T>` or free it) so a released arc frees its contents.
-- `kryos-codegen-llvm/src/codegen.rs`: `ArcRetain` / `ArcRelease` of a mutable local (an alloca) loaded the address instead of the
-  value (`use of undefined value`).
-Proof both ways (instrument of PR 45, `tests/mem/shared_leak.kry`, 3 iterations): on the master binary every pinned row leaked (arc live
-6138 / 6000 / 3, box live up to 18423 on Cranelift); with the change all 16 rows are 0 / 0 on LLVM and Cranelift (the gate rows are
-flipped, and each balanced row is also run at 10x the iterations). Peak working set, release AOT, master vs fix: binary_trees 1126 MB
-vs 24 MB (checksum 14723759 on both; wall time 1.46 s vs 1.55 s, +6%); docs/r137_r7.kry 464 MB vs 5 MB; the three modes tree_drop /
-tree_embedded / list_drop at 100, 1000 and 10000 iterations are flat at 4 to 5 MB (master: 19, 161 MB at 100 and 1000; Cranelift
-debug builds 36, 318 MB vs 5 MB). A freed arc costs the system heap's free: the leak probes run 25 to 50% longer at 1000 iterations
-(tree_drop 0.18 s vs 0.27 s) because master never freed anything. Use-after-free pins:
-`tests/conformance/conf_shared_ownership.kry` (payload bind escaping via return, via a struct field read of a dropped param and into a
-new struct, then the allocator churned before the read; plus the arm that releases the subject under a deref-only bind) FAILS with the
-bind's own reference removed (`survivor v 7 want 0` on both backends, measured by disabling step 1) and
-`tests/mem/shared_ownership.kry` stays green; both run under `tests/no_double_free.sh` (diag, real frees, both backends).
-Found and NOT fixed (pre-existing, same on master): `let x = *s` / `return *s` of a `shared` struct yields an alias of the arc's
-contents, not an owner, so the value dangles once the arc is freed (real-free AOT prints a wrong sum, `KRYOS_FREE_DIAG` the right
-one); and `cur = (*n).next` list traversal crashes on the Cranelift backend (JIT and debug AOT) on master and here. Also incidental:
-item 138's repro (`fn wrap(x: L) -> shared L { return shared x }`, linked into a list) no longer corrupts the heap, because the
-arc now takes its own owner of `x` (master: 0xC0000374 / wrong values on every backend); the conformance probe above pins it.
-
 Instrument (1.3.1 wave 1, no ownership fix): `KRYOS_ALLOC_STATS=1` (explicit truthy only: 1/true/yes/on, any case; everything else is off) makes any compiled program print `[alloc-stats] arc allocs=N frees=M live=L` and `[alloc-stats] box ...` to stderr at exit (counters in `kryos-rt/src/allocstats.rs`; arc = `kryos_arc_alloc` vs a release reaching zero, box = `kryos_calloc` vs a `kryos_free` that really frees). It measures ARC/BOX BALANCE ONLY: strings, arrays, maps, raw `alloc()` and Range are not counted, so `live=0` does not mean "no leak" and the RSS-based `tests/mem_*_gate.sh` gates remain the proof for those. Limits: not valid under `KRYOS_FREE_DIAG` (the quarantine path skips drop_fn; the report prints a `free_diag=on` marker and the gate refuses to run); a hard fault exit prints no report; under `KRYOS_PLAIN_ALLOC` a double free counts twice (live goes negative, which the gate fails on); the disabled-path overhead (one relaxed load + branch per counted call) is NOT measured. `tests/mem_balance_gate.sh` runs `tests/mem/shared_leak.kry` on both backends and pins the exact arc and box live counts per (mode, backend) at ITERS=3: any difference fails (regression, a fix without the table edit, a partial fix or growing leak, any negative live, a leg that is not the backend it claims, a row-count mismatch). The table was measured on Windows only; the Linux and macOS CI steps are continue-on-error until a CI run confirms the numbers. The counter also shows that a bare `let a = shared <int>` leaks its arc block on both backends (3 allocs, 0 frees at 3 iterations), which RSS never showed; it is the same defect as above and is a pinned-leaking row in the table.
 
 ### 138. MEMORY SAFETY -- `return shared x` for a by-value struct param, linked into a list, corrupts the heap in release builds since 1.1.0 -- NOT FIXED
-
-Note (1.3.1 mem wave, item 137): the repro below no longer corrupts the heap (r138 and a 12-deep chain run clean on release AOT, debug AOT and the JIT, pinned in `tests/conformance/conf_shared_ownership.kry`), because `shared x` now takes its own owner of the value. The record stays open for its own wave to confirm the root cause and the generalizations.
 
 Found 2026-11-03 while investigating item 137. Repro:
 

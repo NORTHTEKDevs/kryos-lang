@@ -228,7 +228,7 @@ Kryos's memory model is inspired by Rust's ownership vocabulary but lands closer
 
 The core guarantee is the same: no use-after-free, no double-free, no dangling pointers. Kryos gets there with refcounting plus deep-copy-on-assign instead of a borrow checker, which trades some of Rust's zero-copy guarantees for a model where "just reuse the value" always works.
 
-Known exceptions on 1.3.0 (open defects in `tools/loop/LEDGER.md`): `let x = *s` and `return *s` of a `shared` struct yield an alias of the arc's contents rather than an owner, and `cur = (*n).next` list traversal crashes on the Cranelift backend. Values linked through `shared` pointers (the `Option<shared T>` fields of a tree or a list) are freed when the last owner goes (item 137, closed), and wrapping a struct parameter with `shared` and returning it no longer corrupts the heap (item 138, no longer reproduces after the item 137 fix; its own wave confirms). A `match` on an `Option` field of a struct passed by value frees the field's payload normally (item 139, closed). Recursive structures built from arrays (`kids: [Node]`) are freed normally.
+Known exceptions on 1.3.0 (open defects in `tools/loop/LEDGER.md`): values linked through `shared` pointers, such as the `Option<shared T>` fields of a tree or a list, are never freed (item 137) and, in release builds, wrapping a struct parameter with `shared` and returning it, then linking the results, corrupts the heap (item 138). A `match` on an `Option` field of a struct passed by value frees the field's payload normally (item 139, closed). Recursive structures built from arrays (`kids: [Node]`) are freed normally.
 
 ## Coming from Rust
 
