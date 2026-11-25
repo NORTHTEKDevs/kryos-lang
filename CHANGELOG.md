@@ -6,19 +6,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Fixed
-
-- Values linked through `shared` pointers are freed (LEDGER item 137). Trees and
-  lists built from `Option<shared T>` fields leaked every node: binary_trees
-  peaked at 1.1 GB and now peaks at 24 MB, a 2000-node list built and dropped
-  3000 times leaked 460 MB and now runs flat, and debug (Cranelift) builds free
-  the contents of a released arc too. `*s` of a `shared` struct (`let x = *s`,
-  `return *s`, `Some(*s)`, `cur = (*n).next`) takes its own owner. Release
-  builds of the item 138 repro (`return shared x` of a struct parameter, linked
-  into a list) no longer corrupt the heap.
-- A `match` on an `Option` field of a struct passed by value frees the struct
-  and the field's payload (LEDGER item 139), about 100 bytes per call.
-
 ## [1.3.0] - 2026-11-03
 
 Capability-boundary release. It closes the ways a program or a shipped binary
