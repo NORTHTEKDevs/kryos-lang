@@ -1,0 +1,35 @@
+// Control for LEDGER root R4: select arms, the timeout arm and a spawn lambda are walked now; a program that
+// stays inside its authority (binder used as i64, pure work inside deny!, nesting) must still be accepted.
+fn pure_task(n: i64) -> i64 {
+    return n * 2
+}
+
+fn host() {
+    let ch = chan()
+    send(ch, 21)
+    let total = 0
+    deny!(fs:read) {
+        select {
+            v ch => {
+                let doubled = pure_task(v) + 1
+                println("got " + to_string(doubled))
+            }
+            timeout 10 => {
+                let f = || pure_task(3)
+                println("timeout " + to_string(f()))
+            }
+        }
+        spawn fn() {
+            let ch2 = chan()
+            select {
+                w ch2 => { println("never " + to_string(w)) }
+                timeout 5 => { println("inner timeout") }
+            }
+        }
+        sleep(50)
+    }
+}
+
+fn main() {
+    host()
+}

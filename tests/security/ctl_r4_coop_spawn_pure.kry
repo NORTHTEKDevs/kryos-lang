@@ -1,0 +1,30 @@
+// Control for LEDGER root R4 (coop_spawn): a coop_spawn closure that stays inside deny! authority must still be accepted.
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+fn wrap_once(inner: fn() -> str) -> fn() -> str {
+    return || inner()
+}
+
+fn host(reader: fn() -> str) {
+    let wrapped = wrap_once(reader)
+    let go = || wrapped()
+    deny!(fs:read) {
+        coop_spawn(|| {
+            println("LEAK: " + safe())
+        })
+        coop_run()
+        sleep(300)
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    host(secret())
+}

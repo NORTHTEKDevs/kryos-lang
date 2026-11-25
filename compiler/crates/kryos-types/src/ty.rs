@@ -113,8 +113,12 @@ impl CapBits {
 }
 
 /// The capabilities of `denied` (names as written in a `deny!`) that the
-/// authority `used` includes, by the lattice: a coarse family in `used` covers
-/// each of its sub-capabilities, `all` covers everything. `Unknown` was erased to
+/// authority `used` overlaps, by the lattice, in BOTH directions: a coarse
+/// family in `used` covers each of its sub-capabilities, and a denied coarse
+/// family (`fs`, `io`, `net`, `all`) covers every sub-capability `used` holds.
+/// Containment in one direction only (`satisfies_required`) let `deny!(fs)`
+/// accept a block that used `fs:read` (LEDGER 121); this is the same reading
+/// `CapabilitySet::without` takes for the shape layer. `Unknown` was erased to
 /// `all` before it got here (`CapRow::concrete_bits`).
 ///
 /// This is the ONE place a `deny!` verdict is decided, shared by the check taken
@@ -132,7 +136,7 @@ pub fn denied_caps_used(denied: &[String], used: CapBits) -> Vec<String> {
         let Some(dcap) = Capability::from_str(d) else {
             continue;
         };
-        if have.satisfies_required(&dcap) {
+        if have.overlaps_capability(dcap) {
             out.push(d.clone());
         }
     }
@@ -728,5 +732,75 @@ impl fmt::Display for Type {
             Type::Var(id) => write!(f, "?T{id}"),
             Type::Error => write!(f, "<error>"),
         }
+    }
+}
+
+#[cfg(test)]
+mod deny_lattice_tests {
+    use super::{denied_caps_used, CapBits};
+
+    // (name as written in a `deny!`, the bit a body using that capability holds)
+    const CAPS: &[(&str, CapBits)] = &[
+        ("net", CapBits::NET),
+        ("net:http", CapBits::NET_HTTP),
+        ("net:tcp", CapBits::NET_TCP),
+        ("io", CapBits::IO),
+        ("fs", CapBits::IO),
+        ("fs:read", CapBits::FS_READ),
+        ("fs:write", CapBits::FS_WRITE),
+        ("ffi", CapBits::FFI),
+        ("compute", CapBits::COMPUTE),
+        ("crypto", CapBits::CRYPTO),
+        ("process", CapBits::PROCESS),
+        ("env", CapBits::ENV),
+        ("term", CapBits::TERM),
+        ("db", CapBits::DB),
+        ("time", CapBits::TIME),
+        ("all", CapBits::ALL),
+    ];
+
+    fn canon(n: &str) -> &str {
+        if n == "fs" { "io" } else { n }
+    }
+
+    fn family(n: &str) -> &str {
+        match n {
+            "net:http" | "net:tcp" => "net",
+            "fs:read" | "fs:write" => "io",
+            other => other,
+        }
+    }
+
+    /// The lattice written out by hand, not read from the compiler: a deny
+    /// covers a used capability iff they are equal, either is `all`, or one is
+    /// the coarse family of the other.
+    fn expected(denied: &str, used: &str) -> bool {
+        let (d, u) = (canon(denied), canon(used));
+        d == "all" || u == "all" || d == u || d == family(u) || u == family(d)
+    }
+
+    #[test]
+    fn deny_verdict_is_overlap_for_every_pair() {
+        let mut wrong = Vec::new();
+        for (d, _) in CAPS {
+            for (u, bits) in CAPS {
+                let got = !denied_caps_used(&[d.to_string()], *bits).is_empty();
+                if got != expected(d, u) {
+                    wrong.push(format!("deny!({d}) used={u}: expected {}, got {got}", expected(d, u)));
+                }
+            }
+        }
+        assert!(wrong.is_empty(), "{} wrong:
+{}", wrong.len(), wrong.join("
+"));
+    }
+
+    #[test]
+    fn fine_deny_allows_sibling_and_unrelated() {
+        assert!(denied_caps_used(&["fs:read".into()], CapBits::FS_WRITE).is_empty());
+        assert!(denied_caps_used(&["fs:write".into()], CapBits::FS_READ).is_empty());
+        assert!(denied_caps_used(&["net:http".into()], CapBits::NET_TCP).is_empty());
+        assert!(denied_caps_used(&["all".into()], CapBits::EMPTY).is_empty());
+        assert!(denied_caps_used(&["fs".into()], CapBits::NET_HTTP).is_empty());
     }
 }

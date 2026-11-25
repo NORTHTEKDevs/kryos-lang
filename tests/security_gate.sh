@@ -41,6 +41,37 @@ else
     tail -3 "$TMP/selc" | sed 's/^/    /'; fail=1
 fi
 
+# 0b. LEDGER root R4: the row layer walks EVERY select arm (binder in scope), the
+#     timeout arm and its duration, and a spawned lambda, through the one
+#     code path a function body takes. A deny! block anywhere in them is
+#     judged: E0110 in both modes, and the secret is never printed.
+for esc in attack_r4_select_in_lambda attack_r4_select_in_method attack_r4_select_in_actor_handler            attack_r4_select_in_generic_fn attack_r4_select_spawn_select attack_r4_spawn_lambda_wrapped_in_deny            attack_r4_coop_spawn_lambda_in_deny attack_r4_coop_spawn_in_select_deny attack_r4_coop_spawn_in_actor_handler            attack_deny_in_select_arm_callee attack_deny_in_select_arm_main attack_deny_in_select_timeout_arm; do
+    esc_ok=1
+    for mode in "" "--strict-capabilities"; do
+        if "$K" check $mode "tests/security/$esc.kry" >"$TMP/r4" 2>&1; then
+            echo "  FAIL: $esc.kry passed \`check $mode\` -- a deny! in a select arm / spawn body is not judged"
+            esc_ok=0; fail=1
+        elif ! grep -q "E0110" "$TMP/r4"; then
+            echo "  FAIL: $esc.kry rejected by \`check $mode\`, but not with E0110:"
+            tail -3 "$TMP/r4" | sed 's/^/    /'; esc_ok=0; fail=1
+        fi
+        if "$K" run $mode "tests/security/$esc.kry" 2>&1 | grep -q "TOPSECRET"; then
+            echo "  FAIL: $esc.kry printed the secret under \`run $mode\`"; esc_ok=0; fail=1
+        fi
+    done
+    [ $esc_ok -eq 1 ] && echo "  ok   $esc.kry rejected with E0110 in both modes, secret not printed"
+done
+for ctl in ctl_r4_select_spawn_pure ctl_r4_coop_spawn_pure; do
+for mode in "" "--strict-capabilities"; do
+    if "$K" check $mode tests/security/$ctl.kry >"$TMP/r4c" 2>&1; then
+        echo "  ok   $ctl.kry accepted under \`check $mode\` (no over-rejection)"
+    else
+        echo "  FAIL: walking select arms / spawn bodies rejected a pure program ($ctl) under \`check $mode\`:"
+        tail -3 "$TMP/r4c" | sed 's/^/    /'; fail=1
+    fi
+done
+done
+
 # 1. The escape must NOT compile.
 if "$K" run tests/security/cap_escape_raw_memory.kry >"$TMP/esc" 2>&1; then
     echo "  FAIL: the raw-memory capability escape COMPILED AND RAN"

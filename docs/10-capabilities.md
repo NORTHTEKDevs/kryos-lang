@@ -2,12 +2,12 @@
 
 > **Measured status (2026-11-02) - read this before anything else on this page.**
 > `bash tools/loop/escape_status.sh` re-runs every committed capability-escape repro under both
-> enforcement modes and prints the real count: **80 still escape, 180 are rejected (260 repros)**.
-> Each of the 80 is listed in [docs/THREAT-MODEL.md](THREAT-MODEL.md) section 4.1, with what not to
+> enforcement modes and prints the real count: **23 still escape, 237 are rejected (260 repros)**.
+> Each of the 23 is listed in [docs/THREAT-MODEL.md](THREAT-MODEL.md) section 4.1, with what not to
 > rely on and the workaround, and named in [tools/loop/LEDGER.md](../tools/loop/LEDGER.md) with its
 > measured routing in [tools/loop/ESCAPE-ROUTING.md](../tools/loop/ESCAPE-ROUTING.md). In every one
-> the program holds the capability and what fails is the narrowing of a `deny!` block; 56 of them
-> put the block inside a `select` arm, which the row layer does not judge. **A count of 0 would not
+> the program holds the capability and what fails is the narrowing of a `deny!` block; the row layer
+> now judges every `select` arm and spawned lambda body (the 56 select-arm repros are rejected). **A count of 0 would not
 > mean there are no escapes.** The corpus is adversarial shapes found by directed search, so a count
 > is a floor, not a soundness proof. Capabilities are a strong development-time discipline today;
 > they are not yet a boundary to run untrusted code behind. Where this page says a shape is
