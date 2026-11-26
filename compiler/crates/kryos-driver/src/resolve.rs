@@ -842,6 +842,7 @@ pub fn resolve_imports(
         resolved_decls,
         verbose,
         &unions,
+        Some(module),
     )
 }
 
@@ -852,6 +853,7 @@ fn resolve_imports_inner(
     resolved_decls: &mut Vec<Decl>,
     verbose: bool,
     unions: &SelectionUnions,
+    root: Option<&Module>,
 ) -> Result<(), Vec<Diagnostic>> {
     let imports = extract_imports(module);
 
@@ -923,6 +925,7 @@ fn resolve_imports_inner(
             resolved_decls,
             verbose,
             unions,
+            None,
         )?;
 
         let record_own_names: HashSet<String> = imported_module
@@ -1197,6 +1200,14 @@ fn resolve_imports_inner(
         });
     }
 
+    // Selective imports always drag in a module's types; two modules that
+    // each declare an UNREFERENCED `struct Item` must not collide. Only the
+    // root level sees every consumer, so only it prunes; nested levels leave
+    // type duplicates for the root's final check.
+    if let Some(root_module) = root {
+        prune_dead_duplicate_types(root_module, resolved_decls);
+    }
+
     // Check for duplicate declarations across imported modules.
     // When two imports define the same name, emit a clear error rather
     // than letting codegen crash with an opaque "duplicate definition".
@@ -1205,6 +1216,9 @@ fn resolve_imports_inner(
     for (idx, decl) in resolved_decls.iter().enumerate() {
         if let Some(name) = decl_name_of(decl) {
             if let Some(&prev_idx) = seen.get(&name) {
+                if root.is_none() && is_type_decl(decl) && is_type_decl(&resolved_decls[prev_idx]) {
+                    continue;
+                }
                 // Skip duplicate Decl::Const - constants from the same module
                 // can appear multiple times when re-exported through different
                 // selective imports. Only flag non-const duplicates, or const
@@ -1235,6 +1249,93 @@ fn resolve_imports_inner(
     }
 
     Ok(())
+}
+
+fn is_type_decl(decl: &Decl) -> bool {
+    matches!(
+        decl,
+        Decl::Struct { .. }
+            | Decl::Enum { .. }
+            | Decl::Trait { .. }
+            | Decl::Actor { .. }
+            | Decl::TypeAlias { .. }
+    )
+}
+
+/// Drop type declarations that would be reported as duplicates (E0205) when
+/// NOTHING in the program mentions the name. Selective import (`use m::{f}`)
+/// includes every type of `m` so selected functions' signatures resolve; two
+/// modules that each declare an `Item` nobody uses then collided although
+/// neither `Item` was imported or referenced. A name is dead only when no
+/// declaration outside its own group (the same-named types plus impls
+/// targeting the name) mentions it, in the root module or any import; a
+/// mention anywhere keeps the duplicate error, since which `Item` is meant
+/// cannot be told. Only programs that would otherwise be rejected change.
+fn prune_dead_duplicate_types(root: &Module, resolved: &mut Vec<Decl>) {
+    let mut count: HashMap<String, usize> = HashMap::new();
+    for d in resolved.iter() {
+        if is_type_decl(d) {
+            if let Some(n) = decl_name_of(d) {
+                *count.entry(n).or_insert(0) += 1;
+            }
+        }
+    }
+    let dup_names: Vec<String> = count
+        .into_iter()
+        .filter(|(_, c)| *c > 1)
+        .map(|(n, _)| n)
+        .collect();
+    if dup_names.is_empty() {
+        return;
+    }
+    let in_group = |d: &Decl, name: &str| -> bool {
+        (is_type_decl(d) && decl_name_of(d).as_deref() == Some(name))
+            || matches!(d, Decl::Impl { target, .. } if target == name)
+    };
+    let root_dbg: Vec<String> = root.declarations.iter().map(|d| format!("{d:?}")).collect();
+    let mut dbg: Vec<Option<String>> = vec![None; resolved.len()];
+    let mut remove: HashSet<usize> = HashSet::new();
+    for name in &dup_names {
+        let quoted = format!("\"{name}\"");
+        let qualified = format!("::{name}\"");
+        let mentions = |s: &str| s.contains(&quoted) || s.contains(&qualified);
+        let mut used = root_dbg.iter().any(|s| mentions(s));
+        if !used {
+            for (i, d) in resolved.iter().enumerate() {
+                if in_group(d, name) {
+                    continue;
+                }
+                let s = dbg[i].get_or_insert_with(|| format!("{d:?}"));
+                if mentions(s) {
+                    used = true;
+                    break;
+                }
+            }
+        }
+        if !used {
+            for (i, d) in resolved.iter().enumerate() {
+                if in_group(d, name) {
+                    remove.insert(i);
+                }
+            }
+        }
+    }
+    if remove.is_empty() {
+        return;
+    }
+    let shift = |pos: usize| pos - remove.iter().filter(|&&r| r < pos).count();
+    MODULE_RECORDS.with(|r| {
+        for rec in r.borrow_mut().iter_mut() {
+            rec.start = shift(rec.start);
+            rec.end = shift(rec.end);
+        }
+    });
+    let mut i = 0;
+    resolved.retain(|_| {
+        let keep = !remove.contains(&i);
+        i += 1;
+        keep
+    });
 }
 
 /// Return a human-readable kind name for a declaration (for error messages).
