@@ -854,12 +854,12 @@ pub extern "C" fn kryos_ed25519_public_ks(pkcs8_handle: i64) -> i64 {
 #[no_mangle]
 pub extern "C" fn kryos_ed25519_sign_ks(pkcs8_handle: i64, msg_handle: i64) -> i64 {
     let pkcs8_hex = unsafe { handle_to_str(pkcs8_handle) };
-    let msg = unsafe { handle_to_raw(msg_handle) };
+    let msg = unsafe { handle_to_str(msg_handle) };
     let Some(pkcs8) = hex_decode(pkcs8_hex) else {
         return str_to_handle("");
     };
     match ring::signature::Ed25519KeyPair::from_pkcs8(&pkcs8) {
-        Ok(kp) => str_to_handle(&hex_encode(kp.sign(msg).as_ref())),
+        Ok(kp) => str_to_handle(&hex_encode(kp.sign(msg.as_bytes()).as_ref())),
         Err(_) => str_to_handle(""),
     }
 }
@@ -869,13 +869,13 @@ pub extern "C" fn kryos_ed25519_sign_ks(pkcs8_handle: i64, msg_handle: i64) -> i
 #[no_mangle]
 pub extern "C" fn kryos_ed25519_verify_ks(pub_handle: i64, msg_handle: i64, sig_handle: i64) -> i64 {
     let pub_hex = unsafe { handle_to_str(pub_handle) };
-    let msg = unsafe { handle_to_raw(msg_handle) };
+    let msg = unsafe { handle_to_str(msg_handle) };
     let sig_hex = unsafe { handle_to_str(sig_handle) };
     let (Some(pubkey), Some(sig)) = (hex_decode(pub_hex), hex_decode(sig_hex)) else {
         return 0;
     };
     let key = ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, pubkey);
-    match key.verify(msg, &sig) {
+    match key.verify(msg.as_bytes(), &sig) {
         Ok(()) => 1,
         Err(_) => 0,
     }
