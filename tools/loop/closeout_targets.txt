@@ -1,0 +1,1 @@
+tests/security/bypass_pure_mutates_argument.kry  # M2: master release AOT deleted the call to the mutating @pure fn and printed nothing; JIT and now AOT print BYPASS-B7-OK

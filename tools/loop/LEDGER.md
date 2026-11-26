@@ -10486,3 +10486,31 @@ left-typed i64, unchanged); i128/u128 shifts; compound `<<=` / `>>=` assignment 
 elements/tuple elems read through paths other than a plain local or expression; signed narrow `>>` of a negative value
 with a wider count beyond what sh_c exercised (i8 -8 >> 1 = -4 only); a count >= the narrow width other than 9 on u8.
 The unverified num.patch (any-slot str rejection in the type checker) was NOT applied: it does not touch shifts.
+
+## M2: release AOT deleted the call to a `@pure` fn that mutates (`len=1 counter=0` instead of `len=2 counter=1`)
+
+Root cause (read in kryos-mir `optimize/pure.rs` + kryos-types `check_pure_free_call`; not guessed): `optimize_pure` trusted the
+`@pure` attribute outright (`pure_fns` = every fn with `attributes.pure_fn`) and then CSE-merged / dead-call-deleted calls to them.
+The type checker only restricts what a `@pure` body may CALL, and it even lists `push`/`pop` as side-effect-free; it never forbids
+`counter = counter + 1` on a module `let mut` (MIR `kryos_global_set`) or `push(param, ..)`. So `bump(xs)` with an unused result was
+removed in the release pipeline, dropping both mutations. JIT does not run the pass, hence the JIT/AOT split. (THREAT-MODEL B7 documents
+that `@pure` does not forbid mutation; the fix keeps that documented behaviour and makes the optimizer sound instead of rejecting.)
+Fix: `verified_pure_fns` in pure.rs. A `@pure` fn is optimizable only if its MIR body is verified effect-free (greatest fixpoint, so a
+pure fn calling a non-verified one is dropped too): calls only to verified-pure fns or a read-only builtin whitelist; mutating builtins
+(`push`, `pop`, `kryos_array_set`, `kryos_map_insert*`) and `store_field` only on a FRESH local (non-param, every assignment a
+constructor, so never an alias of a parameter/global); no `kryos_global_set`, `store_deref`, send/spawn/actor ops, indirect/vtable calls.
+Files: compiler/crates/kryos-mir/src/optimize/pure.rs, tests/pure_mutation_pin.{kry,sh}, tools/loop/closeout_targets.txt.
+Both-ways evidence: run.sh --only '^(M2)$' FAIL before (`aot: stdout=len=1 counter=0 want len=2 counter=1`), PASS after.
+tests/pure_mutation_pin.sh (mutates param + global; global only, called twice; param only, called twice; wrapper over a mutating pure
+fn; push onto a global array; genuinely pure local-array fn still CSE'd/removed): master binary FAILS on AOT (got len=1 counter=0,
+counter=10, ys=2, zs=1 counter=10, log=1, sum=12), tree PASS on JIT and AOT. --emit-mir --release shows `local_sum(4)` twice merged to
+one call and `local_sum(9)` removed, so verified-pure fns keep both optimizations.
+Regression scan: run.sh --only M1 M2 M3 M6 B7 A1 A2 A2.ctl A20 NaN-neg0 NaN-neg0-divergence libm-constfold 137-perf and all
+`^esc\.ctl:.*pure` controls (53 items): 51 PASS, B7 (doc item) and 137-perf (memory budget) FAIL identically on master;
+tests/backend_divergence_pins.sh and narrow_shift_pin.sh PASS. tests/security/bypass_pure_mutates_argument.kry now prints
+BYPASS-B7-OK on release AOT like JIT (listed in closeout_targets.txt).
+NOT covered (not executed): a `@pure` fn that READS a mutable global (`kryos_global_get` is treated as read-only), so CSE of two calls
+with a global write between them is still unsound; impl-method / static-method `@pure` (not tracked); WASM backend; a fresh local
+that is aliased into a returned/stored value and mutated by the caller is not modelled (callers see a new object anyway); mutating
+runtime helpers other than the five named (they fall into "unknown call = impure", i.e. only a lost optimization).
+The unverified num.patch (any-slot str rejection) was NOT applied: it does not touch @pure.

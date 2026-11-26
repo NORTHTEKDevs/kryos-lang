@@ -1,0 +1,61 @@
+// Pin (finish item M2): the @pure dead-call / CSE optimization must only act on
+// functions that are really effect-free. A @pure fn that mutates a parameter
+// array or a module-level `let mut` used to have its call deleted by release AOT.
+let mut counter = 0
+let mut log = [0]
+
+@pure
+fn bump(a: [i64]) {
+    push(a, 99)
+    counter = counter + 1
+}
+
+@pure
+fn only_global() {
+    counter = counter + 10
+}
+
+@pure
+fn only_param(a: [i64]) {
+    push(a, 7)
+}
+
+@pure
+fn wrapper(a: [i64]) {
+    bump(a)
+}
+
+@pure
+fn into_global_array() {
+    push(log, 5)
+}
+
+// A genuinely pure fn that builds and mutates a local array stays pure.
+@pure
+fn local_sum(n: i64) -> i64 {
+    let mut q = [1]
+    push(q, n)
+    return len(q) + q[1]
+}
+
+fn main() {
+    let xs = [1]
+    bump(xs)
+    println("len={len(xs)} counter={counter}")
+    only_global()
+    only_global()
+    println("counter={counter}")
+    let ys = [1]
+    only_param(ys)
+    only_param(ys)
+    println("ys={len(ys)}")
+    let zs = [1]
+    wrapper(zs)
+    println("zs={len(zs)} counter={counter}")
+    into_global_array()
+    println("log={len(log)}")
+    let a = local_sum(4)
+    let b = local_sum(4)
+    local_sum(9)
+    println("sum={a + b}")
+}
