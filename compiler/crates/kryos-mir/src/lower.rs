@@ -6096,7 +6096,6 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
             if ty.is_some() {
                 ctx.pending_let_expected = Some(mir_ty.clone());
             }
-            let mut elem_tuple_copy = false;
             let rvalue_and_meta = if let Some(expr) = value {
                 // Mark source locals as non-owning when the initializer
                 // borrows from another value.
@@ -6221,12 +6220,6 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                 }
                                 _ => false,
                             }));
-                // A tuple is a value type: `let mut e = arr[0]` / `let c = s.p`
-                // takes its own copy instead of sharing the element's handle,
-                // or a write through either name (`e.0 = 77`, a later
-                // `arr[0].0 = 50`) shows through the other on the JIT
-                // (finish item A20).
-                elem_tuple_copy = owns_element && is_owned_tuple_ty(ctx, &mir_ty);
                 if owns_element {
                     let added: Vec<u32> =
                         ctx.partial_moved_locals.difference(&partial_before_rhs).copied().collect();
@@ -6348,7 +6341,7 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
             }
 
             // Now allocate the new local (after RHS is evaluated).
-            let local = ctx.alloc_local(Some(name.clone()), mir_ty.clone(), *mutable);
+            let local = ctx.alloc_local(Some(name.clone()), mir_ty, *mutable);
 
             // If this `let`'s declared type names an actor, `resolve_type`
             // (above, for `mir_ty`) just erased it to a bare `I64` handle.
@@ -6656,15 +6649,7 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                     emit_param_source_retain(ctx, local, src);
                 }
                 if std::mem::take(&mut ctx.pending_let_share) {
-                    if elem_tuple_copy {
-                        let copy = emit_tuple_clone(ctx, local, &mir_ty);
-                        ctx.emit(Instruction::Assign {
-                            dest: local,
-                            value: RValue::Use(Operand::Local(copy)),
-                        });
-                    } else {
-                        emit_struct_share(ctx, local);
-                    }
+                    emit_struct_share(ctx, local);
                 }
                 if std::mem::take(&mut ctx.pending_let_fn_retain) {
                     let sink = ctx.alloc_temp(MirType::I64);
@@ -7444,20 +7429,7 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                 });
                             } else if owned_agg_dest {
                                 if share_new {
-                                    if matches!(dest_ty, Some(MirType::Tuple(_))) {
-                                        // A tuple is a value type: `u = t` takes
-                                        // its own copy, a shared handle would
-                                        // show a write through `u` in `t`
-                                        // (finish item A20).
-                                        let tty = dest_ty.clone().unwrap();
-                                        let copy = emit_tuple_clone(ctx, dest, &tty);
-                                        ctx.emit(Instruction::Assign {
-                                            dest,
-                                            value: RValue::Use(Operand::Local(copy)),
-                                        });
-                                    } else {
-                                        emit_struct_share(ctx, dest);
-                                    }
+                                    emit_struct_share(ctx, dest);
                                 }
                                 if let Some(old) = old_snapshot.filter(|_| !self_assign) {
                                     drop_tag(ctx, "reassign-release-owned-agg");

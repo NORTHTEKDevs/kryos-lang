@@ -10463,25 +10463,3 @@ NOT covered (not executed): a tuple copy that is not a bare-local `let` (`let mu
 `let mut w = m[k]` of a tuple, reassignment `u = t`, a tuple stored into a struct/array then mutated through one holder);
 a `mut` tuple PARAMETER written inside the callee while the caller keeps its name; closure capture of a mut tuple.
 The unverified num.patch (any-slot str rejection) was NOT applied.
-
-## A20 (verifier residuals): tuple copies out of an element, a field, a map value, and `u = t` reassignment
-
-The first A20 fix only handled a bare-local source (`let mut u = t`). Same defect on other shapes: the JIT shared the
-heap tuple handle (`pending_let_share` -> `emit_struct_share` in `Stmt::Let`, `share_new` -> `emit_struct_share` in
-`Stmt::Assign` to a plain local), so a write through one name showed through the other; AOT already copied.
-Fix (kryos-mir lower.rs): in `Stmt::Let`, when the initializer reads an owned tuple out of an array element / struct or
-tuple field / map value (`owns_element`), the binding gets `emit_tuple_clone` of the read instead of the share, whether or not
-either side is `mut` (the container can be written later: `let e2 = arr2[0]; arr2[0].0 = 50`). In `Stmt::Assign` to a tuple
-local whose value is shared (`u = t`, `u = arr[i]`, `u = s.p`), the destination takes `emit_tuple_clone` instead of the share.
-Files: compiler/crates/kryos-mir/src/lower.rs, tests/tuple_elem_value_copy_pin.{kry,sh}.
-Both-ways evidence: tests/tuple_elem_value_copy_pin.sh master binary FAIL on JIT (arr 77 e=77, field s.p=55 c=55,
-reassign t=9 u=9, late arr2=50 e2=50, late field 60/60, nested n=99, map m=6 mv=6, ...), AOT ok; this tree ok JIT + AOT.
-run.sh --only '^(A20)$' PASS. Regression: A*/M*/6/6.ctl/135-139/B*/41/NaN-neg0/libm-constfold/buf_get_byte/abort-undefined/
-turbofish-struct/122-typecheck/leakmode/copy-assign-leak master-vs-tree: zero PASS->FAIL (master 16 PASS, tree 25 PASS);
-`^mem:(attacks|closure)[-:/]` 387 rows: PASS set identical to master (222 each); tests/tuple_value_copy_pin.sh,
-tests/backend_divergence_pins.sh, tests/mem_tuple_gate.sh PASS (no leak growth).
-NOT covered (executed, still diverge JIT vs AOT): a tuple STORED into a container/struct/tuple from a named tuple local, then
-mutated through the container: `let mut arr = [p]; arr[0].0 = 9` (JIT p.0=9, AOT p.0=1), `S { p: p }` then `s.p.0 = 8`,
-`push(v, p)` then `v[1].0 = 7`, `let mut r = (q, 1); r.0.0 = 6`. Not exercised: a `mut` tuple parameter (syntax unsupported),
-closure capture of a mut tuple, tuple elements of enums/closures (not owned tuples).
-The unverified num.patch (any-slot str rejection) was NOT applied.
