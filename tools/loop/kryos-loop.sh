@@ -188,6 +188,7 @@ cmd_gates() {
     run "diagnostics"         bash tests/diagnostics_gate.sh
     run "assert_shadow"       bash tests/assert_shadow_gate.sh
     run "buf_get_byte_oob"    bash tests/buf_get_byte_oob_gate.sh
+    run "dap_jit_owner"       bash tests/dap_jit_owner_gate.sh
     run "lsp_repl_w0001"      bash tests/lsp_repl_w0001_gate.sh
     run "abort_builtin"       bash tests/abort_builtin_gate.sh
     run "parser_nesting"      bash tests/parser_nesting_gate.sh
