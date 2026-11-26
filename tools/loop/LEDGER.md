@@ -10350,3 +10350,13 @@ the swa lane's); `any` via a generic / trait-method return; method-call `a.conta
 an `any` param is NOT exempt (rejected); a closure bound with `let f = fn(a: any)` and then
 re-bound/passed around as a value loses the name-keyed check; non-str, non-i64 payloads (arrays/structs
 in an `any` param/return) were NOT probed in this pass. A real tagged `any` remains the only general fix.
+
+6: REOPENED -- fix refuted by verifier
+Verifier findings: item 6 passes run.sh and the pin test fails on master and passes on the tree, but the fix is too narrow (a str tail of an `-> any` lambda is only caught with an explicit `-> any` annotation).
+Residual shapes (all pass `kryos check` and print a raw pointer under `kryos run`):
+- lambda with no annotation whose `any` return comes from its expected type: `let f: fn() -> any = fn() { "hi" }; let x: any = f(); println(to_string(x))` (also on master)
+- lambda passed to a `fn() -> any` parameter: `fn run(f: fn() -> any) { let x: any = f(); println(to_string(x)) }  fn main() { run(fn() { "hi" }) }`
+- str through a struct field holding a `fn(any)`: `struct H { f: fn(any) }`, then `h.f("yo")`
+- str to a returned closure: `fn mk() -> fn(any) { fn(a: any) { println(to_string(a)) } }  fn main() { mk()("yo") }`
+- `fn pick() -> [any] { ["hi"] }  fn main() { println(to_string(pick()[0])) }`
+- `fn f() -> i64 { "hi" }  fn main() { println(to_string(f())) }` (tail never unified with the declared return type)
