@@ -29,8 +29,7 @@ is a separate, deliberately historical document and was left verbatim.
   waiver, STABILITY.md / README.md / LAUNCH.md refresh. Pushed to
   `origin/master`.
 - Known limitations shipped deliberately with 1.0.0 (leaks, not corruption;
-  see STABILITY.md A5): struct-with-heap-fields call-boundary leak (~86MB/1M
-  calls, LEDGER item 3), struct-field overwrite loop leak (~92MB/1M, item 51),
+  see STABILITY.md A5): (historical; items 3 and 51, the struct call-boundary and struct-field overwrite leaks, are now CLOSED; open: 137, 138, 139),
   and 41/75 pure-closure shapes needing explicit `@capabilities(all)`
   (item 41).
 

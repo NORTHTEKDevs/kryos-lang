@@ -265,18 +265,12 @@ struct crossing a function call is tracked by a different piece of the
 runtime than the piece that frees an everyday local, and the two don't
 always agree on when the last owner is actually gone.
 
-The measured consequence is a real leak, not a theoretical one: passing a
+Historically this accounting gap leaked: passing a
 struct with heap-backed fields (a `str`, an array, or a nested struct)
-across a function call leaks roughly 86MB per million calls
-([`tools/loop/LEDGER.md`](../../../tools/loop/LEDGER.md), item 3 -- eight
-separate fix attempts are recorded there, all ruled out, because a real fix
-means unifying the two accounting paths, which is a bigger change than a
-point patch this close to 1.0). A struct built only from scalar fields --
-`Account` above included -- never hits this; there's no heap data for the
-two paths to disagree about. In a hot loop that passes the same struct
-thousands or millions of times, read the fields you need directly instead
-of passing the whole struct, or keep heap-backed data out of structs that
-cross call boundaries.
+across a function call leaked roughly 86MB per million calls
+([`tools/loop/LEDGER.md`](../../../tools/loop/LEDGER.md), item 3). That leak
+is CLOSED: the callee owns its struct parameter and drops it. Leaks that
+remain open are listed in [`STABILITY.md`](../../../STABILITY.md) section 5.
 
 ## Common mistakes
 
@@ -341,9 +335,8 @@ place the "they behave the same" mental model breaks down.
   from the `let` line alone.
 - `E0300` is an advisory lint, not a hard error -- it doesn't consistently
   fire and never blocks compilation.
-- Struct parameters with heap-backed fields have a real, measured cost in a
-  hot loop (~86MB/million calls, LEDGER item 3, open) that `[T]`/`map`
-  parameters don't -- read fields directly or keep heap data out of structs
-  crossing call boundaries.
+- Struct parameters with heap-backed fields used to leak in a hot loop
+  (~86MB/million calls, LEDGER item 3); that is CLOSED. Open leaks are listed
+  in `STABILITY.md` section 5.
 
 Next: [Capabilities](11-capabilities.md)

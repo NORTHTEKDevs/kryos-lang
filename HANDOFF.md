@@ -158,7 +158,7 @@ path had no such guard, which is exactly why it miscompiled silently.
    print `0 10 20 30`, was nondeterministic pre-fix).
 4. Box layout behind one shared helper — 2–3 days.
 5. Receiver representation/ABI change — 2–4 weeks. **Now a performance item**
-   (the struct-argument leak, ~86MB/1M -- see the correction below), not a
+   (the struct-argument leak, ~86MB/1M, LEDGER item 3, since CLOSED), not a
    1.0 blocker.
 4. ~~Capability-gate the raw-memory builtins~~ **done** — `alloc`, `free_bytes`,
    `ptr_read_i64`, `ptr_write_i64`, `ptr_byte_at`, `ptr_set_byte`, `str_to_ptr`

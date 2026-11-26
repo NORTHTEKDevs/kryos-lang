@@ -430,7 +430,7 @@ ratings for a claim of unconditional soundness:
   soundness hole (invariant 4/22's fail-closed default is exactly what
   fires here). Documented in `docs/10-capabilities.md` and the LEDGER's
   "capability cascade" wave.
-- The struct-argument leak (~86MB/1M calls, LEDGER OPEN item 3) is a
+- The struct-argument leak (was ~86MB/1M calls, LEDGER item 3, now CLOSED) was a
   MEMORY-SAFETY/leak issue in the two struct-drop codegen paths, not a
   capability-model issue - out of scope for this document, not re-audited
   here.

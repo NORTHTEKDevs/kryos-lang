@@ -171,16 +171,12 @@ underneath, not in anything you can observe from this kind of example: a
 `str`/`[T]`/`map` parameter is a **true borrow** with no ownership
 bookkeeping at the call boundary, but a struct parameter is handled with
 **ownership-transfer semantics** -- the callee's copy carries its own
-retain/drop accounting. This has a real, measured cost: passing a struct
-that has heap-backed fields (a `str`, array, or nested struct field) across
-a function call leaks roughly 86MB per million calls -- an open design note
-in this compiler, not something you did wrong
-([`tools/loop/LEDGER.md`](../../../tools/loop/LEDGER.md), item 3). A struct
-made only of scalar fields (`i64`, `f64`, `bool`) doesn't hit this, since
-there's no heap data to mismanage. In a hot loop that passes the same
-struct thousands or millions of times, read the fields you need directly
-instead of passing the whole struct, or keep heap-backed data out of
-structs that cross call boundaries.
+retain/drop accounting. Earlier versions leaked
+the heap-backed fields of a struct (a `str`, array, or nested struct field)
+at every call, roughly 86MB per million calls; that leak
+([`tools/loop/LEDGER.md`](../../../tools/loop/LEDGER.md), item 3) is
+CLOSED: the callee owns its struct parameter and drops it. Leaks that remain
+open are listed in [`STABILITY.md`](../../../STABILITY.md) section 5.
 
 ### Scalars are different again: real copies
 
@@ -273,8 +269,8 @@ a field/element (`p.x = ..`, `arr[i] = ..`), or shadow with a local
   stays valid to reuse after the call returns.
 - Struct/enum parameters behave identically from the outside but carry
   ownership-transfer semantics underneath -- the cost is a real, measured
-  memory leak (~86MB/million calls) when a struct's fields are heap-backed,
-  an open design note (LEDGER item 3), not a bug in your code.
+  memory leak (~86MB/million calls) when a struct's fields were heap-backed;
+  that leak (LEDGER item 3) is now CLOSED.
 - Scalars (`i64`, `f64`, `bool`) are plain copies -- a mutation inside the
   callee is never visible to the caller.
 
