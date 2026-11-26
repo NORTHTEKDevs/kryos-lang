@@ -10287,3 +10287,31 @@ waves stayed on the branch: 4abc3237, 93eb2775, edaefeca, 2adcb631, 9a451e31,
 225e8175, ae044fb8. This commit restores every file except this ledger to
 25af4db3, the last head that passed all three verifiers. The refuted-wave
 entries above stay as history; their items remain open.
+
+### RUN-TMP-1: `kryos run` links to a unique per-invocation path (lane-misc)
+
+Root cause: `compiler/crates/kryos-cli/src/commands/run.rs` linked every run to
+`<temp>/<stem>.exe`, and the driver wrote its `<stem>.o` intermediate beside the
+output. Concurrent `kryos run` of same-named files (e.g. several `main.kry`) shared
+one exe and one .o: link failures (exe locked / overwritten) and, when the race
+went the other way, one program executing another's binary.
+
+Fix: each run gets its own directory `<temp>/kryos_run_<pid>_<nanos>_<counter>`
+(created with `create_dir`, which fails on a name clash, so it is never shared),
+the exe keeps its `<stem>.exe` name inside it, and a `RunDir` guard removes the
+whole directory (exe + .o) after the run, before any `process::exit`, and on
+every early error return.
+
+Files: compiler/crates/kryos-cli/src/commands/run.rs, tests/run_tmp_unique_pin.sh.
+
+Evidence: tests/run_tmp_unique_pin.sh (4 same-name programs x 8 rounds against one
+private TMP): master binary FAIL (31 bad runs of 32, link failed); this build PASS
+(32/32, TMP empty afterwards). finish/run.sh --only '^(RUN\-TMP\-1)$': master
+FAIL (116 bad runs), this build PASS. The 8 other lane-misc items (docs-*, ASI,
+buf_get_byte, abort, import-*, turbofish) are identical FAIL on master and here (not
+touched, not regressions).
+
+Not covered: `kryos run` killed by a signal / hard-killed leaves its
+`kryos_run_*` directory behind (no destructor runs); `kryos build` default output
+path and other temp users (eval, test, LLVM AOT already uses unique stems) were
+not changed or probed for same-name collisions.
