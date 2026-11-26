@@ -12589,6 +12589,7 @@ impl LlvmCodegen {
                             | MirType::Shared(_)
                             | MirType::Struct(_)
                             | MirType::Enum(_)
+                            | MirType::Tuple(_)
                     )
                 })
                 .collect();
@@ -12616,7 +12617,7 @@ impl LlvmCodegen {
                         let line = match other {
                             MirType::Str => format!("  call i64 @kryos_string_retain_opt(ptr {p})"),
                             MirType::Array(_, _) => format!("  call i64 @kryos_array_retain_opt(ptr {p})"),
-                            MirType::Struct(_) | MirType::Enum(_) => {
+                            MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) => {
                                 format!("  call ptr @kryos_struct_retain(ptr {p})")
                             }
                             _ => format!("  call void @kryos_arc_retain(ptr {p})"),
@@ -12692,6 +12693,7 @@ impl LlvmCodegen {
                         | MirType::Function { .. }
                         | MirType::Enum(_)
                         | MirType::Shared(_)
+                        | MirType::Tuple(_)
                         | MirType::Map { .. }
                 )
             })
@@ -12719,6 +12721,7 @@ impl LlvmCodegen {
                                 | MirType::Function { .. }
                                 | MirType::Enum(_)
                                 | MirType::Shared(_)
+                                | MirType::Tuple(_)
                                 | MirType::Map { .. }
                         )
                     })
@@ -12798,6 +12801,33 @@ impl LlvmCodegen {
                         MirType::Shared(_) => {
                             self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
                             self.emit_line(&format!("  call void @kryos_arc_release(ptr {fv})"));
+                        }
+                        MirType::Tuple(tes) => {
+                            // A tuple payload is a kryos_calloc box holding the
+                            // inline tuple; the variant owns one box owner. The
+                            // last owner releases the tuple's heap leaves and
+                            // frees the box (same shape as a struct payload).
+                            let tty = self.sig_ty_to_llvm(field_ty);
+                            if tty.starts_with('{') {
+                                let tes = tes.clone();
+                                self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
+                                let sh = self.next_temp();
+                                let is_sh = self.next_temp();
+                                let uid = self.temp_counter;
+                                self.temp_counter += 1;
+                                let own = format!("tup_pl_own_{uid}");
+                                let end = format!("tup_pl_end_{uid}");
+                                self.emit_line(&format!(
+                                    "  {sh} = call i64 @kryos_struct_release_shared(ptr {fv})"
+                                ));
+                                self.emit_line(&format!("  {is_sh} = icmp ne i64 {sh}, 0"));
+                                self.emit_line(&format!("  br i1 {is_sh}, label %{end}, label %{own}"));
+                                self.emit_line(&format!("{own}:"));
+                                self.emit_tuple_drop(&fv, &tty, &tes, func);
+                                self.emit_line(&format!("  call void @kryos_free(ptr {fv})"));
+                                self.emit_line(&format!("  br label %{end}"));
+                                self.emit_line(&format!("{end}:"));
+                            }
                         }
                         _ => {}
                     }

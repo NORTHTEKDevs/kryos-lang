@@ -6192,6 +6192,32 @@ fn strip_escaping_tuple_drops(
                     continue;
                 }
             }
+            // An enum variant takes ownership of a tuple payload. A tuple the
+            // block shared right before the construction gave the variant its
+            // own reference (`Some(t)` of a named `t`), so `t` keeps its own
+            // scope-end release; an unshared tuple is moved in (an escape).
+            // The variant's drop releases the payload tuple.
+            if let Instruction::Assign { value: RValue::EnumVariant { fields, .. }, .. } = inst {
+                for f in fields {
+                    let Operand::Local(v) = f else { continue };
+                    if !tuples.contains(&v.0) {
+                        continue;
+                    }
+                    let shared_before = b.instructions[..ii]
+                        .iter()
+                        .rev()
+                        .take_while(|j| !matches!(j, Instruction::Assign { dest: d2, value: v2 }
+                            if d2 == v && !matches!(v2, RValue::Call { func, .. } if func == STRUCT_SHARE_FN)))
+                        .any(|j| matches!(j, Instruction::Assign { value: RValue::Call { func, args }, .. }
+                            if func == STRUCT_SHARE_FN && args.len() == 1
+                                && matches!(&args[0], Operand::Local(l) if l == v)));
+                    if !shared_before {
+                        unowned.insert(v.0);
+                        unowned.insert(root(v.0));
+                    }
+                }
+                continue;
+            }
             let (defs, uses) = crate::liveness::inst_defs_uses(inst);
             for u in uses {
                 if tuples.contains(&u.0) {

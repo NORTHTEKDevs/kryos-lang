@@ -644,6 +644,7 @@ pub fn compile_module_with_options(
                             | MirType::Function { .. }
                             | MirType::Enum(_)
                             | MirType::Shared(_)
+                            | MirType::Tuple(_)
                     )
                 })
             });
@@ -2353,6 +2354,7 @@ pub fn compile_module_with_options(
                                     | MirType::Function { .. }
                                     | MirType::Enum(_)
                                     | MirType::Shared(_)
+                                    | MirType::Tuple(_)
                             )
                         })
                         .collect();
@@ -2377,6 +2379,15 @@ pub fn compile_module_with_options(
                         let offset = ((*field_idx + 1) * 8) as i32;
                         let field_val =
                             builder.ins().load(types::I64, MemFlags::new(), ptr, offset);
+                        if let MirType::Tuple(tes) = *field_ty {
+                            // A tuple payload is a refcounted handle the variant
+                            // owns one reference to.
+                            let kv = builder.ins().iconst(types::I64, tuple_release_kinds(tes));
+                            let fid = func_ids["kryos_tuple_release"];
+                            let fref = object_module.declare_func_in_func(fid, builder.func);
+                            builder.ins().call(fref, &[field_val, kv]);
+                            continue;
+                        }
                         if let MirType::Array(elem, _) = *field_ty {
                             emit_helper_array_field_free(
                                 &mut builder,
@@ -7855,6 +7866,34 @@ fn ensure_func_ref_with_args<M: Module>(
     Ok(func_ref)
 }
 
+/// Ensure a FuncRef for a runtime function that takes `arg_count` i64
+/// arguments and returns nothing (declared void, matching the runtime's
+/// `extern "C" fn(..)`; `ensure_func_ref_with_args` would declare an i64
+/// return and clash with the void declaration of the same symbol).
+fn ensure_void_func_ref<M: Module>(
+    name: &str,
+    builder: &mut FunctionBuilder,
+    translator: &mut FuncTranslator,
+    module: &mut M,
+    arg_count: usize,
+) -> Result<cranelift_codegen::ir::FuncRef, CodegenError> {
+    if let Some(func_ref) = translator.func_refs.get(name) {
+        return Ok(*func_ref);
+    }
+    let func_id = if let Some(id) = translator.func_ids.get(name) {
+        *id
+    } else {
+        let mut sig = Signature::new(module.isa().default_call_conv());
+        for _ in 0..arg_count {
+            sig.params.push(AbiParam::new(types::I64));
+        }
+        module.declare_function(name, Linkage::Import, &sig)?
+    };
+    let func_ref = module.declare_func_in_func(func_id, builder.func);
+    translator.func_refs.insert(name.to_string(), func_ref);
+    Ok(func_ref)
+}
+
 /// Ensure a FuncRef for an f64→f64 function (math builtins like sin, cos, log).
 fn ensure_func_ref_f64_f64<M: Module>(
     name: &str,
@@ -8879,6 +8918,7 @@ fn emit_drop_for_value<M: Module>(
                                 | MirType::Function { .. }
                                 | MirType::Enum(_)
                                 | MirType::Shared(_)
+                                | MirType::Tuple(_)
                                 | MirType::Map { .. }
                         )
                     })
@@ -8905,6 +8945,7 @@ fn emit_drop_for_value<M: Module>(
                                         | MirType::Function { .. }
                                         | MirType::Enum(_)
                                         | MirType::Shared(_)
+                                        | MirType::Tuple(_)
                                         | MirType::Map { .. }
                                 )
                             })
@@ -8953,6 +8994,16 @@ fn emit_drop_for_value<M: Module>(
                             // for the identical reason) -- a genuine Cranelift
                             // function CALL, safely recursive at runtime (bounded by
                             // the real data depth) instead of at Rust compile time.
+                            // A tuple payload is a refcounted handle the variant owns
+                            // one reference to (same release as the drop helper).
+                            if let MirType::Tuple(tes) = *field_ty {
+                                let kv = builder.ins().iconst(types::I64, tuple_release_kinds(tes));
+                                let rel = ensure_void_func_ref(
+                                    "kryos_tuple_release", builder, translator, module, 2,
+                                )?;
+                                builder.ins().call(rel, &[field_val, kv]);
+                                continue;
+                            }
                             let nested_helper = match field_ty {
                                 MirType::Struct(n) | MirType::Enum(n) => {
                                     Some(format!("__kryos_drop_{n}"))

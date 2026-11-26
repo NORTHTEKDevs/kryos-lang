@@ -10915,3 +10915,56 @@ RESIDUAL (not covered, not claimed)
 - Tuple fields whose elements include a struct / enum (not tuple_array_elem_releasable) keep the old behaviour.
 - The shared-handle items 137 / 139 (this lane's single-ownership-rule wall) are untouched here; the unverified lane mem.patch
   was not applied. A16-A19 are different shapes and untouched.
+
+## a16 (finish item A16): a tuple stored as an enum payload leaked the tuple on every drop
+
+Item A16 (jit/aot leaks.kry tuple_payload_index) = `ts[0] = ("t{i}", i); let o = Some(ts[0])`. The index overwrite is
+already released (control A16.ctl flat); the leak was the Option's payload. Not specific to the index read: `Some(("t", i))`,
+`let t = ..; Some(t)`, `fn wrap(t) { return Some(t) }`, `E.A(t)` for a user enum, `match o { Some(x) => }` all leaked the same
+way (master: 90-100MB AOT, 150-220MB JIT per 1M iterations; an Option<(i64, i64)> leaked its 16-byte box too).
+
+ROOT CAUSE
+- Neither backend's enum drop had a Tuple arm. Cranelift: `__kryos_drop_<enum>` and the inline Enum arm of emit_drop_for_value
+  filtered payloads to Str/Array/Struct/Function/Enum/Shared (an enum with ONLY a tuple payload got no helper at all); LLVM
+  emit_enum_drop_inner had the same filter, and emit_enum_share_payload (the copy's own owner) skipped tuple payloads.
+- MIR already built the right ownership (a tuple read from an array/field is shared once, the variant owns that reference, a fresh
+  tuple moves in): only the release at the other end was missing.
+- Second defect, same family: `let t = (..); let o = Some(t)` shares `t` for the variant, but strip_escaping_tuple_drops counted the
+  EnumVariant use as an escape of `t` and removed t's own scope-end release, leaking one reference per iteration even once the enum
+  drop released its share.
+
+CHANGE
+- kryos-codegen-cranelift codegen.rs: Tuple joins the enum has-droppable lists (helper declaration, helper filter, inline arm); a
+  tuple payload is released with kryos_tuple_release(handle, kinds) (last reference frees str/array/map elements, then the tuple);
+  new ensure_void_func_ref (the AOT object path declares that symbol void; ensure_func_ref_with_args declared an i64 return and clashed).
+- kryos-codegen-llvm codegen.rs: emit_enum_drop_inner releases a tuple payload box (kryos_struct_release_shared owner check, then
+  emit_tuple_drop of the leaves, then kryos_free of the box); emit_enum_share_payload retains that box owner on an enum copy.
+- kryos-mir lower.rs strip_escaping_tuple_drops: an EnumVariant operand that the block shared immediately before is not an escape.
+
+EVIDENCE (both ways)
+- run.sh --only '^(A16|A16\.ctl)$': master tree FAIL A16 (jit +118.3MB), this tree PASS A16, PASS A16.ctl (4 builds checked, JIT and AOT).
+- tests/mem_tuple_payload_gate.sh (modes idx idx_match fresh named copy wrap enum_idx enum_named control, 1M iterations, JIT + AOT,
+  RSS ceiling 24MB, answer 1000000 checked): MASTER binary FAIL, all 16 payload rows leak (AOT 91-97MB, JIT 152-156MB), control 3-4MB;
+  this tree PASS, all 18 rows 3-4MB.
+- KRYOS_ALLOC_STATS box live=1 (the module global) on every mode, JIT; AOT RSS flat.
+- Alias/answer probes (copy of an Option, wrap of a named tuple, wrap_local, pass-through, Some(ts[k]) from a fn param, struct field, array push,
+  global overwrite, reassignment, user enum copy + match, Result<(str,i64),str>, nested tuple, tuple with array element, throw inside
+  try after Some(t)): identical stdout to master on JIT and AOT (debug Cranelift exe and LLVM exe), no crash.
+- Regression: `--only '^mem:'` 379 PASS / 10 FAIL, the identical ten documented shared-handle failures (names diffed against the
+  prior baseline); A/M/136-139 scan: no PASS->FAIL against master, A16 now PASS; gates PASS: mem_balance, mem_tuple,
+  mem_tuple_field_overwrite, mem_enum_* (7), no_double_free, backend_divergence_pins, jit_symbols, builtin_borrow_mir, mem_global_aggregate,
+  mem_struct_field_read, mem_struct_array_overwrite, mem_field_assign_temp, mem_copy_assign, mem_loop, mem_shared_rule, type_soundness,
+  mem_throw_closure, mem_string_interp, mem_json_handle, mem_agg_ops, mem_element_read, mem_struct_arg, mem_pop_stmt, mem_shadow_builtin,
+  minilisp 22/22, stdlib_compile 66/66, selfhost_wholeprogram, concurrency_smoke, run_examples, wasm_differential 66/66,
+  ecosystem_check 259/259, conformance 120/120.
+- The unverified lane mem.patch was NOT applied; this change does not touch shared-handle (137 / 139) ownership.
+
+RESIDUAL (executed, still leaking or failing; not claimed)
+- `match h.o { Some(x) => .. }` where `h` is a struct with an Option<(str, i64)> field: the field read marks the struct partially moved
+  (enum_payloads_own_refs is false for a tuple payload, a bind is a bare alias), so the struct is never dropped: cl 134MB / AOT 9MB per
+  600k. This is item 139's tuple-payload shape (n139_f) and needs the bind and strip_escaping_tuple_drops designed together.
+- A tuple payload holding a struct/enum element: kryos_tuple_release frees only str/array/map elements (kinds), so the element leaks
+  (Q.Pq((P{..}, i)): 1 box per iteration on JIT). A nested tuple `Some((("n", i), i))` leaks on the Cranelift exe (96MB / 600k), flat on LLVM.
+- Pre-existing, not changed here: AOT segfault for `os = push(os, wrap_local(i)); os = push(os, None)` on `[Option<(str, i64)>]`
+  (master crashes identically at 300k iterations); a str argument temp is never dropped when the same statement contains an
+  if-expression (`sink + ok(o, "t{i}", i) + (if .. {0} else {0 - 1})`, ~70B/iter).
