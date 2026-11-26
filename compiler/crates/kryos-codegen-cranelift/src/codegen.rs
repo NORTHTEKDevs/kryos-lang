@@ -6835,8 +6835,20 @@ fn translate_rvalue<M: Module>(
                 let insert_ref =
                     ensure_func_ref_with_args(insert_fn, builder, translator, module, 3)?;
                 for (k, v) in entries {
-                    let key_val = translate_operand(k, builder, translator, module)?;
-                    let val_val = translate_operand(v, builder, translator, module)?;
+                    let mut key_val = translate_operand(k, builder, translator, module)?;
+                    let mut val_val = translate_operand(v, builder, translator, module)?;
+                    // The insert runtime takes i64 key/value slots: widen a
+                    // char (i32) / small int and bit-cast a float, exactly as
+                    // the `m[k] = v` call path does. Without this a char or
+                    // float key (`{'a': 7}`, `{-1.5: 7}`) failed the verifier.
+                    for slot in [&mut key_val, &mut val_val] {
+                        let ty = builder.func.dfg.value_type(*slot);
+                        if is_float_type(ty) {
+                            *slot = builder.ins().bitcast(types::I64, MemFlags::new(), *slot);
+                        } else if ty.is_int() && ty.bits() < 64 {
+                            *slot = builder.ins().sextend(types::I64, *slot);
+                        }
+                    }
                     builder
                         .ins()
                         .call(insert_ref, &[map_handle, key_val, val_val]);
