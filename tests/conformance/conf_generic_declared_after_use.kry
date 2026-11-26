@@ -1,0 +1,51 @@
+// Conformance (2026-11-26, finish-line A3 residual): a GENERIC enum / struct
+// declared AFTER the functions whose signatures name it. The signature pre-pass
+// resolved `fn mk() -> Opt<str>` before the template was registered, so the
+// return type stayed a bare Struct("Opt") and the call result read back as a
+// garbage pointer (JIT) or a clang error (AOT). Run on both backends.
+
+fn mk() -> Opt<str> { return Opt.Some("g") }
+
+fn mkb() -> Bx<str> { return Bx { v: "gs" } }
+
+fn mkr(n: i64) -> Res<i64, str> {
+    if n > 0 { return Res.Ok(n) }
+    return Res.Err("bad")
+}
+
+fn show(r: Res<i64, str>) -> str {
+    match r {
+        Res.Ok(v) => return "ok",
+        Res.Err(e) => return e
+    }
+}
+
+fn main() {
+    let o = mk()
+    match o {
+        Opt.Some(s) => {
+            if s != "g" {
+                println("CONF FAIL: Opt.Some payload")
+                exit(1)
+            }
+        }
+        Opt.None => {
+            println("CONF FAIL: Opt.None")
+            exit(1)
+        }
+    }
+    let b = mkb()
+    if b.v != "gs" {
+        println("CONF FAIL: Bx.v")
+        exit(1)
+    }
+    if show(mkr(7)) != "ok" || show(mkr(0)) != "bad" {
+        println("CONF FAIL: Res")
+        exit(1)
+    }
+    println("conf_generic_declared_after_use ok")
+}
+
+enum Opt<T> { Some(T), None }
+struct Bx<T> { v: T }
+enum Res<T, E> { Ok(T), Err(E) }
