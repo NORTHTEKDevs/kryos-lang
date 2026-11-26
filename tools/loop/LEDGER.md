@@ -11027,3 +11027,56 @@ RESIDUAL (executed, NOT covered)
 - A struct / enum / tuple / closure / shared FIELD read off an if / match temporary (an unretained alias into the
   slot): the slot is still not released.
 - A read off an if / match whose branches do not all own a fresh struct (struct_value_owned false): unchanged.
+
+## a17 round 2 (finish item A17): the field-of-if/match-temp read in every position, and block arms that return a local (2026-11-26, lane mem, branch closeout/lane-mem)
+
+Round 1 (80f7b597) was refuted as too narrow: the same read leaked in an if condition and a return expression, a
+block arm returning a local was untouched, nested / tuple field reads and the `elif` / `while` conditions were not
+covered. Lane note: no `shared` handle is involved; this closes nothing in items 137 / 139.
+
+ROOT CAUSES (each read in lower.rs, then confirmed on `kryos build --emit-mir`)
+1. Condition / return position. Round 1 released the result SLOT right after the read, but the str the read
+   retained (`_4 = _2.name`) was still never dropped there: the statement-end pass runs after the statement and
+   bails on one that created blocks, and lower_stmt's tail-block pass is skipped for `if` / `while` conditions and
+   `return`, which call drop_unescaped_str_temps once on the whole expression (which bails the same way). Any heap
+   temp defined after an if / match value inside a condition or a `return` leaked, not only field reads.
+2. Block arm returning a local. struct_value_owned said "not owned" for `{ let t = mk(i)  t }` (the tail name is
+   block-bound, so it was treated like an outer name), so the `let` / read path copied the slot and never released it.
+   take_tail_identifier already MOVES the block's own local into the slot, so the slot does own it.
+3. Nested reads. `.q.name` / `.t.0` read a struct / tuple field (an unretained alias into the slot) before the
+   independent read; round 1 only handled a single read straight off the slot.
+
+FIX (compiler/crates/kryos-mir/src/lower.rs)
+- drop_tail_block_temps: the lower_stmt tail-block pass as a helper, now also run after the `if` condition, the
+  `elif` condition (which had no temp drop at all), the `while` condition and `return`.
+- lower_field_chain_off_slot replaces round 1's single-read code: a chain of field reads off an if / match whose slot
+  is an owned struct (struct_value_owned), every step a struct / tuple field and the last a scalar or retained
+  str / array / map, is read off the slot step by step and the slot is dropped after the last read. is_read_then_slot_drop
+  accepts the alias chain so the let / assignment consumers still adopt the read's reference.
+- block_moves_own_let + struct_value_owned: a block that is exactly `let t = <call or struct literal>` and a tail `t`
+  is an owned value; the `let x = { let t = mk(i)  t }` path copies it and releases the moved original (drop_fresh_src).
+
+EVIDENCE (peak commit, 1M iterations, JIT and AOT; same answers on master and tree in every mode)
+- run.sh --only '^(A17|A17.ctl)$': PASS A17, PASS A17.ctl.
+- tests/mem_field_of_temp_gate.sh extended with 8 modes (cond_str, elif_str, while_str, ret_if, blk_arm, blk_let,
+  nested_q, tuple_t): tree PASS, every mode 3-4MB on both backends; master binary: 34 FAIL lines, e.g. cond_str AOT 219MB /
+  JIT 280MB, ret_if / blk_arm / blk_let / nested_q / tuple_t AOT 342MB / JIT 525MB, elif_str 212 / 278MB, while_str 210 / 280MB.
+- Verifier shapes, measured on the tree (JIT, 800k, S{name:str,n:i64} / SM with a map / P with struct, tuple, array
+  fields): s_plain, s_cond, s_ret, sm_blk, p_blk, p_q, p_t, blk_let, blk_ctl all flat at the 34MB baseline.
+- Correctness scratch (match / if arms with block-local tails, `.q.name`, `.t.0`, elif conditions inside a while,
+  `let mut x = { let t = mk(i)  t }` then field assign and copy): identical output on master JIT, tree JIT and tree AOT.
+- Regression scan: A10-A16, A12-A16 controls, M5, leakmode:* (16), copy-assign-leak*, 139, 137-perf (x0.707): PASS;
+  A18 (+283MB) and A19 (+118MB) still FAIL as on master. `--only '^mem:(attacks|closure)[-:/]'`: 377 PASS / 10 FAIL,
+  the same 10 as master (c06, n03, n139_a_50, n139_e, n139_f, v139_g x2, x_tuple, v137_uaf, v139_tuple).
+  tests/no_double_free.sh, backend_divergence_pins, builtin_borrow_mir_gate and 25 mem_*_gate.sh PASS;
+  mem_agg_ops_gate.sh did not finish in 580s (0 FAIL lines before the cut), not re-run to completion.
+
+RESIDUAL (executed, NOT covered)
+- Two if / match temporaries read in ONE statement (`len(match ..{}.name) + len(if ..{}.name)`, S{name,n}): the slots
+  are released but the FIRST read's str is defined in a non-tail block and still leaks (JIT 34MB -> 54MB at 800k,
+  AOT 17MB -> 67MB at 250k -> 1M). A mid-statement pass would need a cross-block "every mention is in this block"
+  check; not attempted.
+- A read off an if / match whose branches do not all hand the slot an owned struct (struct_value_owned false: an
+  outer borrowed name, a block with more than the `let` + tail): unchanged.
+- A struct / enum / tuple / closure value that is itself the result of the chain (`match ..{}.q` as a value): the slot
+  is still not released.

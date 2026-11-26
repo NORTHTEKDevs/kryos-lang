@@ -4,7 +4,9 @@
 # released, so every read leaked the struct box plus the field's heap value (72MB per 750k iterations on the
 # JIT, 49MB on AOT). lower.rs now releases the slot right after a retained (str / array / map) or scalar
 # field read. Checks the answer and peak RSS (1M iters) on both backends; `named` (arms are named locals the
-# slot shares) and `control` (the read off a named local) are the baselines.
+# slot shares) and `control` (the read off a named local) are the baselines. Round 2 modes: the read in an
+# if / elif / while condition and a `return`, an arm / let block that returns its own local, and nested
+# `.q.name` / `.t.0` reads (see the probe header).
 # Windows-only (PowerShell PeakWorkingSet64).
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"; cd "$ROOT"
@@ -16,7 +18,9 @@ CEIL_MB=24   # steady state ~5-8MB; pre-fix 30-110MB
 
 want_for() {
   case "$1" in
-    match_str|if_str|let_str|struct_lit|ret_str) echo 6888896 ;;
+    match_str|if_str|let_str|struct_lit|ret_str|ret_if|blk_arm|nested_q|tuple_t) echo 6888896 ;;
+    cond_str|elif_str|while_str) echo 7000000 ;;
+    blk_let) echo 6888890 ;;
     match_int) echo 500000000000 ;;
     match_arr) echo 2000000 ;;
     lit_arr) echo 7888896 ;;
@@ -42,7 +46,7 @@ if ! "$KRYOS" build --release "$ROOT/$probe" -o "$aot_bin" >/dev/null 2>&1; then
   echo "mem-field-of-temp: AOT build FAILED"; exit 1
 fi
 
-for mode in match_str if_str match_int match_arr let_str lit_arr struct_lit ret_str twice named control; do
+for mode in match_str if_str match_int match_arr let_str lit_arr struct_lit ret_str twice cond_str elif_str while_str ret_if blk_arm blk_let nested_q tuple_t named control; do
   WANT="$(want_for "$mode")"
   aot_bytes=$(powershell -NoProfile -Command \
     "\$env:LEAK_ITERS='$ITERS'; \$env:LEAK_MODE='$mode'; \$p=Start-Process -FilePath '$win_aot' -PassThru -NoNewWindow -RedirectStandardOutput \$env:TEMP\mfot_${mode}_aot.txt; \$m=0; while(-not \$p.HasExited){try{\$p.Refresh(); if(\$p.PeakWorkingSet64 -gt \$m){\$m=\$p.PeakWorkingSet64}}catch{}; Start-Sleep -Milliseconds 20}; try{\$p.Refresh(); if(\$p.PeakWorkingSet64 -gt \$m){\$m=\$p.PeakWorkingSet64}}catch{}; \$m" 2>/dev/null | tr -d '\r')

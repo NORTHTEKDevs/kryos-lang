@@ -10,12 +10,22 @@
 //   struct_lit   the read stored in a struct literal  ret_str    returned from a function
 //   twice        a match temp then an if temp, one statement each   named   arms are named locals (slot shares them)
 //   control      the same read off a named local
-// Not covered: two if/match temps read in ONE statement (the first read's str is not released, the
-// statement-end pass only sees the last block), a struct / enum / tuple / closure field read.
+// Round 2 (the same read in the positions the statement-end pass never reaches, and the shapes whose
+// slot the first fix left alone):
+//   cond_str    the read in an `if` condition        elif_str   in an `elif` condition
+//   while_str   in a `while` condition               ret_if     `return len(if c { mkw(i) } else { .. }.name)`
+//   blk_arm     an arm that is `{ let t = mkw(i)  t }`   blk_let    `let x = { let t = mkw(i)  t }`
+//   nested_q    `.q.name` (a struct field of the slot)   tuple_t    `.t.0` (a tuple field of the slot)
+// Not covered: two if/match temps read in ONE statement (the first read's str is defined in a non-tail
+// block, no temp pass reaches it), a struct / enum / tuple / closure value that is itself the result.
 struct P { name: str, n: i64, tags: [str] }
 struct R { s: str }
+struct Q { name: str, n: i64 }
+struct W { name: str, q: Q, t: (str, i64), tags: [str] }
 fn mkp(i: i64) -> P { return P { name: "p{i}", n: i, tags: ["a{i}", "b"] } }
+fn mkw(i: i64) -> W { return W { name: "w{i}", q: Q { name: "q{i}", n: i }, t: ("t{i}", i), tags: ["a{i}", "b"] } }
 fn pick(i: i64) -> str { return match i % 2 { 0 => mkp(i), _ => mkp(i + 1) }.name }
+fn pickw(c: bool, i: i64) -> i64 { return len(if c { mkw(i) } else { mkw(i + 1) }.name) }
 @capabilities(process)
 fn main() {
     let iters = parse_int(env_get("LEAK_ITERS"))
@@ -47,6 +57,38 @@ fn main() {
         } elif mode == "twice" {
             sink = sink + len(match i % 2 { 0 => mkp(i), _ => mkp(i + 1) }.name)
             sink = sink + len(if i % 2 == 0 { mkp(i + 2) } else { mkp(i + 3) }.name)
+        } elif mode == "cond_str" {
+            if len(match i % 2 { 0 => mkp(i), _ => mkp(i + 1) }.name) > 1 { sink = sink + 7 }
+        } elif mode == "elif_str" {
+            if i < 0 {
+                sink = sink + 1
+            } elif len(match i % 2 { 0 => mkp(i), _ => mkp(i + 1) }.name) > 1 {
+                sink = sink + 7
+            }
+        } elif mode == "while_str" {
+            let mut k = 0
+            while len(match i % 2 { 0 => mkp(i), _ => mkp(i + 1) }.name) < 0 { k = k + 1 }
+            sink = sink + 7 + k
+        } elif mode == "ret_if" {
+            sink = sink + pickw(i % 2 == 0, i)
+        } elif mode == "blk_arm" {
+            sink = sink + len(match i % 2 {
+                0 => {
+                    let t = mkw(i)
+                    t
+                }
+                _ => mkw(i + 1)
+            }.name)
+        } elif mode == "blk_let" {
+            let x = {
+                let t = mkw(i)
+                t
+            }
+            sink = sink + len(x.name)
+        } elif mode == "nested_q" {
+            sink = sink + len(match i % 2 { 0 => mkw(i), _ => mkw(i + 1) }.q.name)
+        } elif mode == "tuple_t" {
+            sink = sink + len(match i % 2 { 0 => mkw(i), _ => mkw(i + 1) }.t.0)
         } elif mode == "named" {
             sink = sink + len(match i % 2 { 0 => a, _ => b }.name) + len(a.name) + len(b.name)
         } else {
