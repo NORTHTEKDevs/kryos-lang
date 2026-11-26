@@ -4310,7 +4310,6 @@ impl LlvmCodegen {
                 // replaced array of tuples (a `ptr` local, not an i64 handle).
                 if matches!(ty, MirType::Struct(_) | MirType::Enum(_))
                     || kryos_mir::ir::tuple_array_elem_releasable(ty)
-                    || kryos_mir::ir::tuple_global_overwrite_releasable(ty)
                     || matches!(ty, MirType::Array(e, _) if kryos_mir::ir::array_overwrite_elem_releasable(e))
                 {
                     let old_raw = self.operand_to_llvm(&Operand::Local(*old), func);

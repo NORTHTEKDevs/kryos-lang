@@ -3194,34 +3194,6 @@ fn retain_struct_heap_fields(ctx: &mut LoweringContext, holder: LocalId, struct_
     });
 }
 
-/// `y = <place read>` where `y` is a struct / enum / tuple slot (a local or a
-/// mutable global): does the read take its OWN owner for `y` while the source
-/// keeps its own, as `let y = <place read>` does (owns_element)? Only a read of
-/// a NAMED place (`s.t`, `arr[i].t`, `w.inner.t`, a global's field): `E.C` is a
-/// variant, not a read, and a struct field of a temporary (`mk(i).inner`) is
-/// moved out of a value nobody drops -- a share there leaked it. A TUPLE field
-/// of a temporary (`u = mk(i).t`, an immutable global's field -- inlined as
-/// one) owns its read too: the temporary is dropped right after, and its drop
-/// releases the tuple. `y = xs[i]` of a struct / enum element: the array keeps
-/// its own owner, so `y` takes one too. The caller removes the partial-move
-/// mark the read left on its source.
-fn assign_rhs_owns_read(ctx: &mut LoweringContext, value: &ast::Expr, dest_ty: &MirType) -> bool {
-    match value {
-        ast::Expr::FieldAccess { object, .. } => rooted_at_local(ctx, object) || is_owned_tuple_ty(ctx, dest_ty),
-        ast::Expr::IndexAccess { object, .. } => {
-            let obj_ty = infer_expr_type(ctx, object);
-            (is_owned_tuple_ty(ctx, dest_ty)
-                && ((matches!(obj_ty, MirType::Map { .. }) && rooted_at_local(ctx, object))
-                    // An array of tuples, a temporary too (`y = mk(i)[0]`): its
-                    // drop releases the element.
-                    || matches!(&obj_ty, MirType::Array(e, _) if tuple_array_elem_releasable(e))))
-                || ((is_owned_struct_ty(ctx, dest_ty) || is_owned_enum_ty(ctx, dest_ty))
-                    && matches!(obj_ty, MirType::Array(..)))
-        }
-        _ => false,
-    }
-}
-
 /// Does this rvalue produce a struct / enum / tuple value that already owns
 /// its one reference (a literal, a variant, a user function's result, a fresh
 /// clone, an unnamed temp defined by one of those)? Anything else -- a named
@@ -7253,17 +7225,6 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                         if matches!(callee.as_ref(), ast::Expr::Identifier { name: cn, .. } if cn == "push")
                                             && matches!(args.first(), Some(ast::Expr::Identifier { name: an, .. }) if an == name)
                                 );
-                                let owned_global = is_owned_value_ty(ctx, &global_ty);
-                                // `G = G` of an owned slot: the value already
-                                // is the slot's, nothing to store, share or
-                                // release.
-                                if owned_global
-                                    && matches!(value, ast::Expr::Identifier { name: vn, .. }
-                                        if vn == name && visible_local(ctx, vn).is_none())
-                                {
-                                    return;
-                                }
-                                let partial_before_rhs = ctx.partial_moved_locals.clone();
                                 let rvalue = lower_expr_to_rvalue(ctx, value);
                                 // A struct / enum / tuple global is owned by its
                                 // slot (one reference): the overwrite releases the
@@ -7271,28 +7232,10 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                 // owned result takes its own reference (a named
                                 // local, a field / element / global read keeps its
                                 // own owner).
-                                // `G = h.g` / `G = xs[i]`: the read leaves its
-                                // source its own owner (it keeps its drop) and the
-                                // slot takes one more, as `let y = h.g` does.
-                                if owned_global && assign_rhs_owns_read(ctx, value, &global_ty) {
-                                    let added: Vec<u32> =
-                                        ctx.partial_moved_locals.difference(&partial_before_rhs).copied().collect();
-                                    for id in added {
-                                        ctx.partial_moved_locals.remove(&id);
-                                    }
-                                }
-                                // `G = if c { P { .. } } else { P { .. } }` / a match:
-                                // every branch handed the hidden result slot a
-                                // reference of its own, which the global takes
-                                // over (a share left it orphaned).
-                                let owned_slot_src = matches!(value, ast::Expr::IfExpr { .. } | ast::Expr::MatchExpr { .. })
-                                    && matches!(&rvalue, RValue::Use(Operand::Local(src))
-                                        if ctx.locals.iter().any(|l| l.id == *src
-                                            && l.name.is_none()
-                                            && is_owned_struct_ty(ctx, &l.ty)))
-                                    && struct_value_owned(ctx, value);
-                                let share_global_new =
-                                    owned_global && !owned_slot_src && !global_rvalue_is_fresh(ctx, &rvalue);
+                                let owned_global = is_owned_struct_ty(ctx, &global_ty)
+                                    || is_owned_enum_ty(ctx, &global_ty)
+                                    || tuple_array_elem_releasable(&global_ty);
+                                let share_global_new = owned_global && !global_rvalue_is_fresh(ctx, &rvalue);
                                 let mut retain_src: Option<&'static str> = None;
                                 if let RValue::Use(Operand::Local(src)) = &rvalue {
                                     let src_ty = ctx
@@ -7353,20 +7296,10 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                 }
                                 if let Some(old) = old_owned {
                                     drop_tag(ctx, "global-overwrite-owned");
-                                    // A new value that took its own reference may
-                                    // be the SAME box as the old one (Cranelift
-                                    // stores the value's own box): the slot then
-                                    // owns one reference more than before, and
-                                    // the old one is released unconditionally
-                                    // (a pointer-equality guard leaked it).
-                                    let new_op = if share_global_new {
-                                        Operand::Constant(Constant::Int(0))
-                                    } else {
-                                        Operand::Local(emit_global_load(ctx, name, MirType::I64))
-                                    };
+                                    let new_h = emit_global_load(ctx, name, MirType::I64);
                                     ctx.emit(Instruction::DropIfNe {
                                         old,
-                                        new: new_op,
+                                        new: Operand::Local(new_h),
                                         ty: global_ty.clone(),
                                         retained_by_store: false,
                                         via_map: false,
@@ -7602,7 +7535,34 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             // its read too: the temporary is dropped right
                             // after, and its drop releases the tuple.
                             let owns_read = owned_agg_dest
-                                && dest_ty.as_ref().is_some_and(|t| assign_rhs_owns_read(ctx, value, t));
+                                && match value {
+                                    ast::Expr::FieldAccess { object, .. } => {
+                                        rooted_at_local(ctx, object)
+                                            || dest_ty.as_ref().is_some_and(|t| is_owned_tuple_ty(ctx, t))
+                                    }
+                                    ast::Expr::IndexAccess { object, .. } => {
+                                        let obj_ty = infer_expr_type(ctx, object);
+                                        (dest_ty.as_ref().is_some_and(|t| is_owned_tuple_ty(ctx, t))
+                                            && ((matches!(obj_ty, MirType::Map { .. }) && rooted_at_local(ctx, object))
+                                                // An array of tuples, a temporary
+                                                // too (`y = mk(i)[0]`): its drop
+                                                // releases the element.
+                                                || matches!(&obj_ty, MirType::Array(e, _) if tuple_array_elem_releasable(e))))
+                                            // `y = xs[i]` of a struct / enum
+                                            // element: the array keeps its own
+                                            // owner (overwriting the slot or
+                                            // dropping the array releases it),
+                                            // so `y` takes one too, as `let y =
+                                            // xs[i]` does (owns_element). As an
+                                            // alias it read freed memory once
+                                            // the slot was overwritten.
+                                            || (dest_ty
+                                                .as_ref()
+                                                .is_some_and(|t| is_owned_struct_ty(ctx, t) || is_owned_enum_ty(ctx, t))
+                                                && matches!(obj_ty, MirType::Array(..)))
+                                    }
+                                    _ => false,
+                                };
                             if owns_read {
                                 let added: Vec<u32> =
                                     ctx.partial_moved_locals.difference(&partial_before_rhs).copied().collect();
