@@ -79,10 +79,13 @@ pub fn check_source(source: &str, file_uri: &str) -> (Vec<Value>, kryos_errors::
 
     let tokens = kryos_lexer::Lexer::new(source, file_id).tokenize();
 
-    let module = match kryos_parser::parse(tokens) {
-        Ok(module) => module,
-        Err(errors) => {
-            let lsp_diags: Vec<Value> = errors
+    // parse_with_diagnostics keeps parser warnings (W0001) that `parse` drops
+    // on success, so they reach publishDiagnostics.
+    let (parsed_module, parse_diags) = kryos_parser::parse_with_diagnostics(tokens);
+    let module = match parsed_module {
+        Some(module) => module,
+        None => {
+            let lsp_diags: Vec<Value> = parse_diags
                 .iter()
                 .filter_map(|d| to_lsp_diagnostic(d, &source_map))
                 .collect();
@@ -93,7 +96,8 @@ pub fn check_source(source: &str, file_uri: &str) -> (Vec<Value>, kryos_errors::
     // Run type checking, then ownership and capability analysis, so the LSP
     // surfaces the same diagnostics as the full driver pipeline (previously it
     // reported only type errors, hiding moved-value and capability problems).
-    let mut all_diags = kryos_types::type_check(&module);
+    let mut all_diags = parse_diags;
+    all_diags.extend(kryos_types::type_check(&module));
     all_diags.extend(kryos_ownership::analyze_ownership(&module).errors);
     all_diags.extend(kryos_capabilities::check_capabilities(&module, false));
     // Surface functions that --strict-capabilities would reject (unannotated
