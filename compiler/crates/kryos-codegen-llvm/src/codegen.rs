@@ -2444,8 +2444,20 @@ impl LlvmCodegen {
             // need recursive cleanup. Array-of-enum drop loops call this
             // unconditionally; a missing symbol would break linking.
             let drop_name = format!("__kryos_drop_{name}");
+            // A self-recursive enum (`Cons(i64, L)`) is dropped by a loop, not
+            // by recursion: the last self-typed field of the active variant is
+            // carried to the next iteration through a slot, so a 1M-node list
+            // drops in constant stack instead of overflowing it (A9).
+            let self_rec = has_droppable
+                && variants
+                    .iter()
+                    .any(|v| v.fields.iter().any(|f| matches!(f, MirType::Enum(n) if n == name)));
             self.emit_line(&format!("; Type drop helper for enum {name}"));
-            self.emit_line(&format!("define internal void @{drop_name}(ptr %ptr) {{"));
+            if self_rec {
+                self.emit_line(&format!("define internal void @{drop_name}(ptr %ptr_in) {{"));
+            } else {
+                self.emit_line(&format!("define internal void @{drop_name}(ptr %ptr) {{"));
+            }
             self.emit_line("entry:");
 
             if !has_droppable {
@@ -2469,6 +2481,14 @@ impl LlvmCodegen {
 
             let uid = self.temp_counter;
             self.temp_counter += 1;
+            if self_rec {
+                self.emit_line(&format!("  %edrop_slot_{uid} = alloca ptr"));
+                self.emit_line(&format!("  br label %edrop_loop_{uid}"));
+                self.emit_line(&format!("edrop_loop_{uid}:"));
+                self.emit_line(&format!(
+                    "  %ptr = phi ptr [ %ptr_in, %entry ], [ %edrop_nx_{uid}, %edrop_merge_{uid} ]"
+                ));
+            }
             // Shared-ownership bail-out, same as the struct helper. An
             // array-of-enums dup (`T.N([T.Nm(..)])` copies its array payload
             // with kryos_array_dup, kind 4) retains each element BOX, so two
@@ -2492,6 +2512,9 @@ impl LlvmCodegen {
                 self.emit_line(&format!("edrop_ret_{uid}:"));
                 self.emit_line("  ret void");
                 self.emit_line(&format!("edrop_body_{uid}:"));
+            }
+            if self_rec {
+                self.emit_line(&format!("  store ptr null, ptr %edrop_slot_{uid}"));
             }
             let tag_tmp = self.next_temp();
             self.emit_line(&format!("  {tag_tmp} = load i64, ptr %ptr"));
@@ -2537,6 +2560,15 @@ impl LlvmCodegen {
                 ));
 
                 self.emit_line(&format!("{var_label}:"));
+                let defer_fi = if self_rec {
+                    droppable
+                        .iter()
+                        .rev()
+                        .find(|(_, t)| matches!(t, MirType::Enum(n) if n == name))
+                        .map(|(i, _)| *i)
+                } else {
+                    None
+                };
                 for (fi, fty) in &droppable {
                     let offset = fi + 1;
                     let fgep = self.next_temp();
@@ -2575,6 +2607,10 @@ impl LlvmCodegen {
                             self.emit_line(&format!("  {fval} = load ptr, ptr {fgep}"));
                             self.emit_line(&format!("  call void @kryos_arc_release(ptr {fval})"));
                         }
+                        MirType::Enum(_) if defer_fi == Some(*fi) => {
+                            self.emit_line(&format!("  {fval} = load ptr, ptr {fgep}"));
+                            self.emit_line(&format!("  store ptr {fval}, ptr %edrop_slot_{uid}"));
+                        }
                         MirType::Struct(ref n) | MirType::Enum(ref n) => {
                             // Skip a nested field whose type is an UNRESOLVED
                             // generic placeholder (e.g. `Result<U, E>`
@@ -2603,6 +2639,14 @@ impl LlvmCodegen {
             self.emit_line(&format!("  br label %{merge_label}"));
             self.emit_line(&format!("{merge_label}:"));
             self.emit_line("  call void @kryos_free(ptr %ptr)");
+            if self_rec {
+                self.emit_line(&format!("  %edrop_nx_{uid} = load ptr, ptr %edrop_slot_{uid}"));
+                self.emit_line(&format!("  %edrop_more_{uid} = icmp ne ptr %edrop_nx_{uid}, null"));
+                self.emit_line(&format!(
+                    "  br i1 %edrop_more_{uid}, label %edrop_loop_{uid}, label %edrop_end_{uid}"
+                ));
+                self.emit_line(&format!("edrop_end_{uid}:"));
+            }
             self.emit_line("  ret void");
             self.emit_line("}");
             self.emit_blank();

@@ -1,0 +1,63 @@
+// Conformance (2026-11-26, finish-line A9): dropping a deeply nested recursive
+// enum recursed once per node in `__kryos_drop_<Enum>` and overflowed the stack
+// (rc 253) on a 1M-node list. The helper is now a loop over the last self-typed
+// field. Mixed payloads (str), a two-child tree (one side deferred, one
+// recursed), a generic list and a shared tail pin the unchanged semantics.
+// Run on both backends.
+
+enum L { Nil, Cons(i64, L) }
+enum S { End, Node(str, S) }
+enum T { Leaf, Br(T, i64, T) }
+enum G<X> { GNil, GCons(X, G<X>) }
+
+fn build(n: i64) -> L {
+    let mut l = L.Nil
+    let mut i = 0
+    while i < n { l = L.Cons(i, l)  i = i + 1 }
+    return l
+}
+
+fn build_s(n: i64) -> S {
+    let mut l = S.End
+    let mut i = 0
+    while i < n { l = S.Node("node" + to_string(i), l)  i = i + 1 }
+    return l
+}
+
+fn build_t(n: i64) -> T {
+    let mut t = T.Leaf
+    let mut i = 0
+    while i < n { t = T.Br(T.Leaf, i, t)  i = i + 1 }
+    return t
+}
+
+fn build_g(n: i64) -> G<i64> {
+    let mut l = G.GNil
+    let mut i = 0
+    while i < n { l = G.GCons(i, l)  i = i + 1 }
+    return l
+}
+
+fn sum_l(l: L) -> i64 {
+    match l {
+        L.Nil => return 0,
+        L.Cons(v, rest) => return v
+    }
+}
+
+fn main() {
+    let a = build(1000000)
+    let b = build_s(400000)
+    let c = build_t(400000)
+    let d = build_g(400000)
+    if sum_l(a) != 999999 {
+        println("CONF FAIL: head value")
+        exit(1)
+    }
+    let small = build(3)
+    if sum_l(small) != 2 {
+        println("CONF FAIL: small head value")
+        exit(1)
+    }
+    println("conf_recursive_enum_deep_drop ok")
+}

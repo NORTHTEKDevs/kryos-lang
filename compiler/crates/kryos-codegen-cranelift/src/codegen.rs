@@ -2198,7 +2198,32 @@ pub fn compile_module_with_options(
             let entry = builder.create_block();
             builder.append_block_params_for_function_params(entry);
             builder.switch_to_block(entry);
-            let ptr = builder.block_params(entry)[0];
+            let ptr0 = builder.block_params(entry)[0];
+
+            // A self-recursive enum (`Cons(i64, L)`) is dropped by a loop, not
+            // by recursion: the last self-typed field of the active variant is
+            // carried to the next iteration as a block param, so a 1M-node
+            // list drops in constant stack instead of overflowing it (A9).
+            let self_rec = !module.struct_defs.contains_key(type_name)
+                && module.enum_defs.get(type_name).is_some_and(|vs| {
+                    vs.iter().any(|v| {
+                        v.fields
+                            .iter()
+                            .any(|f| matches!(f, MirType::Enum(n) if n == type_name))
+                    })
+                });
+            let mut loop_blk = None;
+            let mut next_param = None;
+            let ptr = if self_rec {
+                let lb = builder.create_block();
+                builder.append_block_param(lb, types::I64);
+                builder.ins().jump(lb, &[ptr0]);
+                builder.switch_to_block(lb);
+                loop_blk = Some(lb);
+                builder.block_params(lb)[0]
+            } else {
+                ptr0
+            };
 
             // Shared-ownership bail-out. A struct box can be referenced by more
             // than one owner (an array-of-structs dup shares its elements), and
@@ -2315,6 +2340,10 @@ pub fn compile_module_with_options(
                 // Enum drop: load tag, dispatch per-variant, free fields.
                 let tag = builder.ins().load(types::I64, MemFlags::new(), ptr, 0);
                 let merge_block = builder.create_block();
+                let no_next = builder.ins().iconst(types::I64, 0);
+                if self_rec {
+                    builder.append_block_param(merge_block, types::I64);
+                }
 
                 for (idx, variant) in variants.iter().enumerate() {
                     let droppable_fields: Vec<(usize, &MirType)> = variant
@@ -2350,10 +2379,24 @@ pub fn compile_module_with_options(
                     builder.seal_block(variant_block);
 
                     builder.switch_to_block(variant_block);
+                    let defer_fi = if self_rec {
+                        droppable_fields
+                            .iter()
+                            .rev()
+                            .find(|(_, t)| matches!(t, MirType::Enum(n) if n == type_name))
+                            .map(|(i, _)| *i)
+                    } else {
+                        None
+                    };
+                    let mut deferred = no_next;
                     for (field_idx, field_ty) in &droppable_fields {
                         let offset = ((*field_idx + 1) * 8) as i32;
                         let field_val =
                             builder.ins().load(types::I64, MemFlags::new(), ptr, offset);
+                        if defer_fi == Some(*field_idx) {
+                            deferred = field_val;
+                            continue;
+                        }
                         if let MirType::Array(elem, _) = *field_ty {
                             emit_helper_array_field_free(
                                 &mut builder,
@@ -2385,14 +2428,25 @@ pub fn compile_module_with_options(
                         let fref = object_module.declare_func_in_func(fid, builder.func);
                         builder.ins().call(fref, &[field_val]);
                     }
-                    builder.ins().jump(merge_block, &[]);
+                    if self_rec {
+                        builder.ins().jump(merge_block, &[deferred]);
+                    } else {
+                        builder.ins().jump(merge_block, &[]);
+                    }
 
                     builder.switch_to_block(skip_block);
                     builder.seal_block(skip_block);
                 }
-                builder.ins().jump(merge_block, &[]);
+                if self_rec {
+                    builder.ins().jump(merge_block, &[no_next]);
+                } else {
+                    builder.ins().jump(merge_block, &[]);
+                }
                 builder.seal_block(merge_block);
                 builder.switch_to_block(merge_block);
+                if self_rec {
+                    next_param = Some(builder.block_params(merge_block)[0]);
+                }
             }
 
             // Free the struct/enum allocation itself. Header-aware: bails out if
@@ -2401,6 +2455,11 @@ pub fn compile_module_with_options(
             let free_ref = object_module.declare_func_in_func(free_id, builder.func);
             builder.ins().call(free_ref, &[ptr]);
 
+            if let (Some(lb), Some(nx)) = (loop_blk, next_param) {
+                let done_blk = builder.create_block();
+                builder.ins().brif(nx, lb, &[nx], done_blk, &[]);
+                builder.switch_to_block(done_blk);
+            }
             builder.ins().return_(&[]);
             builder.seal_all_blocks();
             builder.finalize();
