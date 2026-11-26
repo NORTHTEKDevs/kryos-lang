@@ -6593,7 +6593,7 @@ impl LlvmCodegen {
                                     .iter()
                                     .find(|l| l.id == dest)
                                     .map(|l| l.ty.clone());
-                                if let Some(tt @ MirType::Tuple(_)) = dest_mir {
+                                if let Some(tt @ MirType::Tuple(_)) = dest_mir.clone() {
                                     if kryos_mir::ir::tuple_array_elem_releasable(&tt) {
                                         let MirType::Tuple(tes) = &tt else { unreachable!() };
                                         let tes = tes.clone();
@@ -6635,6 +6635,26 @@ impl LlvmCodegen {
                                         self.emit_struct_share(&p, &sn);
                                         self.emit_line(&format!(
                                             "  call void @__kryos_drop_{sn}(ptr {p})"
+                                        ));
+                                    }
+                                }
+                                // A shareable ENUM element is the same counted box
+                                // (the enum drop helper bails on a shared box via
+                                // kryos_struct_release_shared, then drops the active
+                                // variant's payload and frees the box). The pop moved
+                                // the array's share out: the destination holds the
+                                // enum by value, so it takes its own reference on
+                                // every heap payload word, then the array's share of
+                                // the box is released through the helper. Without it
+                                // the box was orphaned (leak) and, once the discarded
+                                // result became an owned temp, its drop freed a
+                                // payload a dup'd array still held (use-after-free).
+                                if let Some(MirType::Enum(en) | MirType::Struct(en)) = &dest_mir {
+                                    if self.enum_defs.contains_key(en) && self.enum_shareable(en) {
+                                        let en = en.clone();
+                                        self.emit_enum_share_payload(&p, &en);
+                                        self.emit_line(&format!(
+                                            "  call void @__kryos_drop_{en}(ptr {p})"
                                         ));
                                     }
                                 }

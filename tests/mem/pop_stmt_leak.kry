@@ -1,5 +1,6 @@
 // A11: `pop(xs)` as a statement discarded the popped element without owning it.
 // LEAK_MODE picks the element type; each iteration pushes one element and pops it.
+enum Val { ListV([i64]), S(str), N(i64) }
 struct P { name: str, n: i64 }
 struct Q { tag: str, rows: [str], k: i64 }
 fn mkp(i: i64) -> P { return P { name: "p{i}", n: i } }
@@ -12,6 +13,7 @@ fn main() {
     let mut ts: [(str, i64)] = []
     let mut ss: [str] = []
     let mut aa: [[i64]] = []
+    let mut vs: [Val] = []
     let mut i = 0
     while i < iters {
         if mode == "struct" {
@@ -29,6 +31,15 @@ fn main() {
         } elif mode == "array" {
             aa = push(aa, [i, i + 1, i + 2])
             pop(aa)
+        } elif mode == "enum" {
+            vs = push(vs, Val.ListV([i, i + 1, i + 2]))
+            pop(vs)
+            vs = push(vs, Val.S("s{i}"))
+            pop(vs)
+        } elif mode == "enum_bound" {
+            vs = push(vs, Val.S("s{i}"))
+            let v = pop(vs)
+            match v { Val.N(k) => { println("n {k}") }, _ => {} }
         } elif mode == "struct_bound" {
             ps = push(ps, mkp(i))
             let x = pop(ps)
@@ -36,5 +47,5 @@ fn main() {
         }
         i = i + 1
     }
-    println("done {len(ps)} {len(qs)} {len(ts)} {len(ss)} {len(aa)}")
+    println("done {len(ps)} {len(qs)} {len(ts)} {len(ss)} {len(aa)} {len(vs)}")
 }

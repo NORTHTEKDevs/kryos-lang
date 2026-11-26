@@ -74,7 +74,7 @@ run_leg() {
   fi
 }
 
-for m in struct struct_nested tuple str array struct_bound; do
+for m in struct struct_nested tuple str array struct_bound enum enum_bound; do
   run_leg "$m" "$m"
 done
 
@@ -93,6 +93,20 @@ else
 fi
 got="$("$KRYOS" run "$ROOT/tests/mem/pop_shared_box.kry" | tr -d '')"
 [ "$got" = "$want" ] || { echo "mem-pop-stmt: shared_box JIT answers differ"; echo "$got"; fail=1; }
+
+# Answers: popping (discarded or bound) from a dup'd [Enum] must leave the other array's payload intact.
+want_e=$'b0 a1 b2 b1 c3
+z a1 b2 1
+b0 a1 b2 b1 c3'
+aot_bin="$(mktemp -u).exe"
+if "$KRYOS" build --release "$ROOT/tests/mem/pop_shared_enum.kry" -o "$aot_bin" >/dev/null 2>&1; then
+  got="$("$aot_bin" 2>&1 | tr -d '')"; rm -f "$aot_bin"
+  [ "$got" = "$want_e" ] || { echo "mem-pop-stmt: shared_enum AOT answers differ"; echo "$got"; fail=1; }
+else
+  echo "mem-pop-stmt: shared_enum AOT build FAILED"; fail=1
+fi
+got="$("$KRYOS" run "$ROOT/tests/mem/pop_shared_enum.kry" 2>&1 | tr -d '')"
+[ "$got" = "$want_e" ] || { echo "mem-pop-stmt: shared_enum JIT answers differ"; echo "$got"; fail=1; }
 
 if [ "$fail" -eq 0 ]; then
   echo "mem-pop-stmt: PASS"

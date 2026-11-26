@@ -10619,3 +10619,36 @@ RESIDUAL (not covered, not claimed)
   the struct recipe was not copied); `pop` of `[shared T]` / `[fn]` elements as a statement keeps the Void temp.
   Not executed.
 - A12-A19 are different shapes and untouched.
+
+## A11 round 2: discarded `pop` of an enum element -- use-after-free on AOT closed (2026-11-26, branch closeout/lane-mem)
+
+Verifier refuted round 1 (627f6c7f): typing the discarded `pop(xs)` temp with the element type made the statement-end drop
+own a `[Enum]` element, but the LLVM `pop` lowering never released the array's share of an ENUM box (round 1 only did tuple
+and struct). With `let mut b = a` (array dup retains each element box) the temp drop freed the ListV payload `b[0]` still
+held: AOT `pop(a) pop(a) match b[0] ...` panicked "index 0 but length is 0" where master printed `b0 a1 b2`. A discarded enum
+pop also still leaked the box (AOT +61MB at 1M iters).
+
+Root cause: same box convention as struct (counted box, kind-4 dup retains it); the enum case was simply not in the pop
+lowering. Fix (codegen.rs, LLVM `pop`, aggregate-element branch): for a SHAREABLE enum element (the same predicate MIR uses
+to call it an owned value), `emit_enum_share_payload` on the popped box (destination gets its own reference on every heap
+payload word), then `__kryos_drop_<Enum>` on the box (shared box: count only; last owner: drop the active variant's payload
+and free the box; payload-less enum: arc release). No MIR change. Fixes the bound `let z = pop(xs)` orphaned box too.
+
+Files: compiler/crates/kryos-codegen-llvm/src/codegen.rs, tests/mem/pop_stmt_leak.kry (modes enum, enum_bound),
+tests/mem/pop_shared_enum.kry, tests/mem_pop_stmt_gate.sh.
+
+Both-ways evidence:
+- Verifier repro (disc/bound/scoped variants, [SP(P), NE(Inner), Pl, T(str,[i64])] mix): prior HEAD AOT panics, this tree AOT
+  and JIT print `b0 a1 b2`, same as master.
+- tests/mem_pop_stmt_gate.sh now 8 modes x JIT/AOT at 1M iters + answers of pop_shared_box.kry and pop_shared_enum.kry:
+  this tree PASS, every leg 4MB. Master binary: enum AOT 219MB, enum JIT 215MB, enum_bound AOT 33MB (plus the six prior
+  modes) FAIL.
+- Finish line A10-A19/137*/138/139 and `^mem:` (379 PASS / 10 FAIL, same ten documented failures), 137-perf x0.647; gates
+  mem_balance, mem_shared_rule, no_double_free, backend_divergence_pins, mem_tuple, mem_struct_array_overwrite,
+  mem_enum_array_push, type_soundness, builtin_borrow_mir, run_examples, stdlib_compile 66/66, minilisp 22/22,
+  selfhost_wholeprogram, conformance 120/120: PASS.
+
+RESIDUAL (not covered, not claimed)
+- A discarded `pop` of a NON-shareable enum (payload with a non-shareable struct) keeps the Void temp: master behavior, the
+  box still leaks on AOT. `pop` of `[shared T]` / `[fn]` as a statement (separate defect, the bound form leaks too).
+- A12-A19 are different shapes and untouched.

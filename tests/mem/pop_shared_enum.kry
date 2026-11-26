@@ -1,0 +1,27 @@
+// A11 correctness: pop on an [Enum] whose element boxes are shared with a dup'd
+// array (`let b = a`) must not free the payload the other array still holds,
+// whether the pop result is discarded or bound.
+enum Val { ListV([str]), S(str) }
+fn take(a: [Val]) -> i64 {
+    let mut a2 = a
+    let z = pop(a2)
+    pop(a2)
+    return len(a2)
+}
+fn main() {
+    let mut a: [Val] = []
+    a = push(a, Val.ListV(["a" + "1", "b" + "2"]))
+    a = push(a, Val.S("c" + "3"))
+    let mut b = a
+    pop(a)
+    pop(a)
+    match b[0] { Val.ListV(v) => { print("b0 {v[0]} {v[1]}") }, Val.S(s) => { print(s) } }
+    match b[1] { Val.ListV(v) => { println(" {v[0]}") }, Val.S(s) => { println(" b1 {s}") } }
+    let mut c = b
+    let z = pop(c)
+    let w = pop(c)
+    let n = take(b)
+    match w { Val.ListV(v) => { println("z {v[0]} {v[1]} {n + 1}") }, Val.S(s) => { println(s) } }
+    match b[0] { Val.ListV(v) => { print("b0 {v[0]} {v[1]}") }, Val.S(s) => { print(s) } }
+    match b[1] { Val.ListV(v) => { println(" {v[0]}") }, Val.S(s) => { println(" b1 {s}") } }
+}
