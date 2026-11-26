@@ -1,0 +1,1 @@
+tests/security/probe_mono_impl_method_growing_already_guarded.kry  # a8: master hit an internal "cannot resolve the struct type" codegen error because `self` in a generic impl method was not bound to Box<T>; now the self-growing instantiation reaches the documented E0113 monomorphization limit
