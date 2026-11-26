@@ -5,6 +5,9 @@
 // overwrites it: the local must stay intact (the global took its own reference) and nothing leaks.
 // glob_variant / glob_field copy the global into an enum payload / a struct field and then overwrite
 // the global: the copy must take its own reference (a release of the slot's old value must not free it).
+// glob_hread / glob_param / glob_elem store a field / parameter field / array element read into the global
+// (the source keeps its own owner, the global takes one); glob_tupstruct overwrites a tuple global that holds a
+// struct; glob_self assigns the global to itself; glob_if stores an if-expression of fresh values.
 // Every mode returns the same answer: the sum of len("<2 chars><i>") over i.
 use std::option::{Option, Some, None}
 struct Gin { name: str }
@@ -15,6 +18,8 @@ let mut GS: Gin = Gin { name: "a" }
 let mut GT: (str, i64) = ("t", 1)
 let mut GN: Op = Op.Name("n")
 let mut GO: Option<str> = Some("s")
+let mut GTS: (Gin, i64) = (Gin { name: "t" }, 1)
+fn setfrom(h: Box2) { GS = h.g }
 fn nlen(o: Op) -> i64 {
     match o {
         Op.Name(s) => { return len(s) }
@@ -62,6 +67,30 @@ fn main() {
             bx.g = GS
             GS = Gin { name: "xx" }
             sink = sink + len(bx.g.name)
+        } elif mode == "glob_hread" {
+            let hh = Box2 { g: Gin { name: "gs{i}" } }
+            GS = hh.g
+            sink = sink + len(GS.name)
+        } elif mode == "glob_param" {
+            setfrom(Box2 { g: Gin { name: "gs{i}" } })
+            sink = sink + len(GS.name)
+        } elif mode == "glob_elem" {
+            let xs = [Gin { name: "gs{i}" }]
+            GS = xs[0]
+            sink = sink + len(GS.name)
+        } elif mode == "glob_tupstruct" {
+            let t = (Gin { name: "gs{i}" }, i)
+            GTS = t
+            let u = (Gin { name: "xx" }, 1)
+            GTS = u
+            sink = sink + len(t.0.name)
+        } elif mode == "glob_self" {
+            GS = Gin { name: "gs{i}" }
+            GS = GS
+            sink = sink + len(GS.name)
+        } elif mode == "glob_if" {
+            GS = if i % 2 == 0 { Gin { name: "gs{i}" } } else { Gin { name: "gs{i}" } }
+            sink = sink + len(GS.name)
         } else {
             let mut c = Gin { name: "a" }
             c = Gin { name: "gs{i}" }

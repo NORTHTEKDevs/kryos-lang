@@ -10854,3 +10854,48 @@ RESIDUAL (not covered, not claimed)
   not synchronised with a concurrent reader, as for the str / array / map globals before it).
 - A15-A19 (`G.t = ..` tuple field of a global, `Some(ts[0])`, field read off an if temp, `[struct]` of tuples, whole-subject match) are different shapes
   and untouched; the shared-handle items 137 / 139 residuals listed above are untouched, the unverified lane mem.patch was not applied.
+
+## A14 round 2: struct / tuple globals overwritten from a field read, a parameter field, a named tuple local, or themselves still leaked (2026-11-26, branch closeout/lane-mem)
+
+The verifier refuted round 1 as too narrow: `G = hh.g` (named local struct's field), `fn setfrom(h: Hold) { G = h.g }`, `GT = t` / `GT = u` with a
+`(Gin, i64)` tuple global, and `G = G` still leaked 34-161MB at 300k-1M iterations (the round-1 pin only covered fresh values and a named local).
+
+Root causes (one rule, three gaps in how the slot's single reference was handled; lower.rs, the plain-assignment-to-global path):
+1. A field read of a named struct (`G = hh.g`, `G = h.g`) marks the source `hh` partially moved, which suppresses hh's whole scope-end drop. The global then
+   shared the field AND the source never dropped, so the source box (and on the JIT the field box) leaked. The local path already handled this
+   (`owns_read` removes the mark and the destination takes its own reference); that decision is now one function, `assign_rhs_owns_read`, called by both
+   the local-assignment path and the global path (no per-shape copy). `G = xs[i]` of a struct element goes through the same function.
+2. `G = G` (and any new value the slot shared that is pointer-equal to the old one, which Cranelift allows because it stores the value's own box): the
+   release of the old value was guarded by pointer inequality, so the extra reference taken by the share was never released. A bare `G = G` is now a no-op,
+   and when the new value took its own reference the old one is released unconditionally (DropIfNe against constant 0); the guarded form stays only for a
+   fresh result, which owns the slot's reference itself.
+3. A tuple global holding a struct (`is_owned_tuple_ty` but not `tuple_array_elem_releasable`) was excluded from the release. `ir::tuple_global_overwrite_releasable`
+   adds the struct element to the DropIfNe set of both backends (their tuple drops already release it, as for a tuple local).
+Also: `G = if c { P{..} } else { P{..} }` / match of fresh literals hands the hidden result slot's reference to the global instead of sharing again (the
+round-1 residual; `owned_slot_src` as for locals).
+
+Files: compiler/crates/kryos-mir/src/lower.rs, compiler/crates/kryos-mir/src/ir.rs, compiler/crates/kryos-codegen-cranelift/src/codegen.rs,
+compiler/crates/kryos-codegen-llvm/src/codegen.rs; tests/mem/global_aggregate_leak.kry, tests/mem_global_aggregate_gate.sh (6 new modes: glob_hread, glob_param,
+glob_elem, glob_tupstruct, glob_self, glob_if).
+
+Both-ways evidence:
+- tests/mem_global_aggregate_gate.sh (14 modes x JIT + AOT, 1M iterations, ceiling 24MB, answer 7888890): MASTER binary FAIL on every aggregate row (glob_hread AOT 100MB /
+  JIT 140MB, glob_param 110 / 139, glob_elem AOT 31, glob_tupstruct 140 / 324, glob_self 140 / 105, glob_if 105 / 110; control 4MB); this tree PASS, all 28 rows 4MB with the
+  right answer. The verifier's four probes at 600k on AOT: b1 48 -> 3MB, c1 47 -> 4MB, c2 152 -> 4MB, b4 4MB (unchanged); KRYOS_ALLOC_STATS box live = initial globals only
+  on JIT and AOT for b1 / c1 / c2 / b4 (b1 JIT was live=601 of 602).
+- Aliasing batteries (scratch, ~40 shapes: field of a named local, of a param, of a loop alias, of a match-bound payload, of a global, of a nested struct, array element, fn result,
+  other global, a named local also holding the old box, tuple from a field / literal with a named struct, an if / match value, a closure that reads the global): identical stdout
+  to master on JIT and AOT, `KRYOS_FREE_DIAG=1` reports nothing.
+- Finish line `--only '^(A14|A14\.ctl)$'` PASS. Regression: `--only '^(A1[0-9]|A1[0-9]\.ctl|137.*|138.*|139.*)$'` same as round 1 (A10-A14 PASS, A15-A19 FAIL exactly as before, all
+  .ctl PASS, 137-perf x0.634 of master); `--only '^mem:'` 379 PASS / 10 FAIL, the same ten documented failures (diffed by name); 26 gates PASS (list as round 1) and
+  tests/conformance 120/120; the 32 repo programs with a top-level `let mut` print as before (three differ only by the capability diagnostics of the cap waves
+  that master lacks / servers).
+
+RESIDUAL (executed, not closed, not claimed)
+- A field read OFF A TEMPORARY or a nested field of a named struct leaks on the Cranelift JIT whether the destination is a global or a local: `G = mk(i).g`, `let a = mk(i).g`,
+  `a = o.h.g`, and even a bare `len(o.h.g.name)` (3-4 boxes per iteration; master identical, LLVM balanced). The source temp / outer struct keeps no drop after the partial
+  move; this is the partial-move rule for nested / temp field reads, not the global slot, and was left alone.
+- `GS = if c { named_local } else { P{..} }` is balanced now only because the slot's reference is taken over; a branch that yields a CALL result or a param was not probed.
+- Tuples that contain an enum element, `@copy` structs, structs / enums the backends cannot share keep the old behaviour (the old value of such a global leaks on overwrite).
+- Consumers of a bare global read other than the ones probed (and `spawn` / actor threads reading a global while another overwrites it) are not covered.
+- A15-A19 and the 137 / 139 shared-handle residuals above are different shapes and untouched; the unverified lane mem.patch was not applied.

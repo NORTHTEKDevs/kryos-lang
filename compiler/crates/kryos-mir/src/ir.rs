@@ -100,6 +100,36 @@ pub fn tuple_array_elem_releasable(elem: &MirType) -> bool {
         })
 }
 
+/// A tuple held directly in a mutable global slot whose overwrite releases the
+/// old value through `Instruction::DropIfNe`: `tuple_array_elem_releasable`'s
+/// elements plus a struct element (the type-directed tuple drop of both
+/// backends releases it like a tuple local's Drop does). lower.rs emits the
+/// DropIfNe only for tuples `is_owned_tuple_ty` accepts (shareable structs).
+pub fn tuple_global_overwrite_releasable(ty: &MirType) -> bool {
+    let MirType::Tuple(es) = ty else { return false };
+    !es.is_empty()
+        && es.iter().all(|e| match e {
+            MirType::I8
+            | MirType::I16
+            | MirType::I32
+            | MirType::I64
+            | MirType::U8
+            | MirType::U16
+            | MirType::U32
+            | MirType::U64
+            | MirType::F32
+            | MirType::F64
+            | MirType::Bool
+            | MirType::Char
+            | MirType::Str
+            | MirType::Array(_, _)
+            | MirType::Map { .. }
+            | MirType::Struct(_) => true,
+            MirType::Tuple(_) => tuple_global_overwrite_releasable(e),
+            _ => false,
+        })
+}
+
 /// An array whose overwrite releases its elements through the backends'
 /// type-directed array drop (`Instruction::DropIfNe` on the array local): an
 /// array of releasable tuples, or of structs / enums, whose elements are

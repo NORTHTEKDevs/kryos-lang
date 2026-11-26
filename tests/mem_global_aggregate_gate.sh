@@ -33,7 +33,7 @@ if ! "$KRYOS" build --release "$ROOT/$probe" -o "$aot_bin" >/dev/null 2>&1; then
   echo "mem-global-aggregate: AOT build FAILED"; exit 1
 fi
 
-for mode in glob_struct glob_tuple glob_enum glob_opt glob_share glob_variant glob_field control; do
+for mode in glob_struct glob_tuple glob_enum glob_opt glob_share glob_variant glob_field glob_hread glob_param glob_elem glob_tupstruct glob_self glob_if control; do
   aot_bytes=$(powershell -NoProfile -Command \
     "\$env:LEAK_ITERS='$ITERS'; \$env:LEAK_MODE='$mode'; \$p=Start-Process -FilePath '$win_aot' -PassThru -NoNewWindow -RedirectStandardOutput \$env:TEMP\mgag_${mode}_aot.txt; \$m=0; while(-not \$p.HasExited){try{\$p.Refresh(); if(\$p.PeakWorkingSet64 -gt \$m){\$m=\$p.PeakWorkingSet64}}catch{}; Start-Sleep -Milliseconds 20}; try{\$p.Refresh(); if(\$p.PeakWorkingSet64 -gt \$m){\$m=\$p.PeakWorkingSet64}}catch{}; \$m" 2>/dev/null | tr -d '\r')
   case "$aot_bytes" in ''|*[!0-9]*) aot_bytes="" ;; esac
