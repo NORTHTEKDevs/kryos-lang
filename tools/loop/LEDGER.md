@@ -10458,3 +10458,22 @@ NOT COVERED (leaks as before, safely)
 - Locals whose drop sits on a path where they are not definitely defined, or that are dropped twice on a path, stay out of the set.
 - A `throw` before the scope-exit drop leaks the value (the exception cleanup skips `@copy` structs by design).
 - Async functions and the wasm backend are untouched.
+
+## copy_assign_leak: REOPENED -- fix refuted by verifier
+
+Commit dbc63587 (copy_own BlockId-as-index fix) was reverted. Verifier findings:
+
+- Check 1 PASS: kbuild no-op; finish run for the 4 copy-assign-leak entries: 4 PASS, 0 FAIL of 4, ALL PASS.
+- Check 2 PASS: diff touched only copy_own.rs (id-to-position HashMap replacing BlockId.0 indexing), ci.yml (new gate), the new pin fixture and gate, and LEDGER.md. No tests/gates weakened, kryos-oracle untouched, no special-casing by name. The old `si >= nb -> continue` check was gone; no other BlockId-as-index use in copy_own.rs.
+- Check 4 PASS: tests/mem_copy_assign_xblock_gate.sh with KRYOS_BIN=master binary exits 1 (box leg FAIL: no alloc-stats report; AOT peak 120MB; JIT peak 302MB; ceiling 40MB). On the tree it exits 0 (box allocs=11994 frees=11994 live=0, AOT 4MB, JIT 4MB).
+- Check 3 FAIL, so refuted: the fix leaves variants of the same defect (an @copy local read in a different block from its definition leaks), measured with KRYOS_ALLOC_STATS=1 on the tree binary, 1000 iterations. Master has no alloc-stats and was not measured on these (RSS sampling hung), so these are unfixed on the tree, not shown as regressions.
+
+Residual shapes:
+- c1 (tail if/else reading @copy local in both arms): `fn f(i:i64)->i64 { let q = Q{a:i,b:2}; if i > 5 { q.a } else { q.b } }` -> box allocs=1000 frees=0 live=1000 (JIT, tree binary). The fixture only covers the `r = q.a` assignment form.
+- c4 (early return, read after): `if i > 5 { return q.a }; q.b` -> live=1000/1000. Not in the pin.
+- c5 / b2 (tail else-if chain; b2 uses P{name:str,n}): live=1000/1000.
+- b1 / a4 (tail-position match with arms reading the @copy local): `match k { 0=>q.a, 1=>q.b, _=>5 }` -> live=1000/1000.
+- Separate probable cause, noted not counted: nested @copy struct W{q:Q,tag:str} read in straight-line code (a3, single block) leaks live=3000/3000; same value with if/else reads (a1/a2) leaks live=2006/2006.
+- Also not fixed: a5 (reassign of `mut p` in a one-arm ...; text truncated in the source findings).
+
+Controls that pass on the tree: `let r = if ... {q.a} else {q.b}; r` (c3), else-if chain assigned to a mut (c2), read after the match (a7) all give live=0. The leak depends on tail/return position, pointing at the `terminator_uses -> bad.insert` path in copy_own.rs, outside what dbc63587 changed: the commit fixed one cause and the class is not closed.
