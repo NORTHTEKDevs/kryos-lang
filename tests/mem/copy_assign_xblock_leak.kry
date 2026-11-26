@@ -1,0 +1,80 @@
+// LEDGER item copy-assign-leak (cross-block follow-up): an @copy struct local
+// whose reads sit in a different basic block from its definition (if/else, a
+// one-armed if, a loop that never touches it, continue) was never freed,
+// because copy_own's dataflow indexed func.blocks by BlockId and block ids are
+// not dense (bb0, bb2, bb3, bb4), so every successor edge was mis-resolved and
+// the local was marked unreachable-bad.
+//
+// Run:  LEAK_ITERS=<n> ./copy_assign_xblock_leak   (default 1000)
+// Reader: tests/mem_copy_assign_xblock_gate.sh
+@copy
+struct Q { a: i64, n: i64 }
+@copy
+struct P { name: str, n: i64 }
+
+fn t_ifelse(i: i64) -> i64 {
+    let q = Q { a: i, n: 2 }
+    let mut r = 0
+    if i > 5 { r = q.a } else { r = q.n }
+    r
+}
+fn t_oneArm(i: i64) -> i64 {
+    let q = Q { a: i, n: 2 }
+    let mut r = 0
+    if i > 5 { r = q.a }
+    r
+}
+fn t_loop_after(i: i64) -> i64 {
+    let q = Q { a: i, n: 2 }
+    let x = q.a
+    let mut r = x
+    while r > 100000 { r = r - 1 }
+    r
+}
+fn s_copy_ifelse(i: i64) -> i64 {
+    let b = P { name: "abcdefghijklmnop" + to_string(i), n: i }
+    let c = b
+    let mut r = 0
+    if i > 5 { r = len(c.name) } else { r = c.n }
+    r
+}
+fn s_copy_in_branch(i: i64) -> i64 {
+    let b = P { name: "abcdefghijklmnop" + to_string(i), n: i }
+    let mut r = 0
+    if i > 5 {
+        let c = b
+        r = len(c.name)
+    } else { r = 1 }
+    r
+}
+fn s_lit_ifelse(i: i64) -> i64 {
+    let b = P { name: "abcdefghijklmnop" + to_string(i), n: i }
+    let mut r = 0
+    if i > 5 { r = len(b.name) } else { r = b.n }
+    r
+}
+fn ctrl_mix(i: i64) -> i64 {
+    let mut t = 0
+    let mut k = 0
+    while k < 4 {
+        k = k + 1
+        let q = Q { a: k, n: i }
+        if k == 2 { continue }
+        if k > 3 { t = t + q.a } else { t = t + q.n }
+    }
+    t
+}
+
+@capabilities(process)
+fn main() {
+    let raw = env_get("LEAK_ITERS")
+    let iters = if len(raw) == 0 { 1000 } else { parse_int(raw) }
+    let mut tot = 0
+    let mut i = 0
+    while i < iters {
+        tot = tot + t_ifelse(i) + t_oneArm(i) + t_loop_after(i)
+        tot = tot + s_copy_ifelse(i) + s_copy_in_branch(i) + s_lit_ifelse(i) + ctrl_mix(i)
+        i = i + 1
+    }
+    println("tot {tot}")
+}
