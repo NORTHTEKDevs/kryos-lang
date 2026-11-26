@@ -1,0 +1,35 @@
+// swa a6: `m[key()]["y"] = 5` on a missing outer key of a map-valued map must insert the
+// inner map (the write landed in a throwaway container); each key expression runs once.
+struct S { m: map<str, map<str, i64>> }
+let mut calls = 0
+fn key() -> str {
+    calls = calls + 1
+    return "x"
+}
+fn k2() -> str {
+    calls = calls + 10
+    return "q"
+}
+fn main() {
+    let mut m: map<str, map<str, i64>> = {}
+    m[key()]["y"] = 5
+    println("a={len(m)} {m["x"]["y"]} calls={calls}")
+    m[key()]["z"] = 6
+    println("a2={len(m["x"])} calls={calls}")
+    let mut mi: map<i64, map<str, i64>> = {}
+    let i = 3
+    mi[i + 1]["y"] = 7
+    println("b={len(mi)} {mi[4]["y"]}")
+    let mut s = S { m: {} }
+    s.m[key()]["y"] = 8
+    println("c={len(s.m)} {s.m["x"]["y"]}")
+    let mut m3: map<str, map<str, map<str, i64>>> = {}
+    m3[key()][k2()]["w"] = 9
+    let mut m4: map<str, map<str, i64>> = {}
+    m4["x"]["y"] = 5
+    println("e={len(m4)}")
+    let mut m5: map<str, [i64]> = {}
+    m5["x"] = []
+    println("f={len(m5)}")
+    println("d={len(m3)} {len(m3["x"])} {m3["x"]["q"]["w"]} calls={calls}")
+}

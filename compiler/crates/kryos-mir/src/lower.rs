@@ -7469,7 +7469,104 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             // inserted `coll[k] = {}` recurses through here --
                             // and the key is simple, so re-evaluating either
                             // is harmless.
-                            if let ast::Expr::IndexAccess { object: coll, index: k, span: sp } = object.as_ref() {
+                            // A key that is not a plain variable / literal (`m[key()]["y"] = 5`,
+                            // `m[a + 1]["y"] = 5`) was never auto-filled: the missing
+                            // outer slot made the write land in a throwaway map. Bind
+                            // each such key of the place chain to a hidden `let` once
+                            // (left to right, the order they ran in), then lower the
+                            // rewritten place -- re-evaluating it for the existence
+                            // test and the fill is then harmless.
+                            let hoisted_target: Option<(ast::Expr, ast::Expr)> = (|| {
+                                let ast::Expr::IndexAccess { object: coll, index: k, span: sp } = object.as_ref() else {
+                                    return None;
+                                };
+                                let outer_is_map = matches!(
+                                    infer_expr_type(ctx, coll),
+                                    MirType::Map { value, .. } if matches!(*value, MirType::Map { .. })
+                                );
+                                if !outer_is_map {
+                                    return None;
+                                }
+                                fn is_simple(e: &ast::Expr) -> bool {
+                                    matches!(
+                                        e,
+                                        ast::Expr::Identifier { .. }
+                                            | ast::Expr::StringLiteral { .. }
+                                            | ast::Expr::IntLiteral { .. }
+                                    )
+                                }
+                                fn place_root_ok(e: &ast::Expr) -> bool {
+                                    match e {
+                                        ast::Expr::Identifier { .. } => true,
+                                        ast::Expr::FieldAccess { object, .. } => place_root_ok(object),
+                                        ast::Expr::IndexAccess { object, .. } => place_root_ok(object),
+                                        _ => false,
+                                    }
+                                }
+                                fn needs_hoist(e: &ast::Expr) -> bool {
+                                    match e {
+                                        ast::Expr::FieldAccess { object, .. } => needs_hoist(object),
+                                        ast::Expr::IndexAccess { object, index, .. } => {
+                                            needs_hoist(object) || !is_simple(index)
+                                        }
+                                        _ => false,
+                                    }
+                                }
+                                if !place_root_ok(coll) || !(needs_hoist(coll) || !is_simple(k)) {
+                                    return None;
+                                }
+                                fn hoist(ctx: &mut LoweringContext, e: &ast::Expr) -> ast::Expr {
+                                    match e {
+                                        ast::Expr::FieldAccess { object, field, span } => ast::Expr::FieldAccess {
+                                            object: Box::new(hoist(ctx, object)),
+                                            field: field.clone(),
+                                            span: *span,
+                                        },
+                                        ast::Expr::IndexAccess { object, index, span } => {
+                                            let object = hoist(ctx, object);
+                                            let index = hoist_key(ctx, index);
+                                            ast::Expr::IndexAccess {
+                                                object: Box::new(object),
+                                                index: Box::new(index),
+                                                span: *span,
+                                            }
+                                        }
+                                        _ => e.clone(),
+                                    }
+                                }
+                                fn hoist_key(ctx: &mut LoweringContext, k: &ast::Expr) -> ast::Expr {
+                                    if is_simple(k) {
+                                        return k.clone();
+                                    }
+                                    let span = k.span();
+                                    let hidden = format!("__idxkey_{}", ctx.locals.len());
+                                    lower_stmt(
+                                        ctx,
+                                        &ast::Stmt::Let {
+                                            name: hidden.clone(),
+                                            mutable: false,
+                                            ty: None,
+                                            value: Some(k.clone()),
+                                            pattern: None,
+                                            span,
+                                        },
+                                    );
+                                    ast::Expr::Identifier { name: hidden, span }
+                                }
+                                let coll_h = hoist(ctx, coll);
+                                let k_h = hoist_key(ctx, k);
+                                let obj_h = ast::Expr::IndexAccess {
+                                    object: Box::new(coll_h),
+                                    index: Box::new(k_h),
+                                    span: *sp,
+                                };
+                                Some((obj_h, (**index).clone()))
+                            })();
+                            let (object, index) = match &hoisted_target {
+                                Some((o, i)) => (o, i),
+                                None => (&**object, &**index),
+                            };
+                            if let ast::Expr::IndexAccess { object: coll, index: k, span: sp } = object {
                                 fn simple(e: &ast::Expr) -> bool {
                                     matches!(
                                         e,
@@ -7509,7 +7606,7 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                         },
                                         then_block: ast::Block {
                                             stmts: vec![ast::Stmt::Assign {
-                                                target: object.as_ref().clone(),
+                                                target: object.clone(),
                                                 op: ast::AssignOp::Assign,
                                                 value: ast::Expr::MapLiteral { entries: Vec::new(), span: sp },
                                                 span: sp,
