@@ -139,9 +139,11 @@ Concretely:
   11 states this as the honest cost of the security property, with a
   pointer to `docs/10-capabilities.md` and `docs/capability-roadmap.md` for
   the full soundness history.
-- If teaching structs passed across function calls, do not cite the old
-  struct-argument leak (LEDGER item 3, ~86MB per 1M calls): it is CLOSED.
-  Point to `STABILITY.md` section 5 for the leaks that are still open.
+- If teaching structs passed across function calls, the struct-argument
+  leak (LEDGER item 3, ~86MB per 1M calls, open design note) is a real,
+  measured cost for a specific pattern -- mention it where relevant with the
+  workaround (read fields directly in a hot loop, keep heap data out of
+  structs crossing calls) rather than presenting struct-passing as free.
 - A book that hides a sharp edge produces a reader who finds it in
   production instead of on the page. State the limitation, state the
   workaround, move on -- do not editorialize about whether the limitation

@@ -116,22 +116,18 @@ verification refuted it, 2026-11-24) and 41.
 | Shape | Effect | Item |
 |---|---|---|
 | Values linked through `shared` pointers (e.g. a linked list built with `cur = shared L { next: Some(cur) }` in a loop) are not freed | leaks most nodes | 137 |
-| MEMORY SAFETY, not a leak: `return shared x` of a by-value struct parameter, then linking the result into a list, corrupts the heap in release builds (LEDGER 138 records exit `0xC0000374` since 1.1.0; the 1.3.0 debug build prints normally) | possible crash or silent corruption; not reproduced in every shape | 138 |
-| A struct passed by value whose `Option` field is matched in the callee leaks the field's payload, for ANY payload type including a plain struct holding a `str` (LEDGER repro: `Option<In>` with `struct In { s: str }`) | about 100 bytes per call, measured 127 MB peak over 1M calls (a non-leaking loop peaks near 4.5 MB) | 139 |
+| Heap ownership edge case adjacent to 137/139, still open | see LEDGER | 138 |
+| A struct whose `Option` field is matched in a callee, with a tuple, closure or trait-object payload, leaks the payload box | leak proportional to iterations | 139 |
 
-**What this means in practice.** 137 and 139 need a hot loop to matter: a
-program that builds a few thousand `shared` nodes or makes a few thousand such
-calls will not notice. A long-running server doing it per request will grow.
-Workaround for 137: avoid `shared` chains in long-lived loops (use an array of
-indices or an owned tree instead). There is NO verified workaround for 139:
-the only change measured to help was reverted, so treat any per-call match on
-a by-value struct's `Option` field as a leak and keep it out of hot paths.
-138 is different in kind: it is a memory-safety defect, so do not build
-`shared` lists out of a by-value struct parameter returned with
-`return shared x`; build the value directly (`shared L { ... }`) instead.
-That avoidance for 138 is unmeasured; see the LEDGER entry for the repro.
+**What this means in practice.** These need a hot loop to matter: a program
+that builds a few thousand `shared` nodes will not notice. A long-running
+server doing it per request will grow. Workaround: for 137, avoid `shared`
+chains in long-lived loops (use an array of indices or an owned tree instead);
+for 139, extract the payload once outside the hot loop rather than matching
+a struct's `Option` field in a callee per iteration; for 138, see the LEDGER
+entry for the specific shape.
 
-**Why 137 and 139 are documented rather than patched (138 is not yet root-caused).** Two revision rounds
+**Why 137 and 139 are documented rather than patched.** Two revision rounds
 of a fix each failed independent verification (new leaks for canonical shapes
 and a measured slowdown), and the history of shape-by-shape patching includes
 double-frees worse than the leak. Closing them needs one unified ownership

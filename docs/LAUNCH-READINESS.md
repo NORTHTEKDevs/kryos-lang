@@ -62,7 +62,7 @@
 >   for wanting external exposure. It is recorded here so the cut is not read as
 >   "nothing was left to find."
 > - **Known limitations ship documented**, with measured costs, in
->   [`STABILITY.md` §5](../STABILITY.md) - LEDGER items 137, 138, 139 and 41 (items 3 and 51 are CLOSED).
+>   [`STABILITY.md` §5](../STABILITY.md) - LEDGER items 3, 51 and 41.
 >
 > Treat v1.0.0 as a **stability commitment** (the CLI/LSP/stdlib/ABI surface is
 > frozen under semver) and **not** as evidence of field-hardening. The project
@@ -595,7 +595,8 @@ externally validated.**
 1. **Item 41 - precision cost.** See Section 3(c). Deliberate, quantified, not a bug. Re-evaluated
    2026-08-15 and kept as-is after the narrowing experiment reopened 2 real escapes.
 2. **Item 3 (historical; now CLOSED) - struct-argument leak, was ~86MB per 1M calls.** A struct with heap-bearing fields crossing a
-   call boundary leaked; not method-specific. Was a design note with 8 ruled-out fix attempts; CLOSED later (see the top-of-file note). Performance issue, not a
+   call boundary leaks; not method-specific (a free function leaks identically). DESIGN NOTE, NOT
+   FIXED - 8 distinct fix attempts have been ruled out this repo's history. Performance issue, not a
    correctness or security blocker. Workaround: keep heap data out of structs crossing call
    boundaries, or read fields directly in a hot loop instead of passing/returning the struct.
 3. **Item 6 - `any` type erasure.** `any` is a bare i64 with no runtime type tag; a *direct* (not
@@ -972,9 +973,9 @@ Grepped fresh this session: `tools/loop/LEDGER.md`'s `## OPEN - ranked`
 section contains exactly 5 numbered items, unchanged in count and content
 from the 2026-08-19 addendum (0c) above:
 
-- **Item 3** -- struct-argument leak (a struct with heap-bearing fields
-  crossing any call boundary). CLOSED 2026-10-07/08 (see the top-of-file
-  note); this bullet is a dated snapshot of an earlier session, kept as history.
+- **Item 3** -- struct-argument leak, ~86MB per 1M calls (a struct with
+  heap-bearing fields crossing any call boundary). Performance issue, not
+  correctness/security. 8 fix attempts ruled out. DESIGN NOTE, NOT FIXED.
 - **Item 6** -- `any` is a bare i64 with no runtime type tag; a DIRECT
   (non-container) `any` slot holding a `str` mis-renders on
   `to_string`/`format`. The container-shaped variant is a clean

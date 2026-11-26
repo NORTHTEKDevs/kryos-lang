@@ -31,7 +31,7 @@ the existing reference material until their book chapter lands. Follow
 | 01 | [Hello Kryos & the toolchain](01-hello.md) | written |
 | 02 | [Values & types](02-values-and-types.md) | written -- summarizes the type half of [`docs/02-variables-and-types.md`](../../02-variables-and-types.md) (that reference chapter predates the current dialect in places -- e.g. it claims `i32` is the default integer and shows `none`/no-`Option` -- this book chapter is the corrected, current version; do not treat the two as interchangeable) |
 | 03 | [Bindings](03-bindings.md) | written -- summarizes the `let`/`let mut` half of [`docs/02-variables-and-types.md`](../../02-variables-and-types.md), split out for teaching order: types before binding rules. Also covers the `-`/`(`/`[` line-continuation trap (CLAUDE.md hard rule 1) |
-| 04 | [Functions](04-functions.md) | written -- summarizes [`docs/03-functions.md`](../../03-functions.md) (that reference chapter's closure section is pre-dialect-shift and not reflected here); this book chapter's core content is the borrow/ownership-transfer split between `str`/`[T]`/`map` params, struct params, and scalar params, including the (now CLOSED) LEDGER item 3 struct-argument leak |
+| 04 | [Functions](04-functions.md) | written -- summarizes [`docs/03-functions.md`](../../03-functions.md) (that reference chapter's closure section is pre-dialect-shift and not reflected here); this book chapter's core content is the borrow/ownership-transfer split between `str`/`[T]`/`map` params, struct params, and scalar params, including the LEDGER item 3 struct-argument leak |
 | 05 | [Control flow](05-control-flow.md) | written -- summarizes [`docs/04-control-flow.md`](../../04-control-flow.md) (that reference chapter's "Coming from Rust" section overclaims `match` as value-only patterns; current `match` supports tuple/or/guard patterns, covered here); also covers `comptime {}` as an expression-position block under "Blocks are expressions" (full depth: [`docs/11-comptime.md`](../../11-comptime.md)) since no standalone book chapter is allocated to it in this outline |
 
 ## Part II -- Data
@@ -47,7 +47,7 @@ the existing reference material until their book chapter lands. Follow
 
 | # | Chapter | Status |
 |---|---|---|
-| 10 | [Ownership & ARC](10-ownership-and-arc.md) | written -- summarizes [`docs/06-ownership.md`](../../06-ownership.md); deepens it with worked examples for arrays, structs, and multi-binding chains showing share-on-call vs copy-on-assignment side by side, plus the design rationale for why the two boundaries differ and the (now CLOSED) LEDGER item 3 struct-argument leak |
+| 10 | [Ownership & ARC](10-ownership-and-arc.md) | written -- summarizes [`docs/06-ownership.md`](../../06-ownership.md); deepens it with worked examples for arrays, structs, and multi-binding chains showing share-on-call vs copy-on-assignment side by side, plus the design rationale for why the two boundaries differ and the LEDGER item 3 struct-argument leak |
 | 11 | [Capabilities](11-capabilities.md) | written -- the headline feature, deepest chapter. Full soundness history and precision-cost data lives in [`docs/10-capabilities.md`](../../10-capabilities.md) and [`docs/capability-roadmap.md`](../../capability-roadmap.md); this chapter teaches the model and links out to those for the exhaustive version |
 | 12 | [Error handling](12-error-handling.md) | written -- summarizes [`docs/07-error-handling.md`](../../07-error-handling.md); covers `Result`/`throw` side by side, the always-str catch value, and the hard line between a catchable `throw` and an uncatchable panic (exit 98 implicit / 101 for `throw`/explicit `panic()`) |
 
@@ -95,9 +95,9 @@ them. The ones with the widest teaching surface:
 - **Capability precision cost** (LEDGER item 41): 41 of 75 enumerated
   legitimate pure-closure shapes require `@capabilities(all)` under the
   fail-closed design -- Chapter 11 covers this.
-- **Struct-argument leak** (LEDGER item 3): CLOSED. Passing a struct with
-  heap fields across a call boundary used to leak ~86MB per 1M calls. Open
-  leaks are in `STABILITY.md` section 5. Relevant to Chapters 6 and 10.
+- **Struct-argument leak** (LEDGER item 3): passing a struct with heap
+  fields across a call boundary leaks ~86MB per 1M calls -- open design
+  note, no fix shipped. Relevant to Chapters 6 and 10.
 - **`any` type erasure** (LEDGER item 6 / CLAUDE.md gotcha #22): `any` has
   no runtime type tag; `to_string`/`format` on a `str`/`f64` value routed
   through a direct `any` slot mis-renders it. Relevant to Chapters 7 and 9.

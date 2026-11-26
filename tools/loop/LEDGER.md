@@ -10301,20 +10301,3 @@ finish/run.sh --only docs-stability-stale result in the commit message.
 Not covered: the 138 row says only "see LEDGER" because the ledger holds no characterised shape for
 138; other stale snapshots in LAUNCH-READINESS.md (dated history) were left as history. The
 B5/B6/B7/B9/41/B-latent-intrinsics Workaround lines are separate items, not touched here.
-
-## Item docs-stability-stale, revision 2: corrections after the first attempt was REFUTED (2026-11-25)
-
-The first docs-stability-stale entry above contains two false statements, corrected here (that entry is left as history):
-- It said "the ledger holds no characterised shape for 138". False: item 138 (LEDGER, above) has a written repro and records exit
-  0xC0000374 in release builds since 1.1.0. STABILITY.md now describes 138 as a MEMORY-SAFETY defect, not a leak.
-- STABILITY.md said 139 leaks only for "a tuple, closure or trait-object payload". False: the item 139 repro uses a plain struct payload
-  (`Option<In>`, `struct In { s: str }`); the independent verifier measured 127.2 MB peak over 1M calls on the lane binary. The row now
-  says any payload type; the invented 139 workaround is replaced by "no verified workaround".
-Also fixed: stale "item 3 is an open leak" text in docs/LAUNCH-READINESS.md (:65, :976, :597), docs/capability-soundness.md,
-docs/learn/book/{04-functions,10-ownership-and-arc,README,STYLE}.md, docs/RESUME-PLAN.md, HANDOFF.md.
-Pin: tests/docs_stability_stale_gate.sh extended to cover these (FAIL on kryos-co-nov, PASS here).
-Not covered / honest residuals: (1) I transcribed the item 138 repro (with `use std::option::{Option}`, `Option.Some`/`Option.None`)
-and a loop variant and built them `--release` on the lane AND master binaries: both printed `done`, rc=0. I did NOT reproduce the heap
-corruption in this session; the verifier's "no output, rc 127" was a missing exe (bash rc 127 = command not found), not corruption. The
-138 STABILITY row therefore cites the LEDGER record and says "not reproduced in every shape"; the `shared L {..}` avoidance for 138 is
-unmeasured. (2) CHANGELOG.md:813 is a dated release note, left as history. (3) docs/claude/FULL-REFERENCE.md already says item 3 RESOLVED.
