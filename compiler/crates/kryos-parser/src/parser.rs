@@ -231,101 +231,26 @@ impl Parser {
         false
     }
 
-    /// At the first token inside `{`: does an expression start here and end
-    /// at a `:` (depth 0, before any statement boundary)? A statement never
-    /// has a bare top-level `:` (type annotations live behind `let`/`fn`,
-    /// struct-literal and call colons sit inside their own brackets), so a
-    /// first key that is an arbitrary expression (`-a`, `(a) - 1`, `a + 1`,
-    /// `f(a)`, `'c'`, `-1.5`) is recognised as a map without a speculative
-    /// parse (which would be exponential on nested blocks).
-    fn first_key_then_colon(&self) -> bool {
-        if !matches!(
-            self.peek_kind(),
-            TokenKind::Minus
-                | TokenKind::Bang
-                | TokenKind::Tilde
-                | TokenKind::Not
-                | TokenKind::LParen
-                | TokenKind::LBracket
-                | TokenKind::Ident
-                | TokenKind::TypeIdent
-                | TokenKind::Integer
-                | TokenKind::Float
-                | TokenKind::String
-                | TokenKind::Char
-                | TokenKind::True
-                | TokenKind::False
-        ) {
-            return false;
-        }
+    /// At a `(`: is its balanced group immediately followed by `:`? Only a
+    /// map-literal key can have that shape at the start of a `{ ... }` body.
+    fn paren_group_followed_by_colon(&self) -> bool {
         let mut depth = 0usize;
         let mut i = self.pos;
-        let mut prev: Option<TokenKind> = None;
         while i < self.tokens.len() {
-            let t = &self.tokens[i];
-            let k = t.kind;
-            if depth == 0 && i > self.pos && t.newline_before {
-                let prev_is_value = matches!(
-                    prev,
-                    Some(
-                        TokenKind::Ident
-                            | TokenKind::TypeIdent
-                            | TokenKind::Integer
-                            | TokenKind::Float
-                            | TokenKind::String
-                            | TokenKind::Char
-                            | TokenKind::True
-                            | TokenKind::False
-                            | TokenKind::RParen
-                            | TokenKind::RBracket
-                            | TokenKind::RBrace
-                            | TokenKind::Question
-                    )
-                );
-                if prev_is_value && k != TokenKind::Dot {
-                    return false;
-                }
-            }
-            match k {
-                TokenKind::LParen
-                | TokenKind::LBracket
-                | TokenKind::LBrace
-                | TokenKind::InterpStart => depth += 1,
-                TokenKind::RParen
-                | TokenKind::RBracket
-                | TokenKind::RBrace
-                | TokenKind::InterpEnd => {
+            match self.tokens[i].kind {
+                TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace => depth += 1,
+                TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace => {
+                    depth = depth.saturating_sub(1);
                     if depth == 0 {
-                        return false;
+                        return matches!(
+                            self.tokens.get(i + 1).map(|t| t.kind),
+                            Some(TokenKind::Colon)
+                        );
                     }
-                    depth -= 1;
                 }
                 TokenKind::Eof => return false,
-                _ if depth > 0 => {}
-                TokenKind::Colon => return true,
-                TokenKind::Semicolon
-                | TokenKind::Comma
-                | TokenKind::Eq
-                | TokenKind::PlusEq
-                | TokenKind::MinusEq
-                | TokenKind::StarEq
-                | TokenKind::SlashEq
-                | TokenKind::PercentEq
-                | TokenKind::Pipe
-                | TokenKind::PipePipe
-                | TokenKind::Arrow
-                | TokenKind::FatArrow => return false,
-                _ if k.is_keyword()
-                    && !matches!(
-                        k,
-                        TokenKind::As | TokenKind::And | TokenKind::Or | TokenKind::Not
-                    ) =>
-                {
-                    return false
-                }
                 _ => {}
             }
-            prev = Some(k);
             i += 1;
         }
         false
@@ -3669,9 +3594,14 @@ impl Parser {
         {
             return self.parse_map_literal_body(start);
         }
-        // Any other expression-shaped first key (`{-3: 1}`, `{-a: 1}`,
-        // `{(a) - 1: 7}`, `{f(a): 7}`, `{'c': 1}`) ends at a top-level `:`.
-        if self.first_key_then_colon() {
+        // A negative integer key (`{-3: 1}`) or a parenthesised key
+        // (`{(0-3): 1}`) is also a map; neither can start a block statement
+        // that is followed by `:`.
+        if (self.check(TokenKind::Minus)
+            && self.peek_nth(1) == TokenKind::Integer
+            && self.peek_nth(2) == TokenKind::Colon)
+            || (self.check(TokenKind::LParen) && self.paren_group_followed_by_colon())
+        {
             return self.parse_map_literal_body(start);
         }
 
