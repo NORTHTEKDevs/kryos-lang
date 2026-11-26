@@ -277,6 +277,7 @@ pub struct LoweringContext {
     current_ret_ty: MirType,
     /// Structs annotated with `@copy` - forwarded to `MirModule` for codegen.
     copy_structs: HashSet<String>,
+    owned_reg_len: usize,
     /// Locals hidden from name resolution after their enclosing scope exits.
     /// Prevents inner-scope variables from shadowing outer ones after the
     /// inner block ends (e.g., `let x = 1; if true { let x = 2 }; println(x)`
@@ -571,6 +572,7 @@ impl LoweringContext {
             current_self_type: None,
             current_impl_generics: Vec::new(),
             copy_structs: HashSet::new(),
+            owned_reg_len: usize::MAX,
             hidden_locals: HashSet::new(),
             partial_moved_locals: HashSet::new(),
             capture_boxes: HashMap::new(),
@@ -2481,6 +2483,8 @@ pub fn lower_module_with_lambda_params(
         }
     }
 
+    ctx.owned_reg_len = usize::MAX;
+    sync_owned_struct_registry(&mut ctx);
     keep_closures_passed_to_escaping_params(&mut functions);
     crate::dyn_own::own_dyn_refs(&mut functions);
     // (`shared` handles: `kryos_mir::shared_own::own_shared_refs_module`, run by
@@ -2923,6 +2927,27 @@ fn shareable_walk_v(ctx: &LoweringContext, name: &str, is_enum: bool, depth: u32
     ok
 }
 
+/// Publish which structs are owned boxes (`is_owned_struct_ty`) to
+/// `kryos_mir::ir`, whose `tuple_array_elem_releasable` the backends call
+/// without a lowering context. Recomputed only when the struct table grew
+/// (generic instantiations are added while functions lower).
+fn sync_owned_struct_registry(ctx: &mut LoweringContext) {
+    if ctx.owned_reg_len == ctx.struct_defs.len() {
+        return;
+    }
+    ctx.owned_reg_len = ctx.struct_defs.len();
+    let mut owned = Vec::new();
+    let mut not_owned = Vec::new();
+    for n in ctx.struct_defs.keys() {
+        if !ctx.copy_structs.contains(n.as_str()) && struct_is_shareable(ctx, n) {
+            owned.push(n.clone());
+        } else {
+            not_owned.push(n.clone());
+        }
+    }
+    crate::ir::register_owned_structs(&owned, &not_owned);
+}
+
 /// A non-`@copy`, shareable struct type: its values are borrowed by calls,
 /// owned by whoever holds them, and dropped like a str/array/map handle.
 /// An enum whose values every backend can give one more owner: no Enum
@@ -3321,6 +3346,7 @@ pub fn lower_function(
     body: &ast::Block,
 ) -> MirFunction {
     let env_owned = std::mem::take(&mut ctx.pending_env_owned_captures);
+    sync_owned_struct_registry(ctx);
     ctx.reset();
     if !std::mem::take(&mut ctx.keep_closure_locals_once) {
         ctx.closure_locals.clear();
@@ -6230,6 +6256,39 @@ fn strip_escaping_tuple_drops(
                     if !shared_before {
                         unowned.insert(v.0);
                         unowned.insert(root(v.0));
+                    }
+                }
+                continue;
+            }
+            // An array literal element that is a tuple the block shared right
+            // before the literal: the array took its own reference (the share),
+            // so the named tuple keeps its scope-end release. An unshared tuple
+            // is moved into the array (an escape).
+            if let Instruction::Assign { value: RValue::Array(elems), .. } = inst {
+                for f in elems {
+                    let Operand::Local(v) = f else { continue };
+                    if !tuples.contains(&v.0) {
+                        continue;
+                    }
+                    let shared_before = b.instructions[..ii]
+                        .iter()
+                        .rev()
+                        .take_while(|j| !matches!(j, Instruction::Assign { dest: d2, value: v2 }
+                            if d2 == v && !matches!(v2, RValue::Call { func, .. } if func == STRUCT_SHARE_FN)))
+                        .any(|j| matches!(j, Instruction::Assign { value: RValue::Call { func, args }, .. }
+                            if func == STRUCT_SHARE_FN && args.len() == 1
+                                && matches!(&args[0], Operand::Local(l) if l == v)));
+                    if !shared_before {
+                        unowned.insert(v.0);
+                        unowned.insert(root(v.0));
+                    }
+                }
+                // Non-tuple operands still count as plain uses below.
+                let (_, uses) = crate::liveness::inst_defs_uses(inst);
+                for u in uses {
+                    if tuples.contains(&u.0) && !elems.iter().any(|e| matches!(e, Operand::Local(l) if *l == u)) {
+                        unowned.insert(u.0);
+                        unowned.insert(root(u.0));
                     }
                 }
                 continue;
@@ -21203,6 +21262,8 @@ fn monomorphize_struct(
     // Insert the monomorphized struct definition (overwrites the placeholder).
     ctx.struct_defs.insert(mangled.clone(), field_list);
     exit_mono_frame(ctx);
+    ctx.owned_reg_len = usize::MAX;
+    sync_owned_struct_registry(ctx);
 
     mangled
 }

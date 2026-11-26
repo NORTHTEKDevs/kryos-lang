@@ -11047,3 +11047,70 @@ Residual shapes (tree vs baseline 4MB; master 230/294MB), all linear leaks:
 - `match len(if c { mkp(i) } else { mkp(i+1) }.name) { 1 => .. _ => .. }`: 66MB AOT / 68MB JIT (AOT 250k = 21MB, 1M = 65MB, linear).
 - `len(match..{}.name) + len(if..{}.name)` in one statement: 69MB / 68MB (known residual; master 455/583MB).
 - `let q = match i%2 { 0 => mkw(i), _ => mkw(i+1) }.q`: tree 359MB AOT / 551MB JIT, identical to master (known residual).
+
+## a18: an array of tuples that hold a struct owns its elements (2026-11-26)
+
+ITEM A18 (leaks2.kry tuple_struct_arr: `[(mkp(i), i), (mkp(i + 1), i)]`, jit +282.9MB, aot +191.0MB at n=250000 -> 1000000).
+
+ROOT CAUSE
+- `kryos_mir::ir::tuple_array_elem_releasable`, the one predicate MIR and both backends use to decide that an array of
+  tuples owns each tuple (array drop releases it, a copy retains it, an overwrite / for-in / element read follow), refused
+  every tuple with a struct element. So `[(P, i64)]` kept the never-released model: neither the tuple nor the struct box
+  inside it was ever freed. The tuple's OWN drop (Cranelift `emit_drop_for_value` Tuple arm, LLVM `emit_tuple_drop` /
+  `emit_tuple_share`) already releases and shares struct elements, and MIR already treats such a tuple as owned
+  (`is_owned_tuple_ty`); only the array predicate lagged.
+- Second defect found while probing the same shape: `let t = (mkp(i), i)` then `[t]` / `[t, t]` emitted a share for the
+  literal AND `strip_escaping_tuple_drops` removed t's own scope-end release (an array-literal use counted as an escape
+  although the block shared t right before it), leaking one reference per tuple on Cranelift (also for `(str, i64)`).
+
+FIX (no per-consumer patch: the existing ownership rule for tuples-in-arrays is widened by one element kind)
+- kryos-mir/src/ir.rs: the predicate accepts a `Struct` element that is a registered owned struct
+  (`register_owned_structs`, a process-global set), so MIR and the backends keep ONE predicate without a lowering context.
+- kryos-mir/src/lower.rs `sync_owned_struct_registry`: publishes `!@copy && struct_is_shareable` for every struct (at the
+  start of each function, after a generic struct instantiation, and at the end of lowering); an unshareable struct (actor
+  handle, generic enum template, deep nesting) stays unregistered, so those arrays keep the old behaviour. Lowering decides
+  from `ctx`, the backends read the same set, so the three cannot disagree.
+- kryos-mir/src/lower.rs `strip_escaping_tuple_drops`: an array-literal tuple element the block shared right before the
+  literal is not an escape (same rule as an enum payload / container store); an unshared one still moves in.
+
+FILES
+compiler/crates/kryos-mir/src/ir.rs, compiler/crates/kryos-mir/src/lower.rs, tests/mem/tuple_struct_arr_leak.kry,
+tests/mem_tuple_struct_arr_gate.sh, tests/conformance/conf_array_tuple_struct_ownership.kry, tests/no_double_free.sh,
+.github/workflows/ci.yml.
+
+EVIDENCE (both ways, executed)
+- finish run.sh --only '^(A18|A18\.ctl)$': before (this tree at 4b7907c7 and the master binary) FAIL A18 jit +282.8/282.9MB;
+  after PASS A18, PASS A18.ctl.
+- tests/mem_tuple_struct_arr_gate.sh (10 modes x JIT and LLVM AOT at 1M iters, ceiling 40MB): master binary (KRYOS_BIN=
+  kryos-co-nov) rc=1, 20 FAIL legs (AOT 155-464MB, JIT 218-647MB); this tree rc=0, every leg 4MB.
+- Use-after-free direction: tests/conformance/conf_array_tuple_struct_ownership.kry (the struct twin of
+  conf_array_tuple_ownership.kry plus named-tuple literals) prints PASS on JIT, Cranelift AOT and LLVM AOT, with
+  KRYOS_FREE_DIAG=1 and no diag line; added to tests/no_double_free.sh (whole script: "all programs clean").
+- 22 hand-written shapes (literal, push, copy + push, element / array overwrite, index read, for / for-destructure,
+  callee-built array, temp argument, named struct reused, struct in struct, tuple of two structs, [[(P,i64)]], struct field
+  copied, enum payload, closure capture, pop, map value, named tuple in `[t]`, if-expression, mutate-after-push, swap,
+  generic, concat, loop-variable overwrite, nested tuple, `g[0] = h[0]`): output identical to master on JIT, Cranelift
+  AOT and LLVM AOT, no double-free diagnostic; alloc stats balanced (live=0) on LLVM AOT for all but the map value, on
+  Cranelift for all but the three residuals below.
+- Regression scan, same machine: finish run.sh '^(A1x|Ax|*.ctl|leakmode.*|copy-assign-leak.*|137*|139*)$' 55 PASS /
+  8 FAIL before and after, same 8 (A3-A9 are other lanes' items, A19 +118.3MB is the next item); '^mem:' attacks +
+  closure + legit: 10 FAIL before and after, all failing identically on the master binary (c06, n03, n139_a_50, n139_e,
+  n139_f, v139_g x2, x_tuple, v137_uaf, v139_tuple: the 137/139 shared-ownership family); 137-perf PASS (tree 0.71s vs
+  master 1.08s). tests/conformance 121/121 rc=0 on the JIT; no_double_free.sh, mem_tuple_gate, mem_element_read_gate,
+  mem_copy_assign_gate, mem_balance_gate PASS; mem_agg_ops_gate.sh restricted to its 16 tuple modes PASS (the whole gate
+  does not finish inside 10 minutes here; 103 legs run clean before the cut).
+- Not run: `cargo test` (lane rule), the full run.sh, parity / fuzz gates.
+
+RESIDUAL (executed, NOT covered)
+- Cranelift: a closure that captures `[(P, i64)]` (returned or not) releases the tuples but not the struct boxes (the
+  env dropper and `kryos_array_free_tuples` / `kryos_tuple_release` take element kinds for str / array / map only):
+  alloc stats box allocs=6000 frees=0 per 3000 iterations on JIT and Cranelift AOT; LLVM AOT balanced. The same kind
+  table serves an enum payload of `[(P, i64)]` on Cranelift in `kryos_tuple_release`; the measured enum shape was balanced
+  but a struct in a tuple released ONLY through that kind table leaks the struct.
+- `map<K, [(P, i64)]>`: the map's own drop frees its last array value type-erased, so the last value's tuples + structs
+  leak (one per iteration, JIT, Cranelift AOT and LLVM AOT); the same limit as `[(str, i64)]` (LEDGER 2026-10 residual 2).
+- Tuples with an enum or closure element, `@copy` structs, and structs that are not shareable (actor field, generic enum
+  template) keep the old never-released behaviour.
+- The owned-struct registry is process-global and keyed by struct name: two modules lowered in one process with the same
+  struct name and different shareability would share the last published answer (insert / remove per lowering).
+- A19 and the shared-ownership items 137 / 139 are not touched by this change.

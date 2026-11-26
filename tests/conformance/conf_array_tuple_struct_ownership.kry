@@ -1,0 +1,166 @@
+// Conformance (A18): an array of tuples that hold a struct owns its elements
+// (the struct boxes inside each tuple), exactly as an array of (str, i64)
+// does (see conf_array_tuple_ownership.kry). Literals, pushes, copies and
+// overwrites must not leak, and every read, copy or capture must survive the
+// array that held it being overwritten, dropped or churned over (a use-after-
+// free shows up with real frees). Run under KRYOS_FREE_DIAG on both backends
+// and on AOT with real frees by tests/no_double_free.sh.
+
+struct P { name: str, n: i64 }
+fn mk(s: str) -> P { return P { name: s, n: 1 } }
+
+struct Hat { items: [(P, i64)], n: i64 }
+enum Eat { Items([(P, i64)]), Nothing }
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn churn(i: i64) -> i64 {
+    let mut junk: [str] = []
+    let mut jt: [(P, i64)] = []
+    let mut j = 0
+    while j < 60 {
+        junk = push(junk, "JUNK-{i}-{j}")
+        jt = push(jt, (mk("JT-{i}-{j}"), j))
+        j = j + 1
+    }
+    return len(junk) + len(jt)
+}
+
+fn mk_closure(i: i64) -> fn() -> str {
+    let xs = [(mk("c{i}"), i), (mk("d{i}"), i)]
+    return || xs[1].0.name
+}
+
+fn grow(xs: [(P, i64)], i: i64) -> [(P, i64)] {
+    return push(xs, (mk("g{i}"), i))
+}
+
+fn upd(xs: [(P, i64)], i: i64) -> [(P, i64)] {
+    let mut ys = xs
+    ys[0] = (mk("u{i}"), i)
+    return ys
+}
+
+fn show(e: Eat) -> str {
+    return match e {
+        Eat.Items(xs) => xs[0].0.name,
+        Eat.Nothing => "none",
+    }
+}
+
+fn read_after_overwrite(i: i64) -> str {
+    let mut a = [(mk("o{i}"), i), (mk("p{i}"), i)]
+    let t = a[0]
+    a[0] = (mk("r{i}"), i)
+    churn(i)
+    let u = a[1]
+    a = [(mk("q{i}"), i)]
+    churn(i + 1)
+    return t.0.name + " " + u.0.name + " " + a[0].0.name
+}
+
+fn copies(i: i64) -> str {
+    let a = [(mk("c{i}"), i)]
+    let mut b = a
+    b = push(b, (mk("d{i}"), i))
+    let h = Hat { items: [(mk("a{i}"), i)], n: 1 }
+    let h2 = h
+    let it = h.items
+    let e = Eat.Items([(mk("e{i}"), i)])
+    let es = [e, e]
+    churn(i)
+    return a[0].0.name + " " + b[1].0.name + " " + h2.items[0].0.name + " " + it[0].0.name + " " + show(es[1])
+}
+
+fn rebuilt(i: i64) -> str {
+    let a = [(mk("m{i}"), i)]
+    let mut xs = grow(a, 1)
+    xs = grow(xs, 2)
+    let ys = upd(xs, 7)
+    let zs = upd(ys, 8)
+    churn(i)
+    return a[0].0.name + " " + xs[0].0.name + " " + ys[0].0.name + " " + zs[0].0.name + " " + zs[2].0.name
+}
+
+fn loop_overwrite(i: i64) -> str {
+    let mut a = [(mk("a{i}"), 1), (mk("b{i}"), 2), (mk("c{i}"), 3)]
+    let mut out = ""
+    for t in a {
+        a[0] = (mk("n{i}"), 9)
+        churn(i)
+        out = out + t.0.name + ","
+    }
+    for (s, n) in a {
+        a[1] = (mk("w{i}"), n)
+        churn(i)
+        out = out + s.name + ","
+    }
+    return out
+}
+
+fn nested(i: i64) -> str {
+    let mut aa: [[(P, i64)]] = [[(mk("a{i}"), 1)], [(mk("b{i}"), 2)]]
+    let t = aa[0]
+    aa[0] = [(mk("c{i}"), 3)]
+    aa[1][0] = (mk("d{i}"), 4)
+    churn(i)
+    let mut at = [(mk("e{i}"), [1, 2]), (mk("f{i}"), [3])]
+    let u = at[0]
+    at[0] = (mk("g{i}"), [4])
+    at = [(mk("h{i}"), [5, 6])]
+    churn(i)
+    return t[0].0.name + " " + aa[0][0].0.name + " " + aa[1][0].0.name + " " + u.0.name + " " + at[0].0.name
+}
+
+fn named_lit(i: i64) -> str {
+    let t = (mk("n{i}"), i)
+    let a = [t, t]
+    churn(i)
+    let u = (mk("m{i}"), i)
+    let b = [u]
+    let c = b
+    churn(i + 1)
+    return t.0.name + a[1].0.name + a[0].0.name + u.0.name + b[0].0.name + c[0].0.name
+}
+
+@capabilities(all)
+fn main() {
+    expect(read_after_overwrite(1) == "o1 p1 q1" and read_after_overwrite(2) == "o2 p2 q2", "a tuple read out survives its slot and array being overwritten")
+    expect(copies(1) == "c1 d1 a1 a1 e1" and copies(2) == "c2 d2 a2 a2 e2", "array copies share, not steal, their tuples")
+    expect(rebuilt(1) == "m1 m1 u7 u8 g2", "arrays threaded through calls")
+    expect(loop_overwrite(1) == "a1,b1,c1,n1,w1,c1,", "a loop variable survives its element being overwritten")
+    expect(named_lit(1) == "n1n1n1m1m1m1" and named_lit(2) == "n2n2n2m2m2m2", "a named tuple placed in an array literal keeps its own reference")
+    expect(nested(1) == "a1 c1 d1 e1 h1", "arrays of arrays and tuples of arrays")
+
+    // A closure returned from the function that built its captured array.
+    let f = mk_closure(1)
+    let g = mk_closure(2)
+    churn(1)
+    expect(f() == "d1" and g() == "d2", "a returned closure keeps its captured array of tuples")
+
+    // A spawned task captures a copy that outlives the parent's array.
+    let ch = chan()
+    let mut i = 0
+    while i < 3 {
+        let xs = [(mk("w{i}"), i), (mk("x{i}"), i)]
+        spawn {
+            churn(5)
+            send(ch, len(xs[1].0.name) + xs[0].1)
+        }
+        i = i + 1
+    }
+    churn(2)
+    let mut got = 0
+    let mut tot = 0
+    while got < 3 {
+        tot = tot + recv(ch)
+        got = got + 1
+    }
+    expect(tot == 9, "a spawn capture of an array of tuples")
+    println("conformance array tuple struct ownership: PASS")
+}
