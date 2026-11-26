@@ -1,0 +1,26 @@
+// Conformance (2026-11-26, finish-line A3): an enum declared AFTER a function
+// that returns it. The signature pre-pass resolved `fn mk() -> E` before `E`
+// was registered, so the return type stayed Struct("E"); the caller's local was
+// then dropped through the struct path and the LLVM backend failed
+// (`'%t7' defined with type '{ i64, i64 }' but expected 'ptr'`). Run on both
+// backends by run_conformance.sh; pinned in the release build.
+
+struct P { a: str }
+
+fn mk() -> E { return E.B("x") }
+
+fn take(e: E) -> str {
+    match e { E.B(s) => return s, _ => return "other" }
+}
+
+fn main() {
+    let d = mk()
+    match d { E.B(s) => println(s), _ => println("other") }
+    if take(mk()) != "x" {
+        println("CONF FAIL: take(mk())")
+        exit(1)
+    }
+    println("conf_enum_declared_after_use ok")
+}
+
+enum E { A(P), B(str), C }

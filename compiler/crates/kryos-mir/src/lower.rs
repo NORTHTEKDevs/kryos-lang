@@ -1357,6 +1357,29 @@ pub fn lower_module_with_lambda_params(
         ctx.func_ret_types.insert(name.to_string(), ret_ty);
     }
 
+    // Register every non-generic enum's name before any signature resolves.
+    // `resolve_type` tags a named type Enum only when it is already in
+    // `enum_defs`; a function declared ABOVE its enum (`fn mk() -> E` ...
+    // `enum E`) registered its return type as Struct("E"), so the caller's
+    // `let d = mk()` was a struct local and the LLVM backend dropped the
+    // inline enum value through the struct path (ICE: `{ i64, i64 }` used as
+    // ptr). Variant payloads are lowered context-free, so they can be
+    // registered here, ahead of declaration order.
+    for decl in &module.declarations {
+        if let ast::Decl::Enum { name, generics, variants, .. } = decl {
+            if generics.is_empty() {
+                let variant_defs: Vec<EnumVariantDef> = variants
+                    .iter()
+                    .map(|v| EnumVariantDef {
+                        name: v.name.clone(),
+                        fields: v.fields.iter().map(lower_type_expr).collect(),
+                    })
+                    .collect();
+                ctx.enum_defs.insert(name.clone(), variant_defs);
+            }
+        }
+    }
+
     // Pre-pass: collect struct definitions and function return types so the
     // lowerer can infer correct types for field accesses and call results.
     for decl in &module.declarations {
