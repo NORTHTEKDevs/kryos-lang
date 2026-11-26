@@ -10381,3 +10381,20 @@ NOT covered (not executed): other `handle_to_str` readers still collapse invalid
 find/replace/split, http bodies, ed25519 sign/verify message, hex/b64url converters take text
 input by design); `base64_decode` of bytes >= 0x80 still produces latin-1 codepoints, not raw
 bytes (existing documented model); string `==`/`len` on invalid strings were not re-probed.
+
+## a4: REOPENED -- fix refuted by verifier
+
+Verifier findings:
+- Step 1 passed: run.sh -j 2 --only "^(A4)$" printed PASS A4 (kryos 1.3.0).
+- Step 2 passed: diff touched only bindings.rs (sign/verify handle_to_str -> handle_to_raw), the new pin .kry/.sh, and LEDGER.md; no test or gate weakened; correct for ed25519.
+- Step 4 passed: tests/invalid_utf8_ed25519_pin.sh ok on JIT and AOT; fails on master binary.
+- Step 3: ed25519 sign/verify, hmac keys, pbkdf2 and digests fixed; nested calls, loops, concatenated invalid strings correct on JIT and AOT.
+- REFUTED on residual: other handle_to_str consumers still treat invalid UTF-8 as the empty string (the exact defect A4 names). The fix is per-consumer (second patch after digests); handle_to_str still returns "" on invalid UTF-8 (bindings.rs line 36). With a = substr("café",0,4): regex_match(regex_new("caf"), a) is false though a contains caf; regex_match(regex_new("^$"), a) is true for a 4-byte non-empty string. Same on master. Wrong answer, not the loud UTF-8 error A4 accepts.
+
+Residual shapes:
+- @capabilities(crypto) fn main(){ let a = substr("café",0,4); let re = regex_new("^$"); println("{regex_match(re, a)}") } prints true on tree and master; expected false or loud UTF-8 panic.
+- Same with regex_new("caf") prints false; expected true.
+- Not run, uncovered: regex_find, regex_replace_all, http request body/url/headers, dom/alert readers (all handle_to_str).
+- contains(a,"caf") panics loudly with a UTF-8 error (acceptable); regex builtins are inconsistent with it.
+
+Item result: A4 oracle PASS and ed25519 pin ok on JIT and AOT (fails on master), but regex_match still collapses invalid-UTF-8 text to "", so the per-consumer fix leaves same-class residuals: REFUTED. The fix commit 2820ba7e was reverted.
