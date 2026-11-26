@@ -1,4 +1,14 @@
-# Tracked: 7 pre-existing double-frees in `stage1_mini_parser.kry`
+# RESOLVED: the `stage1_mini_parser.kry` double-frees (historical record)
+
+**Status: RESOLVED.** Re-measured 2026-11-26: `kryos run compiler/self-host/stage1_mini_parser.kry`
+exits 0 and prints `stage 1 mini-parser: ok`, and under `KRYOS_FREE_DIAG=1` it reports
+0 double-frees (no `DOUBLE-FREE` line). The 60 / 10 / 7 counts, the `parse_int '}'`
+panic and the `rc=139` SEGFAULT below describe trees that no longer exist and are kept
+only as history. Pin: `tests/mini_parser_doublefree_doc_pin.sh`.
+
+---
+
+# (historical) Tracked: 7 pre-existing double-frees in `stage1_mini_parser.kry`
 
 Not introduced by any recent branch. Measured with `KRYOS_FREE_DIAG=1`, which
 never deallocates and instead reports every free of an already-released header:
@@ -56,13 +66,8 @@ Useful facts before starting:
 - `stage1_mini_parser.kry` reaching `rc=0` in normal mode is the acceptance
   test. The `selfhost-stage1` CI job runs exactly that.
 
-## Current CI position
+## Current CI position (historical)
 
-`selfhost-stage1` is red on this account, as it was on master (for a different
-reason there — the `no_struct_lit` field, fixed). Every other job is green:
-Linux, macOS, Windows, docs-examples, fuzz, quickstart-e2e, registry-smoke,
-wasm-smoke. Master's baseline was 4 of 9 green.
-
-Dropping `335551e` is NOT the answer and was tried: it makes this job pass but
-breaks Linux and macOS (`test_re_anchors_captures`, `test_tracked_generic`),
-because that commit is fixing real heap corruption there.
+The CI status recorded here belonged to the branch under investigation and is
+not current; consult CI directly. The acceptance test stays the same:
+`stage1_mini_parser.kry` reaching `rc=0` in normal mode.

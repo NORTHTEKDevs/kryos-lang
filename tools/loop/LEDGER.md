@@ -10432,3 +10432,11 @@ Residual shapes (still E0003 on the tree and on master):
 - Deref first key: `let p = &a; let m: map<i64,i64> = {*p: 3}`. `let k = *p; {k: 3}` and `{(*p): 3}` work. Star is missing from the gate.
 - If-expression first key: `{if a > 1 { 1 } else { 2 }: 3}` (exotic; `if` not in the gate).
 - Newline continuation before a binary operator: `{a\n        + 1: 7}` gives E0003.
+
+## m7 (finish item M7): stale double-free doc presented a fixed bug as live
+
+- **Root cause:** `docs/BUGS-mini-parser-double-free.md` still described 60/7 double-frees and an rc=139 SEGFAULT in `stage1_mini_parser.kry` with no resolved marker. Executed on this tree AND on the master binary: `kryos run compiler/self-host/stage1_mini_parser.kry` -> rc=0, `stage 1 mini-parser: ok`; under `KRYOS_FREE_DIAG=1` -> rc=0, 0 `DOUBLE-FREE` lines. The bug is gone; only the doc was stale (no compiler change).
+- **Fix:** doc gets a RESOLVED banner in its first lines with the re-measured result, the old tables are labelled historical, and the stale "Current CI position" section is replaced by a pointer to CI.
+- **Files:** `docs/BUGS-mini-parser-double-free.md`, pin `tests/mini_parser_doublefree_doc_pin.sh`.
+- **Evidence both ways:** `run.sh --only '^(M7)$'` before: `FAIL M7 ... /\A(?:[^\n]*\n){0,6}...(FIXED|RESOLVED...)/ not found`; after: `PASS M7`, `PASS M7.ctl`. Pin with the OLD doc (git show HEAD:doc) and the master binary: `FAIL doc: no RESOLVED marker in first 7 lines`; pin on this tree: `PASS mini_parser_doublefree_doc_pin`.
+- **NOT covered:** the pin's binary half (rc=0, no double-free) also passes on the master binary because master already ran clean, so only the doc half discriminates. I did not identify which commit fixed the double-frees. I did not run the double-free diagnostic on any program other than `stage1_mini_parser.kry`.
