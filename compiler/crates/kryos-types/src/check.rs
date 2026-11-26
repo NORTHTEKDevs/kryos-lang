@@ -189,13 +189,6 @@ pub struct TypeChecker {
     /// accepted there; every other use of an `any` param prints the raw pointer.
     any_str_safe_params: std::collections::HashSet<(String, usize)>,
 
-    /// LEDGER item 6 (num lane, third pass): spans of the expressions a fn /
-    /// method / handler body yields as its IMPLICIT value (the last statement
-    /// of the body, recursing through a trailing if/elif/else or try/catch).
-    /// The tail is never unified against the declared return type, so a `str`
-    /// tail of a `-> any` fn needs its own check (`Stmt::Expr`).
-    fn_tail_value_spans: std::collections::HashSet<Span>,
-
     // ── Capability-typed fn values (Stage 1: representation + inference,
     // no enforcement -- docs/capability-effects-spec.md) ──────────────
     /// Fresh capability-row variable ids collected while resolving a
@@ -301,7 +294,6 @@ impl TypeChecker {
             dyn_container_reject_params: std::collections::HashSet::new(),
             any_annotated_params: std::collections::HashSet::new(),
             any_str_safe_params: std::collections::HashSet::new(),
-            fn_tail_value_spans: std::collections::HashSet::new(),
             pending_cap_var_ids: Vec::new(),
             cap_accum_stack: Vec::new(),
             current_actor_fn_state_fields: std::collections::HashSet::new(),
@@ -465,7 +457,6 @@ impl TypeChecker {
     /// silently defaulted to i64 -- an f64 body computed on garbage bits.
     /// Call after `current_return_type` is set, before `check_block(body)`.
     fn seed_tail_lambda_expected(&mut self, body: &Block) {
-        Self::collect_tail_value_spans(body, &mut self.fn_tail_value_spans);
         if let Some(Stmt::Expr {
             expr:
                 Expr::Lambda {
@@ -485,38 +476,6 @@ impl TypeChecker {
                     }
                 }
             }
-        }
-    }
-
-    /// Spans of the tail value expressions of a fn body (see `fn_tail_value_spans`).
-    fn collect_tail_value_spans(block: &Block, out: &mut std::collections::HashSet<Span>) {
-        match block.stmts.last() {
-            Some(Stmt::Expr { expr, .. }) => {
-                out.insert(expr.span());
-            }
-            Some(Stmt::If {
-                then_block,
-                elif_clauses,
-                else_block,
-                ..
-            }) => {
-                Self::collect_tail_value_spans(then_block, out);
-                for (_, b) in elif_clauses {
-                    Self::collect_tail_value_spans(b, out);
-                }
-                if let Some(b) = else_block {
-                    Self::collect_tail_value_spans(b, out);
-                }
-            }
-            Some(Stmt::TryCatch {
-                try_block,
-                catch_block,
-                ..
-            }) => {
-                Self::collect_tail_value_spans(try_block, out);
-                Self::collect_tail_value_spans(catch_block, out);
-            }
-            _ => {}
         }
     }
 
@@ -2845,7 +2804,6 @@ impl TypeChecker {
                             hs.params.iter().map(|(_, t)| t.clone()).collect();
                         self.engine.mark_input_storage(&param_tys);
                     }
-                    Self::collect_tail_value_spans(&h.body, &mut self.fn_tail_value_spans);
                     self.cap_accum_stack.push(crate::ty::CapRow::empty());
                     self.check_block(&h.body);
                     let handler_caps = self.cap_accum_stack.pop().unwrap_or_else(crate::ty::CapRow::empty);
@@ -3896,12 +3854,6 @@ impl TypeChecker {
                     );
                 }
                 let ty = self.infer_expr(expr);
-                // LEDGER item 6: an implicit (tail) `str` value of a `-> any` fn.
-                if self.fn_tail_value_spans.contains(&expr.span()) {
-                    if let Some(expected) = self.current_return_type.clone() {
-                        self.reject_str_into_any_slot(&expected, &ty, expr.span(), "a return value");
-                    }
-                }
                 // must-use lint (W0400): discarding a `Tracked<T>` value as a
                 // statement silently drops its provenance/lineage chain. The
                 // tracked stdlib fns are functional (each returns a NEW Tracked),
@@ -5875,19 +5827,6 @@ impl TypeChecker {
                                         );
                                     }
                                 }
-                                // LEDGER item 6: `fn(any) -> any` held in a local /
-                                // parameter (a fn VALUE, not a named fn).
-                                if matches!(&callee_name_str, Some(cn)
-                                    if self.env.lookup_var(cn).is_some()
-                                        && self.env.lookup_function(cn).is_none())
-                                {
-                                    self.reject_str_into_any_slot(
-                                        &params[0],
-                                        &arg_ty,
-                                        arg.span(),
-                                        "a parameter of a function value",
-                                    );
-                                }
                             }
                             return *ret.clone();
                         }
@@ -5982,15 +5921,6 @@ impl TypeChecker {
                                     {
                                         self.reject_str_into_any_slot(param_ty, &arg_ty, arg.span(), "a parameter");
                                     }
-                                }
-                                // LEDGER item 6: a fn-VALUE callee (a `fn(any)` parameter
-                                // or local) has no name-keyed table entry, but its `any`
-                                // parameter erases a `str` just the same.
-                                if matches!(&callee_name_str, Some(cn)
-                                    if self.env.lookup_var(cn).is_some()
-                                        && self.env.lookup_function(cn).is_none())
-                                {
-                                    self.reject_str_into_any_slot(param_ty, &arg_ty, arg.span(), "a parameter of a function value");
                                 }
                                 if let Err(diag) = self.engine.unify(param_ty, &arg_ty, arg.span())
                                 {
@@ -7146,10 +7076,6 @@ impl TypeChecker {
                 }
                 self.cap_accum_stack.push(crate::ty::CapRow::empty());
                 let body_ty = self.infer_expr(body);
-                // LEDGER item 6: a lambda annotated `-> any` yielding a `str`.
-                if ret_ty.is_some() {
-                    self.reject_str_into_any_slot(&ret, &body_ty, body.span(), "a return value");
-                }
                 let lambda_caps = self.cap_accum_stack.pop().unwrap_or_else(crate::ty::CapRow::empty);
                 self.env.pop_scope();
                 self.engine.unfreeze_rows(frozen_rows);
