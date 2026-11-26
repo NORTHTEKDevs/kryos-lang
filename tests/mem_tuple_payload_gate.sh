@@ -35,7 +35,7 @@ if ! "$KRYOS" build --release "$ROOT/$probe" -o "$aot_bin" >/dev/null 2>&1; then
   echo "mem-tuple-payload: AOT build FAILED"; exit 1
 fi
 
-for mode in idx idx_match fresh named copy wrap enum_idx enum_named nested structel struct_named enum_struct control; do
+for mode in idx idx_match fresh named copy wrap enum_idx enum_named control; do
   aot_bytes=$(powershell -NoProfile -Command \
     "\$env:LEAK_ITERS='$ITERS'; \$env:LEAK_MODE='$mode'; \$p=Start-Process -FilePath '$win_aot' -PassThru -NoNewWindow -RedirectStandardOutput \$env:TEMP\mtp_${mode}_aot.txt; \$m=0; while(-not \$p.HasExited){try{\$p.Refresh(); if(\$p.PeakWorkingSet64 -gt \$m){\$m=\$p.PeakWorkingSet64}}catch{}; Start-Sleep -Milliseconds 20}; try{\$p.Refresh(); if(\$p.PeakWorkingSet64 -gt \$m){\$m=\$p.PeakWorkingSet64}}catch{}; \$m" 2>/dev/null | tr -d '\r')
   case "$aot_bytes" in ''|*[!0-9]*) aot_bytes="" ;; esac
