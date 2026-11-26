@@ -187,6 +187,7 @@ cmd_gates() {
     run "backend_divergence_pins" bash tests/backend_divergence_pins.sh
     run "diagnostics"         bash tests/diagnostics_gate.sh
     run "assert_shadow"       bash tests/assert_shadow_gate.sh
+    run "buf_get_byte_oob"    bash tests/buf_get_byte_oob_gate.sh
     run "parser_nesting"      bash tests/parser_nesting_gate.sh
     run "fixtures_tracked"   bash tests/fixtures_tracked_gate.sh
     run "stdlib_compile"      bash tests/stdlib_compile_gate.sh

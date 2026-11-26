@@ -1331,11 +1331,17 @@ pub unsafe extern "C" fn kryos_buf_contents_to_str(handle: i64) -> i64 {
 #[no_mangle]
 pub unsafe extern "C" fn kryos_buf_get_byte(handle: i64, offset: i64) -> i64 {
     let buf = &*(handle as *const KryosBuf);
-    let idx = offset as usize;
-    if idx < buf.data.len() {
-        buf.data[idx] as i64
+    // Out of range PANICS like `arr[i]` does. It used to return -1, a value
+    // indistinguishable from data to any caller that does not test for it.
+    if offset >= 0 && (offset as usize) < buf.data.len() {
+        buf.data[offset as usize] as i64
     } else {
-        -1
+        let msg = format!(
+            "buffer index out of bounds: index {} but length is {}",
+            offset,
+            buf.data.len()
+        );
+        crate::panic::kryos_panic(msg.as_ptr(), msg.len());
     }
 }
 
