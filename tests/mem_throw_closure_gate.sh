@@ -6,6 +6,10 @@
 #                              named local live at the throw
 #   clo_nested_tuple(3)        a closure env capturing [[(str, i64)]] leaked
 #                              the tuples inside the rows
+# Also (2026-11-26, second round): a `throw` inside a try body (try_throw*,
+# try_rethrow) and a closure env / struct field holding nested tuples
+# (clo_tuple_*, clo_struct_rows, clo_flat_*) or calling a captured closure
+# inline (clo_chain).
 # Probe: tests/mem/throw_closure_leak.kry. On the unfixed compiler every leg is
 # well over the ceiling (60-200MB at 300k); fixed they sit at the ~5MB floor.
 # Honors KRYOS_BIN. Windows-only (PowerShell PeakWorkingSet64 polling); skips
@@ -18,7 +22,7 @@ KRYOS="${KRYOS_BIN:-$ROOT/compiler/target/release/kryos}"
 PROBE="$ROOT/tests/mem/throw_closure_leak.kry"
 ITERS=300000
 CEIL_MB=25
-MODES="throw_locals throw_loop clo_nested_tuple clo_nested_tuple3"
+MODES="throw_locals throw_loop clo_nested_tuple clo_nested_tuple3 try_throw try_throw_loop try_rethrow clo_tuple_arr clo_tuple_tuple clo_struct_rows clo_flat_arr clo_flat_tuple clo_chain"
 
 if ! command -v powershell >/dev/null 2>&1; then
   echo "mem-throw-closure: SKIP (no powershell -- Windows-only, like the other mem_* gates)"

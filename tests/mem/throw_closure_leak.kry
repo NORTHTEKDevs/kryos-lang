@@ -10,6 +10,15 @@
 //                      rows but not the tuples in them (array_free_chain
 //                      stopped at a tuple leaf).
 //   clo_nested_tuple3- the same one level deeper.
+//   try_throw / try_throw_loop / try_rethrow - a `throw` INSIDE a try body left
+//                      the named locals the try body had declared (and a for
+//                      loop's iterable) live: the catch path never released them.
+//   clo_tuple_arr / clo_tuple_tuple / clo_struct_rows / clo_flat_arr /
+//   clo_flat_tuple   - a closure env (or a struct drop helper) released a
+//                      tuple's array / tuple field and a row's tuples one level
+//                      deep, leaking what those held.
+//   clo_chain        - a closure calling a captured closure inline (`g() + "x"`)
+//                      leaked the call's string result.
 //
 // Run:  LEAK_MODE=<mode> LEAK_ITERS=<n> ./throw_closure_leak
 // Gate: tests/mem_throw_closure_gate.sh
@@ -44,6 +53,81 @@ fn mk3(i: i64) -> fn() -> str {
     return || ys[0][0][0].0 + ys[1][0][1].0
 }
 
+struct H { rows: [[(str, i64)]], tag: str }
+
+fn try_throw_fn(i: i64) -> i64 {
+    try {
+        let in1 = "in{i}-padpadpad"
+        let arr = ["a{i}-padpadpad"]
+        if len(in1) + len(arr) > 0 { throw "inner" }
+    } catch e { return len(e) }
+    return 0
+}
+
+fn try_throw_loop_fn(i: i64) -> i64 {
+    let mut n = 0
+    try {
+        for k in [1, 2, 3] {
+            let t = "lp{i}-{k}-padpadpad"
+            if k == 2 && len(t) > 0 { throw "loopthrow" }
+            n = n + len(t)
+        }
+    } catch e { n = n + len(e) }
+    let mut k = 0
+    while k < 3 {
+        try {
+            let t = "w{i}-{k}-padpadpad"
+            let u = [t, "z{k}-padpad"]
+            if k == 1 { throw "wh" }
+            n = n + len(u)
+        } catch e { n = n + len(e) }
+        k = k + 1
+    }
+    return n
+}
+
+fn try_rethrow_fn(i: i64) -> i64 {
+    try {
+        try {
+            let in1 = "in{i}-padpadpad"
+            let arr = ["a{i}-padpadpad"]
+            if len(in1) + len(arr) > 0 { throw "inner" }
+        } catch e { throw "outer" }
+    } catch e2 { return len(e2) }
+    return 0
+}
+
+fn mk_tuple_arr(i: i64) -> fn() -> str {
+    let ys = [[("a{i}", ["x{i}"])], [("b{i}", ["y{i}"])]]
+    return || ys[0][0].0 + ys[1][0].0
+}
+
+fn mk_tuple_tuple(i: i64) -> fn() -> str {
+    let ys = [[(("a{i}", i), "s{i}")], [(("b{i}", i), "t{i}")]]
+    return || ys[0][0].1 + ys[1][0].1
+}
+
+fn mk_struct_rows(i: i64) -> fn() -> str {
+    let h = H { rows: [[("a{i}", i)], [("b{i}", i)]], tag: "tg{i}" }
+    return || h.rows[0][0].0 + h.tag
+}
+
+fn mk_flat_arr(i: i64) -> fn() -> str {
+    let ys = [("a{i}", ["x{i}"]), ("b{i}", ["y{i}"])]
+    return || ys[0].0 + ys[1].0
+}
+
+fn mk_flat_tuple(i: i64) -> fn() -> str {
+    let ys = [(("a{i}", i), "s{i}"), (("b{i}", i), "t{i}")]
+    return || ys[0].1 + ys[1].1
+}
+
+fn mk_chain(i: i64) -> fn() -> str {
+    let ys = [[[("a{i}", i)]], [[("b{i}", i)]]]
+    let g = || ys[0][0][0].0
+    return || g() + "x"
+}
+
 @capabilities(process)
 fn main() {
     let mode = env_get("LEAK_MODE")
@@ -62,6 +146,30 @@ fn main() {
             sink = sink + len(f())
         } elif mode == "clo_nested_tuple3" {
             let f = mk3(i)
+            sink = sink + len(f())
+        } elif mode == "try_throw" {
+            sink = sink + try_throw_fn(i)
+        } elif mode == "try_throw_loop" {
+            sink = sink + try_throw_loop_fn(i)
+        } elif mode == "try_rethrow" {
+            sink = sink + try_rethrow_fn(i)
+        } elif mode == "clo_tuple_arr" {
+            let f = mk_tuple_arr(i)
+            sink = sink + len(f())
+        } elif mode == "clo_tuple_tuple" {
+            let f = mk_tuple_tuple(i)
+            sink = sink + len(f())
+        } elif mode == "clo_struct_rows" {
+            let f = mk_struct_rows(i)
+            sink = sink + len(f())
+        } elif mode == "clo_flat_arr" {
+            let f = mk_flat_arr(i)
+            sink = sink + len(f())
+        } elif mode == "clo_flat_tuple" {
+            let f = mk_flat_tuple(i)
+            sink = sink + len(f())
+        } elif mode == "clo_chain" {
+            let f = mk_chain(i)
             sink = sink + len(f())
         } else {
             println("unknown LEAK_MODE: " + mode)

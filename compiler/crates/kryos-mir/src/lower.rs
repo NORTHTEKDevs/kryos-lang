@@ -388,6 +388,10 @@ pub struct LoweringContext {
 struct TryCatchTarget {
     result_local: LocalId,
     check_block: BlockId,
+    /// `ctx.locals.len()` at try entry: locals from here on belong to the try body.
+    scope_start: usize,
+    /// `ctx.loop_iter_drops.len()` at try entry: loops from here on sit inside the try body.
+    iter_start: usize,
 }
 
 /// True when this instruction is a call that can carry a cross-function
@@ -4802,6 +4806,16 @@ fn drop_unescaped_str_temps(
                                 .func_ret_types
                                 .get(func.as_str())
                                 .is_some_and(|rt| !is_copy_type(ctx, rt))
+                            // A direct call to a lambda (the captured-variable
+                            // fast path, `g()` for `let g = || ..`) returns
+                            // like any user function, but an unannotated
+                            // lambda is registered with an erased `i64` return
+                            // (`func_ret_types`), so the arm above saw a
+                            // scalar and never dropped a heap result consumed
+                            // inline (`g() + "x"` leaked the call's string on
+                            // every call). The candidate is pre-filtered to a
+                            // heap type by its own (inferred) type.
+                            || func.starts_with("__lambda_")
                     }
                     // A CLOSURE call (`f(i)`) and a DYN method call
                     // (`obj.label()`) hand back an owned reference exactly
@@ -9143,6 +9157,36 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                 // result local and jump to the tag-check block.
                 let result_local = target.result_local;
                 let check_block = target.check_block;
+                let (scope_start, iter_start) = (target.scope_start, target.iter_start);
+                // This throw leaves the try body for the catch block, a path
+                // the success-path scope drops (`emit_named_scope_drops` after
+                // the body) never see: release every named local the try body
+                // has declared so far on this path, and the iterables of the
+                // for loops this throw jumps out of, as a `break` does. Not
+                // marked in `dropped_locals` (path-insensitive): the success
+                // path still drops them itself.
+                for i in (scope_start..ctx.locals.len()).rev() {
+                    if ctx.locals[i].name.is_none() {
+                        continue;
+                    }
+                    let local_id = ctx.locals[i].id;
+                    if ctx.param_locals.contains(&local_id.0)
+                        || ctx.borrowed_locals.contains(&local_id.0)
+                        || ctx.dropped_locals.contains(&local_id.0)
+                        || ctx.partial_moved_locals.contains(&local_id.0)
+                        || ctx.hidden_locals.contains(&local_id.0)
+                        || ctx.owned_param_locals.contains(&local_id)
+                    {
+                        continue;
+                    }
+                    drop_tag(ctx, "throw-in-try-scope-end");
+                    ctx.emit(Instruction::Drop { local: local_id });
+                }
+                let iter_drops: Vec<LocalId> =
+                    ctx.loop_iter_drops[iter_start.min(ctx.loop_iter_drops.len())..].iter().rev().copied().collect();
+                for it in iter_drops {
+                    ctx.emit(Instruction::Drop { local: it });
+                }
                 ctx.emit(Instruction::Assign {
                     dest: result_local,
                     value: RValue::EnumVariant {
@@ -10551,6 +10595,8 @@ fn lower_try_catch(
     ctx.try_catch_target = Some(TryCatchTarget {
         result_local,
         check_block: check_bb,
+        scope_start: try_scope_start,
+        iter_start: ctx.loop_iter_drops.len(),
     });
 
     // Lower the try block body. The last expression is wrapped in Result::Ok.

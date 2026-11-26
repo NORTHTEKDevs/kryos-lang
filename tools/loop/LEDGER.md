@@ -10533,3 +10533,65 @@ NOT COVERED (leaks as before, safely)
 - Struct-field / array drop helpers (`emit_helper_array_field_free`) for a `[[(str, i64)]]` field of a struct stored
   in an array were not changed; a struct local holding such a field did not leak in the measured shapes.
 - A tuple leaf whose element is a struct/closure/enum (not `tuple_array_elem_releasable`) still takes the old path.
+
+## leakmode round 2: throw inside try, deep tuple leaves in closure envs / struct fields, inline closure-call result (2026-11-26)
+
+The verifier refuted b19b40d8 as narrower than the defect class. Same item ids (leakmode:throw_locals,
+leakmode:clo_nested_tuple_arr); this entry closes the same-class variants it named. Not a shared-handle rule change.
+
+ROOT CAUSES
+1. throw inside a try body. `Stmt::Throw` with a try target stored `Result::Err` and jumped to the tag-check block, a
+   path the success-path `emit_named_scope_drops` never reaches, so every named local the try body had declared so far
+   (and the iterable of a for loop the throw jumped out of) leaked on the catch path. It only looked fine on
+   Cranelift when the catch ended in `return` (that return's drop list swept the hidden try locals); LLVM and any catch
+   that fell through leaked (b_fn 103MB at 400k on LLVM release; a loop / while + try 35-102MB).
+2. tuple leaves. `kryos_tuple_release` / `kryos_array_free_chain` are one-level: a tuple's Array field was released
+   shell-only (kind 2), a nested tuple field not at all (kind 0), so a closure env (or struct drop helper) holding
+   [[(str,[str])]], [[((str,i64),str)]], a struct field [[(str,i64)]], or the flat [(str,[str])] / [((str,i64),str)]
+   leaked what those held.
+3. closure result temp. A direct call to a lambda (`g()` for `let g = || ..`, MIR `call __lambda_N`) is registered in
+   `func_ret_types` with an erased i64 return, so `drop_unescaped_str_temps` saw a scalar and never dropped a heap result
+   consumed inline (`g() + "x"`): 80 B per call on master and tree, on both backends. This is what kept the 3-deep
+   chain through an inner closure leaking.
+
+FIX
+- kryos-mir/src/lower.rs: TryCatchTarget carries scope_start / iter_start; a throw in a try body drops the named
+  try-scope locals live on that path and the enclosing-in-try for iterables before the Err store (path-local, not marked
+  in dropped_locals, same filter as the outside-try throw). `__lambda_*` call results own their heap temp.
+- kryos-rt/src/array.rs `kryos_release_desc(v, desc, leaf_fn)`: type-tree release (4-bit prefix nodes: scalar, str,
+  array+elem, map, struct/enum leaf fn, arc, tuple+count+elems), last reference releases down the whole tree.
+  kryos-codegen-cranelift codegen.rs `release_desc_of` builds the descriptor for an Array/Tuple whose tuples are all
+  `tuple_array_elem_releasable`, one leaf fn, <= 16 nodes; used by the closure dropper and the struct drop helper
+  (jit.rs registers the symbol). Anything else keeps the old one-level path.
+
+FILES
+compiler/crates/kryos-mir/src/lower.rs, kryos-codegen-cranelift/src/{codegen,jit}.rs, kryos-rt/src/array.rs,
+tests/mem/throw_closure_leak.kry (9 new modes), tests/mem_throw_closure_gate.sh.
+
+EVIDENCE (both ways, executed)
+- finish run.sh --only '^(leakmode:throw_locals|leakmode:clo_nested_tuple_arr)$': 2 PASS.
+- tests/mem_throw_closure_gate.sh, 13 modes x JIT and Cranelift AOT at 300k iters, ceiling 25MB: tree PASS, every leg 4MB.
+  Master binary (KRYOS_BIN=kryos-co-nov): rc=1; try_throw_loop 125MB, try_rethrow 68-78, clo_tuple_arr 188, clo_tuple_tuple
+  183, clo_struct_rows 90-95, clo_flat_arr 38-40, clo_flat_tuple 92-96, clo_chain 146-151.
+- LLVM release (scratch, not in the gate): b_fn 103MB -> 4MB at 400k; mk_a/b/d/f/g 4MB; clo_chain 4MB.
+- Output unchanged vs master on a 10-shape throw/lambda safety probe on JIT, Cranelift AOT, LLVM, clean under
+  KRYOS_FREE_DIAG=1 (moved locals, struct locals, nested try rethrow, for/while/break + try).
+- Regression scan: finish '^leakmode:|throw|try|clos' 500 PASS / 31 FAIL, all 31 also FAIL in oracle last_run.txt;
+  '^mem:' 379 PASS / 10 FAIL (n139_e/f, v139_g x2, x_tuple, v139_tuple, v137_uaf, n139_a_50, c06, n03), all in oracle
+  last_run.txt with the same numbers; tests/conformance 120/120 rc=0 on the JIT; no_double_free.sh clean;
+  mem_tuple/balance/shared_rule/loop/copy_assign/enum_nested/struct_field_read/element_read gates PASS; mem_agg_ops_gate
+  104 legs all <= 5MB, 0 FAIL (the 10-minute run was cut by my timeout in its last legs).
+- Not run: cargo test (lane rule), full run.sh, parity / fuzz gates, binary_trees perf (no change to the arc / alloc path).
+
+NOT COVERED (still leaks)
+- A callee-thrown exception caught in the same function: `try { let a = ..; let arr = [..]; callee_throw() } catch`
+  leaks the try-scope locals (a3, ~100MB at 400k LLVM, 52MB Cranelift, master 69). The pending-exception check edge
+  cannot tell a local moved into the throwing call (owned struct/array param, consume_call_args) from a live one, so
+  dropping there risks a double free; needs an initialized/moved dataflow, not a path-local drop.
+- A tuple holding a struct / enum / closure (`[[(P,str)]]`, `[(P,str)]` local or captured): not
+  `tuple_array_elem_releasable`, array copies do not retain such tuples, so releasing them is unsound; unchanged
+  (mk_c 97MB tree, 97MB master).
+- A struct/enum or closure inside a tuple inside a nested array, more than one distinct leaf drop fn, or a type tree over
+  16 nodes: falls back to the one-level release.
+- Enum payload fields holding nested tuple arrays; maps of nested tuples (kryos_map_free_tuple_values is one-level).
+- The dynamic thrown message leak (one reference per `throw "x{i}"`) from the b19b40d8 entry is unchanged.
