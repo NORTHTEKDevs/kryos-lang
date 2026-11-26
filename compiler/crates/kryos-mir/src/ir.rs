@@ -100,6 +100,21 @@ pub fn tuple_array_elem_releasable(elem: &MirType) -> bool {
         })
 }
 
+/// An array whose overwrite releases its elements through the backends'
+/// type-directed array drop (`Instruction::DropIfNe` on the array local): an
+/// array of releasable tuples, or of structs / enums, whose elements are
+/// counted boxes the array owns once (`push` shares the stored value, a copy
+/// of the array retains every element). The untyped `kryos_array_release_if_ne`
+/// frees only the header and buffer, so `xs = []` over `[Struct]` leaked every
+/// element box (LEDGER item A10).
+pub fn array_overwrite_elem_releasable(elem: &MirType) -> bool {
+    match elem {
+        MirType::Struct(_) | MirType::Enum(_) => true,
+        MirType::Array(inner, _) => array_overwrite_elem_releasable(inner),
+        _ => tuple_array_elem_releasable(elem),
+    }
+}
+
 /// MIR-level type representation.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum MirType {

@@ -312,6 +312,11 @@ jobs:
         # box balance on the JIT, peak RSS on both backends.
         run: bash tests/mem_copy_assign_gate.sh
 
+      - name: "Struct/enum array overwrite memory gate (A10)"
+        # Overwriting a [Struct] / [Enum] / [[Struct]] variable released only the
+        # array buffer, never the element boxes: peak RSS on both backends.
+        run: bash tests/mem_struct_array_overwrite_gate.sh
+
       - name: Struct-argument memory gate (LEDGER item 3)
         # Passing a heap-bearing struct to a function, and chaining
         # struct-returning methods, must stay flat on BOTH backends. Pre-fix

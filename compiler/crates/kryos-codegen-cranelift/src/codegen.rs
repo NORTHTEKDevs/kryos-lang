@@ -3736,7 +3736,7 @@ fn translate_instruction<M: Module>(
             // tuples (type-directed like the rest; both are plain handles).
             if matches!(ty, MirType::Struct(_) | MirType::Enum(_))
                 || kryos_mir::ir::tuple_array_elem_releasable(ty)
-                || matches!(ty, MirType::Array(e, _) if kryos_mir::ir::tuple_array_elem_releasable(e))
+                || matches!(ty, MirType::Array(e, _) if kryos_mir::ir::array_overwrite_elem_releasable(e))
             {
                 if let Some(&old_var) = translator.variables.get(&old.0) {
                     let old_val = builder.use_var(old_var);

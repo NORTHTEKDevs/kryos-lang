@@ -10542,3 +10542,42 @@ Commit bbb8bdeb reverted. Verifier findings:
 - No new crash or double free found; output identical to master on v1, v2, v3, v5.
 - Residual shapes: (1) callee-thrown exception caught in same function (above); (2) tuples holding a, listed as still leaking in the commit's own LEDGER.
 - Not verified: LLVM, KRYOS_FREE_DIAG, the claimed regression scans and other mem gates.
+
+## A10: overwriting a [Struct] / [Enum] / [[Struct]] variable leaked every element box (2026-11-26, lane mem)
+
+ROOT CAUSE
+- `keep = []` / `keep = push(keep, r)` then a reset lowered the old-value release as the untyped
+  `kryos_array_release_if_ne`, which frees the array header and buffer only. `type_array_releases`
+  (kryos-mir lower.rs) upgraded that call to the element-aware release for str / array / map / shared
+  elements (runtime elem kind) and, for tuples, to the type-directed `Instruction::DropIfNe`, but had no
+  arm for Struct / Enum elements: each overwritten array leaked one box plus its heap fields per element
+  (A10: ~100 B/iter, +72.5 MB between 250k and 1M iterations, JIT and AOT). Scope exit was already correct
+  (the plain `Drop` of an array is type-directed in both backends), so the `scoped_arr_struct` control passed.
+- Not a shared-ownership defect: no new ownership rule, no change to retain/release counts. The overwrite now
+  runs the same element-releasing drop the scope exit runs.
+
+FIX
+- kryos-mir ir.rs: `array_overwrite_elem_releasable` (releasable tuple, Struct, Enum, or an array of those,
+  recursively). lower.rs `type_array_releases` and the `DropIfNe` guards in the Cranelift and LLVM codegens use
+  it instead of `tuple_array_elem_releasable`. `[[str]]`, `[str]`, `[map]` keep their existing typed release.
+- Files: compiler/crates/kryos-mir/src/{ir,lower}.rs, kryos-codegen-cranelift/src/codegen.rs,
+  kryos-codegen-llvm/src/codegen.rs. Pins: tests/mem_struct_array_overwrite_gate.sh with
+  tests/mem/{struct_array_overwrite_leak,enum_array_reset_leak,struct_array_nested_reset_leak}.kry (CI step added).
+
+EVIDENCE
+- finish run.sh --only '^(A10|A10.ctl)$': FAIL A10 (jit +72.5MB) before; PASS A10 / PASS A10.ctl after.
+- Pin gate, 1M iters, peak RSS: master binary struct AOT 93MB / JIT 96MB, enum 92 / 95MB (and nested), 6 FAIL lines;
+  this tree 4MB on all six legs, PASS.
+- Regression: finish --only A*/M*/leakmode/copy-assign-leak and '^mem[-:.]' (389 rows) give the same PASS/FAIL set
+  before and after the change, and no row that passes on master fails. JIT output of every tests/mem and
+  tests/conformance program (153) is identical to the pre-change binary; AOT identical on 73 ownership/array/
+  struct/enum programs. Hand probes with aliases (`let a = keep`, `let x = keep[1]`, `let mut ys = keep`,
+  `first(keep)`, nested `keep[3][1]`, field and global arrays, Option<P> elements) followed by allocation churn
+  print the same on master, JIT, Cranelift AOT and LLVM AOT.
+
+RESIDUAL (not covered, not claimed)
+- Every item still failing in the same scans (A11-A19 etc.) is a different shape and untouched.
+- Element kinds not routed here: `[fn]` closure arrays and `[DynTrait]` arrays overwrite through the old
+  release (not executed). Struct fields that hold `[Struct]` were measured flat (`w.items = []`) but only for
+  the push-and-reset shape.
+- The wider shared-ownership wall above (items 137 / 139) is not addressed by this entry.

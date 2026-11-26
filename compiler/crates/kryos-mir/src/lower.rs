@@ -5885,7 +5885,7 @@ fn type_array_releases(blocks: &mut [BasicBlock], locals: &[MirLocal]) {
             // both backends, so the backend's type-directed drop releases the
             // old array (and the tuples it holds) unless it is the new handle.
             if let Some(ty @ MirType::Array(elem, _)) = locals.iter().find(|l| l.id == *old).map(|l| &l.ty) {
-                if tuple_array_elem_releasable(elem) {
+                if array_overwrite_elem_releasable(elem) {
                     let new_op = args[1].clone();
                     let (old, ty) = (*old, ty.clone());
                     *inst = Instruction::DropIfNe {

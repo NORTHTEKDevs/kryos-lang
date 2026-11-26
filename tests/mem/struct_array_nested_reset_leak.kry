@@ -1,0 +1,22 @@
+// LEDGER item A10, nested sibling: overwriting a [[Struct]] variable must
+// release the rows AND the struct boxes inside them.
+struct P {
+    name: str
+    n: i64
+}
+
+@capabilities(process)
+fn main() {
+    let raw = env_get("LEAK_ITERS")
+    let iters = if len(raw) == 0 { 500000 } else { parse_int(raw) }
+    let mut keep: [[P]] = []
+    let mut i = 0
+    let mut acc = 0
+    while i < iters {
+        keep = push(keep, [P { name: "r{i}", n: i }])
+        if len(keep) > 50 { keep = [] }
+        acc = acc + len(keep)
+        i = i + 1
+    }
+    println("iters=" + to_string(iters) + " acc=" + to_string(acc))
+}

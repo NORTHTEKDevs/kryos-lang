@@ -1,0 +1,24 @@
+// LEDGER item A10, enum sibling: overwriting an [Enum] variable with a fresh
+// array must release the old array's payloads (a Name(str) here), not only the
+// array buffer.
+enum Op {
+    Add
+    Num(i64)
+    Name(str)
+}
+
+@capabilities(process)
+fn main() {
+    let raw = env_get("LEAK_ITERS")
+    let iters = if len(raw) == 0 { 500000 } else { parse_int(raw) }
+    let mut ops: [Op] = []
+    let mut i = 0
+    let mut acc = 0
+    while i < iters {
+        ops = push(ops, Op.Name("n{i}"))
+        if len(ops) > 50 { ops = [] }
+        acc = acc + len(ops)
+        i = i + 1
+    }
+    println("iters=" + to_string(iters) + " acc=" + to_string(acc))
+}

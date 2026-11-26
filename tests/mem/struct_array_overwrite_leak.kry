@@ -1,0 +1,25 @@
+// LEDGER item A10: overwriting a [Struct] variable (`keep = []`, `keep = push(..)`
+// followed by a reset) released only the array header and buffer, never the
+// element boxes and their str fields: one leaked box + string per element.
+// Windows peak working set at 1M iters: ~100 MB before, flat after.
+struct P {
+    name: str
+    n: i64
+}
+
+@capabilities(process)
+fn main() {
+    let raw = env_get("LEAK_ITERS")
+    let iters = if len(raw) == 0 { 500000 } else { parse_int(raw) }
+    let mut keep: [P] = []
+    let mut i = 0
+    let mut acc = 0
+    while i < iters {
+        let r = P { name: "r{i}", n: i }
+        keep = push(keep, r)
+        if len(keep) > 50 { keep = [] }
+        acc = acc + len(keep)
+        i = i + 1
+    }
+    println("iters=" + to_string(iters) + " acc=" + to_string(acc))
+}
