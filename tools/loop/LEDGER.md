@@ -10405,3 +10405,56 @@ What had to change around it (each was a hole the rule exposed, none is a per-co
   the docs lane writes it) were not edited here; the integration step has to reconcile them with this entry.
 
 ITEMS: 137 CLOSED on the finish line's 9 entries, 138 CLOSED, 139 CLOSED on its entry (residual shapes above stay open).
+
+
+## Item copy-assign-leak: an @copy struct was never freed (2026-11-25)
+
+Finish-line entries `copy-assign-leak`, `copy-assign-leak:cp_copy_const`, `:cp_copy_ints`, `:cp_struct_nocopyvar` (4 entries) now PASS.
+
+ROOT CAUSE
+- Both backends skipped EVERY `Drop` of an `@copy` struct (Cranelift `Instruction::Drop`, Struct arm; LLVM `Drop`, Struct arm), on the
+  stated ground that a copy aliases the original's fields and a returned value aliases the callee's storage. That reasoning is stale
+  for locals: `dest = src` of an `@copy` struct is a deep copy on both backends (Cranelift `emit_struct_deep_copy`, LLVM
+  `maybe_deep_copy_struct_fields`) and a struct literal clones its `str` fields. So every `@copy` value was leaked: one calloc'd box
+  per literal and per `let c = b` on Cranelift (even with scalar-only fields: cp_copy_ints leaked 2 boxes per iteration, 46MB per
+  750k), and the cloned `str` field per value on LLVM (cp_struct_nocopyvar and copyleak, 61MB per 750k; scalar-only structs are
+  in registers on LLVM and were flat).
+- Not shared-handle ownership: no `shared` value is involved. The fix follows the same principle (one rule, not per-consumer shape)
+  but for `@copy` locals, and is deliberately conservative: it frees only what it can prove is solely owned.
+
+FIX (no instruction or IR change)
+- New `compiler/crates/kryos-mir/src/copy_own.rs`: `owned_copy_locals(func, copy_structs, struct_defs)` returns the `@copy` struct
+  locals that solely own their value. A local qualifies when its struct has only scalar / `str` fields, it is not a parameter or a
+  `non_owned_locals` entry, every definition is a struct literal or a copy of another local of the same `@copy` type, and every use is
+  a scalar/`str` field read, a copy source, a scalar field store, or its `Drop`. Any other mention (call argument, return, push, closure
+  capture, stored into an aggregate, address taken, any terminator use) disqualifies it. Two forward dataflow checks then require, at
+  every drop and every read, that the local is DEFINITELY defined (intersection over predecessors) and NOT possibly already dropped
+  (union); a local failing either is dropped from the set, so a real free never runs twice or on nothing.
+- Backends consult the set where they lower `Instruction::Drop`: Cranelift calls `emit_drop_for_value` (owner-count check, frees `str`
+  fields and the box) and nulls the variable; LLVM spills the aggregate and calls `emit_struct_drop` (frees the `str` fields).
+  Disqualified locals keep the old leak-only behaviour (memory safe). Cranelift's exception-path cleanup still excludes `@copy` structs.
+
+EVIDENCE (both ways)
+- master (kryos-co-nov) `run.sh --only` for the four entries: 0 PASS, 4 FAIL (jit leaks +106.9MB, +45.9MB, +46.0MB, +84.1MB > 8MB slack).
+- this tree: 4 PASS, 0 FAIL ("# RESULT: ALL PASS"). KRYOS_ALLOC_STATS box counts at 1000 iterations went from live=2000/2000/2000/1000
+  to live=0 for copyleak / cp_copy_const / cp_copy_ints / cp_struct_nocopyvar.
+- Pin: `tests/mem_copy_assign_gate.sh` (fixture `tests/mem/copy_assign_leak.kry`): master FAIL (no box report; AOT peak RSS 312MB, JIT 616MB at
+  2M iters, ceiling 40MB), this tree PASS (box allocs=5000 frees=5000 live=0; AOT 4MB; JIT 4MB). Wired into .github/workflows/ci.yml.
+- Regression scan on this tree: `run.sh --only '^(mem|leakmode|copy-assign-leak)'` 398 PASS / 12 FAIL of 410; the 12 are exactly the
+  entries listed above as not covered or defective (c06, n03, n139_a_50, n139_e, n139_f, v139_g x2, x_tuple, v139_tuple, v137_uaf,
+  leakmode:throw_locals, leakmode:clo_nested_tuple_arr); none is an @copy shape and none passed before. Gates: conformance 120/120,
+  no_double_free, backend_divergence_pins, mem_balance_gate (16 rows), mem_shared_rule_gate (28 rows), type_soundness, minilisp 22/22,
+  stdlib_compile 66/66, selfhost_wholeprogram, self-host test_bootstrap 16/16, self-host test_regressions, run_examples_gate,
+  mem_struct_arg / mem_struct_field_read / mem_field_assign_temp, concurrency_smoke. Adversarial probes (branches, loops with
+  break/continue, early return, try/catch, reassign, closure capture, pass/return/push) print the same output as master on JIT and AOT, no
+  double free (KRYOS_FREE_DIAG clean, box live never negative).
+- Not run: `cargo test` (lane rule), the `mem_agg_ops_gate.sh`, parity / fuzz gates, the full run.sh.
+
+NOT COVERED (leaks as before, safely)
+- An `@copy` struct with an array, map, enum, tuple, closure, shared or nested-struct field (only scalar / `str` fields qualify).
+- A value that is passed to any call, returned, pushed, captured by a closure, stored in an aggregate or global, or is a parameter:
+  `fn mk() -> P { let p = P{..}  return p }`, `f(b)`, `push(xs, b)` still leak the box (JIT) / the str clone (AOT).
+- A local overwritten (`b = P { .. }`) leaks the previous value; the drop frees only the last one.
+- Locals whose drop sits on a path where they are not definitely defined, or that are dropped twice on a path, stay out of the set.
+- A `throw` before the scope-exit drop leaks the value (the exception cleanup skips `@copy` structs by design).
+- Async functions and the wasm backend are untouched.
