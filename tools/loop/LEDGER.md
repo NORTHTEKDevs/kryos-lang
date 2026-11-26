@@ -10796,3 +10796,61 @@ RESIDUAL (not covered, not claimed)
 - A14-A19 and the shared-handle items (137, 139 residuals listed above) are different shapes and untouched; the shared-ownership rewrite
   (one ownership rule for shared handles in the MIR) was not needed for A13 and was not attempted here. The unverified mem.patch from the
   powered-off run was not applied.
+
+## A14: a mutable global holding a struct / tuple / enum / Option never released its old value on overwrite (2026-11-26, branch closeout/lane-mem)
+
+Item: `jit|aot leaks.kry glob_struct_reassign | glob_tuple_reassign | glob_enum_reassign | glob_opt_reassign` (`GS = Gin { name: "gs{i}" }`,
+`GT = ("tt{i}", i)`, `GN = Op.Name(..)`, `GO = Some(..)`), peak commit +84.0MB at n 250000 -> 1000000 on both backends.
+
+Root cause (lower.rs, plain assignment to a mutable global): the write routes through `kryos_global_set`, a raw i64 slot store. Only str / array / map
+globals got a guarded release of the old value (`release_if_ne_fn`); a struct / enum / tuple global had no release at all, so every overwrite orphaned
+the old box and its fields. The slot owns exactly one reference of its value (a read is a raw alias), so the rule is the same one as for any slot:
+the overwrite releases the old reference, and a new value that is not a fresh owned result takes its own reference first.
+- Old and new handles are read back as raw i64 around the store (AFTER the right-hand side ran, so a callee that itself reassigned the global does not
+  leave a stale snapshot) and released through the existing guarded type-directed `Instruction::DropIfNe` (Struct / Enum / tuple whose elements are all
+  scalar / str / array / map). Raw handles matter: LLVM boxes a struct / enum / tuple with a fresh `kryos_calloc` per `kryos_global_set`, so a local-typed
+  `Drop` freed the fields but leaked the box (+23MB per 750k iterations until DropIfNe was used); Cranelift stores the value's own box.
+- "Fresh owned" (`global_rvalue_is_fresh`): a struct / tuple / variant literal, a user function's result, a struct clone, or an unnamed temp defined by one.
+  Everything else (a named local, a field / element / global read, a builtin result, an if/match slot) shares first (`emit_value_share`). A named local
+  source is no longer MOVED into the global (it was: `dropped_locals.insert(src)`), it keeps its own drop.
+Two consumers of a bare global read took no reference of their own, so once the overwrite released the slot's value they freed memory the slot (or the
+copy) still held (found by probing every consumer of `G` before and after an overwrite, FREE_DIAG; master survived only because it never released):
+- `Some(G)` / `W.Has(G)` / `Ok(G)` (`suppress_enum_field_arg_drops`, all three spellings): the variant now shares a bare mutable-global struct / enum /
+  tuple payload. On master `let o = Some(G)` in a loop already double freed G's box (FREE_DIAG), with or without an overwrite.
+- `s.f = G` (field assignment): a bare global on the right was classed "fresh" (it is a `kryos_global_get` call) or "not named" and was stored as an alias;
+  it now takes the field's own reference (str / array / map retain, struct / enum / tuple share). This also fixes master's `s.name = GSTR; GSTR = "x"`
+  (master prints empty strings and double frees, FREE_DIAG; a scratch program, no repo program changes output).
+
+Files: compiler/crates/kryos-mir/src/lower.rs; tests/mem/global_aggregate_leak.kry, tests/mem_global_aggregate_gate.sh.
+
+Both-ways evidence:
+- Finish line `--only '^(A14|A14\.ctl)$'`: pre-fix lane binary (== master) FAIL `jit leaks: peak commit 27.5MB@250000 -> 111.5MB@1000000 (+84.0MB > 8MB slack)`;
+  this tree PASS (all eight modes, both backends).
+- tests/mem_global_aggregate_gate.sh (modes glob_struct / glob_tuple / glob_enum / glob_opt / glob_share / glob_variant / glob_field + a control, 1M
+  iterations, JIT and AOT, peak RSS ceiling 24MB, answer 7888890 checked): MASTER binary FAIL, 14 of 14 global rows leak (AOT 103-140MB, JIT 102-158MB;
+  control 4MB); this tree PASS, all 16 rows 3-4MB with the right answer. KRYOS_ALLOC_STATS box live = 3 (the initial globals) on every mode.
+- Aliasing probes (scratch; struct / tuple / enum / Option globals overwritten while aliased by a named local, a global, a callee param, a returned clone,
+  an array / map element, a struct literal, a tuple literal, a variant, a closure, a field assign, an if-expression value, self-assignment, an RHS that
+  reassigns the same global): identical stdout to master on the JIT and AOT, `KRYOS_FREE_DIAG=1` reports 0 on both backends.
+- Regression scan: `--only '^(A1[0-9]|A1[0-9]\.ctl|137.*|138.*|139.*)$'` 26 PASS / 5 FAIL, the five being A15-A19 exactly as before (A14 now PASS; 137-perf
+  x0.622 of master); `--only '^mem:'` 379 PASS / 10 FAIL, the same ten documented failures (diffed by name). Gates PASS: mem_balance (16 rows), mem_shared_rule
+  (28), no_double_free, backend_divergence_pins, builtin_borrow_mir (57), type_soundness, jit_symbols, mem_struct_arg, mem_loop, mem_tuple,
+  mem_throw_closure, mem_string_interp, mem_copy_assign, mem_struct_array_overwrite, mem_enum_array_push, mem_pop_stmt, mem_json_handle (36),
+  mem_shadow_builtin, mem_field_assign_temp, mem_struct_field_read, mem_enum_overwrite, minilisp 22/22, stdlib_compile 66/66, selfhost_wholeprogram,
+  run_examples, wasm_differential 66/66, concurrency_smoke, ecosystem_check 259/259, tests/conformance 120/120. The 21 repo programs that declare a
+  top-level `let mut` (tests, examples, ecosystem) print the same under this tree as under master (the two capability-diagnostic differences are the
+  cap waves already on the branch; the two servers time out the same way).
+
+RESIDUAL (not covered, not claimed)
+- `GS = if c { g } else { mk(i) }` / a match value: the hidden result slot already owns a reference per branch and the global shares it again, so one
+  box leaks per such assignment (executed: live=1000 of 2000 iterations in a probe). Sound (never frees early), not closed.
+- A struct / enum / tuple global read through an expression that already retained for this destination (`GS = xs[i]` where the read retains its temp)
+  shares twice: a leak, not a free. Pointer-equal new/old on Cranelift (`GS = GS`) shares and DropIfNe skips the equal handle: a one-count leak per
+  executed self-assignment (the AOT copy boxes differ, so it balances there).
+- Tuples that contain a struct / enum element (`is_owned_tuple_ty` but not `tuple_array_elem_releasable`), `@copy` structs, structs / enums the backends
+  cannot share (nested enum payload) keep the old behaviour: the old value of such a global still leaks on overwrite.
+- Consumers of a bare global read other than the ones probed above (`let`, `push`, map insert, array / tuple / struct literals, call argument, return, closure,
+  field assign, variant) were not enumerated; `spawn` / actor threads reading a global while another overwrites it are not covered (the release is
+  not synchronised with a concurrent reader, as for the str / array / map globals before it).
+- A15-A19 (`G.t = ..` tuple field of a global, `Some(ts[0])`, field read off an if temp, `[struct]` of tuples, whole-subject match) are different shapes
+  and untouched; the shared-handle items 137 / 139 residuals listed above are untouched, the unverified lane mem.patch was not applied.
