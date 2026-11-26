@@ -10350,3 +10350,44 @@ the swa lane's); `any` via a generic / trait-method return; method-call `a.conta
 an `any` param is NOT exempt (rejected); a closure bound with `let f = fn(a: any)` and then
 re-bound/passed around as a value loses the name-keyed check; non-str, non-i64 payloads (arrays/structs
 in an `any` param/return) were NOT probed in this pass. A real tagged `any` remains the only general fix.
+
+
+### num lane: finish-line item `6` third pass (verifier REFUTED 01ed3b7d: implicit-tail return and `fn(any)` value residuals) -- both now E0110 (2026-11-26)
+
+Reproduced on the 01ed3b7d build before touching anything (JIT prints a raw pointer):
+`fn pick() -> any { "hi" }`, `fn pick(b: bool) -> any { if b { "yes" } else { "no" } }`
+and `fn apply(f: fn(any), s: str) { f(s) }` with `apply(fn(a: any) { ... }, "yo")`.
+Root cause 1: the checker never unifies a fn body's IMPLICIT tail value against the
+declared return type (`fn f() -> i64 { "hi" }` also passes check; check_block validates
+statements only), so the `Stmt::Return` check added in the second pass was the only gate on
+a `-> any` return and a tail str bypassed it. Root cause 2: the call-site `any` check is
+keyed on the NAME of a top-level fn / let-bound closure (`any_annotated_params`); a fn VALUE
+held in a parameter or local (`f: fn(any)`, `f: fn(any) -> any`) has no table entry.
+Fix (`kryos-types/src/check.rs` only): (1) `fn_tail_value_spans` records the tail expression
+spans of every fn / method / actor-handler body (last stmt, recursing through a trailing
+if/elif/else and try/catch); `Stmt::Expr` runs `reject_str_into_any_slot` on a recorded tail
+against `current_return_type` (so a tail `match`/if-expression typed `str` is caught by the
+whole-expression type); a lambda annotated `-> any` whose body is a `str` is rejected at the
+lambda. (2) a call through a local/parameter fn value (name is a variable, not a function)
+rejects a `str` argument that meets an `any` parameter, in both the general path and the
+opaque `fn(any) -> any` path.
+Pins (tests/type_soundness.sh, 7 new want_reject + 1 no-cascade want_pass): master binary
+(KRYOS_BIN=kryos-co-nov) -> every new probe is `HOLE -- unsound program passed kryos check`
+(25 probes FAILED in total, 18 are the earlier ones plus 7 new); this tree -> "type-soundness:
+all probes correct". Evidence: run.sh --only '^(6|6\.ctl)$' PASS/PASS; conformance 121/121;
+diagnostics_gate PASS; backend_divergence_pins PASS; `kryos check` over all 1875 tracked .kry
+and all 7272 oracle corpus .kry files: zero `cannot store a str` diagnostics (nothing added to
+closeout_targets.txt). swa/A7 family scan (163 items): vs master binary no item that passed on
+master fails here EXCEPT swa:closure m1_len_idx and m1_unobserved_opt, which fail with the
+unrelated E0110 "cannot infer the generic type parameter" from commits ac384b2c / 16c43c38 merged
+into this branch by other lanes (zero `cannot store` in their output); A7 and 35 swa FAILs are
+pre-existing.
+NOT covered (not executed or known still open): a `str` called through a fn value reached via a
+field / index / returned closure (`s.f("x")`, `fs[0]("x")`, `mk()("x")`: callee is not a plain
+name, so the variable test does not fire); a bare `fn` param (opaque shape) now rejects a str
+argument at a local-variable callee, which is stricter than the soundness hole strictly needs;
+an `any` payload inside Option/Result/struct/enum and a method-call `a.contains(x)` on an `any`
+param remain as listed in the second pass. Separately, the untyped tail hole is wider than `any`:
+`fn f() -> i64 { "hi" }` passes check and prints a pointer on master and here (the tail value is
+never unified with the declared return type); only the `-> any` case is closed in this pass.
+A real tagged `any` remains the only general fix.
