@@ -10442,3 +10442,24 @@ a matching signature; user fns reached through spawn/actor thunks or fn pointers
 `--emit-llvm`-text consumers or cargo unit tests asserting the exact `define` line (only substring
 `contains` assertions exist in crates/kryos-codegen-llvm/tests and were not re-run, cargo not allowed).
 The unverified num.patch (any-slot str rejection) was NOT applied.
+
+## A20: JIT `let mut u = t` on a tuple shared the heap handle, so `u.0 = 7` also changed `t.0`
+
+Root cause (read in kryos-mir lower.rs `Stmt::Let`, not guessed): for `let u = t` with `t` a tuple the lowering took the
+"share" branch (`pending_let_share` -> `emit_struct_share`), i.e. both names hold ONE heap tuple with a bumped
+refcount. The struct branch right above it deep-clones (`__kryos_struct_index_clone`), the tuple branch did not, so a
+field write through either name was visible through the other on the Cranelift JIT (AOT already produced a copy).
+Fix: when the new binding is `mut`, or the source local is `mut`, a tuple `let` from a local now builds its own tuple
+with `emit_tuple_clone` (elements retained, nested tuples cloned) instead of sharing. Immutable-from-immutable keeps the
+cheap share (nothing can write through either name).
+Files: compiler/crates/kryos-mir/src/lower.rs, tests/tuple_value_copy_pin.{kry,sh}.
+Both-ways evidence: run.sh --only '^(A20)$' FAIL before (`stdout=q.n=1 r.n=9\nt.0=7 u.0=7\n want ...t.0=1 u.0=7`), PASS after.
+tests/tuple_value_copy_pin.sh (src-mut, dst-mut, nested, param copy, loop, both-mut): master binary FAIL on JIT (aliased
+values 5/5, 7z/7z, 9/9, 107/107, ...), this tree ok on JIT and AOT. Regression scan: run.sh over A1 A2 A3 A4 A5 A6 A7 A8 A9 A21-A23
+M1 M2 M3 M6 M7 6 NaN-neg0 libm-constfold bare-result-option master-vs-tree: every item failing here fails on master
+too, zero PASS->FAIL; `^mem:(attacks|closure)[-:/]` (388 rows) PASS/FAIL set identical to master (222 PASS each);
+tests/backend_divergence_pins.sh PASS.
+NOT covered (not executed): a tuple copy that is not a bare-local `let` (`let mut u = arr[0]`, `let mut v = s.t`,
+`let mut w = m[k]` of a tuple, reassignment `u = t`, a tuple stored into a struct/array then mutated through one holder);
+a `mut` tuple PARAMETER written inside the callee while the caller keeps its name; closure capture of a mut tuple.
+The unverified num.patch (any-slot str rejection) was NOT applied.
