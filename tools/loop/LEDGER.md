@@ -10968,3 +10968,41 @@ RESIDUAL (executed, still leaking or failing; not claimed)
 - Pre-existing, not changed here: AOT segfault for `os = push(os, wrap_local(i)); os = push(os, None)` on `[Option<(str, i64)>]`
   (master crashes identically at 300k iterations); a str argument temp is never dropped when the same statement contains an
   if-expression (`sink + ok(o, "t{i}", i) + (if .. {0} else {0 - 1})`, ~70B/iter).
+
+## a16 round 2 (finish item A16): a payload tuple with a struct / enum / tuple element leaked on the Cranelift JIT
+
+Verifier refuted round 1 (3b358653): the flat-tuple payloads passed but `Some((("n{i}", i), i))` (nested tuple, JIT 81MB / 600k) and
+`Some((P { name: "p{i}", k: i }, i))` (struct element, JIT 59MB / 600k) kept leaking linearly.
+
+ROOT CAUSE
+- Round 1 released an enum's tuple payload with `kryos_tuple_release(handle, kinds)`, which frees only str / array / map elements. A
+  struct, enum or nested-tuple element of the payload tuple was never released by the last owner. The bare-tuple drop
+  (`emit_drop_for_value` Tuple arm) already releases every heap element, so only the enum payload path lacked it.
+
+CHANGE (compiler/crates/kryos-codegen-cranelift/src/codegen.rs only)
+- The inline enum arm of `emit_drop_for_value` (the one the JIT uses; the JIT has no `__kryos_drop_<T>` helpers) now drops a payload
+  tuple through `emit_drop_for_value` on the tuple type when it has a struct / enum / tuple / closure / handle element
+  (`tuple_payload_needs_deep_drop`). That arm checks the tuple's reference count (only the last reference releases the elements),
+  so shared payloads (`Some(ts[0])`, `Some(t)`) keep their owner semantics. A tuple that names the enum being dropped keeps the
+  flat release (`tuple_mentions_type`) to avoid unbounded compile-time expansion. Flat tuples are unchanged.
+
+EVIDENCE (both ways)
+- tests/mem_tuple_payload_gate.sh gained modes nested, structel, struct_named, enum_struct (probe tests/mem/tuple_payload_leak.kry),
+  1M iterations, JIT + AOT, ceiling 24MB. MASTER binary: nested AOT 127MB / JIT 249MB, structel 120 / 188MB, struct_named 126 / 188MB,
+  enum_struct 127 / 188MB, all FAIL; control 4MB. This tree: PASS, all 26 rows 3-4MB, answer 1000000.
+- KRYOS_FREE_DIAG=1 silent on JIT and AOT for every mode; an alias probe (named tuple + Some copy + pass-through + fn arg + struct read
+  from an array + struct field holding the Option + field overwrite twice + user enum copy + match; .scratch-lane-mem/mem_a16r_alias.kry)
+  prints the identical line on this tree JIT, this tree AOT and master JIT (24026890 2001).
+- run.sh --only '^(A16|A16\.ctl|A15|A15\.ctl|A14|A14\.ctl|A13\.ctl)$': 5 PASS 0 FAIL. `--only '^mem:'`: 379 PASS / 10 FAIL, the same ten documented
+  shared-handle entries. Gates PASS: mem_tuple, mem_tuple_field_overwrite, mem_enum_* (7), mem_balance, mem_global_aggregate,
+  mem_struct_field_read, mem_struct_array_overwrite, mem_copy_assign, mem_loop, mem_shared_rule, mem_throw_closure, mem_json_handle,
+  mem_struct_arg, mem_element_read, mem_pop_stmt, no_double_free, backend_divergence_pins, type_soundness, jit_symbols,
+  builtin_borrow_mir, minilisp 22/22, stdlib_compile 66/66, selfhost_wholeprogram, concurrency_smoke.
+
+RESIDUAL (executed, not covered)
+- The Cranelift OBJECT path's `__kryos_drop_<enum>` helper (not the JIT, not the LLVM AOT) still releases a payload tuple with the flat
+  `kryos_tuple_release`; a nested / struct element leaks there. Not executed on a built exe (no gate builds with the Cranelift object backend).
+- `ps[0] = (P { .. }, i)` on `[(P, i64)]` leaks a box per iteration on AOT even with no payload (probe mode struct_ctl: 1M boxes live);
+  that is the array-element overwrite, not the payload, and is why struct_idx is in the probe but not in the gate.
+- `match h.o { Some(x) => .. }` with an Option<(str, i64)> struct field (item 139's n139_f shape) and the pre-existing AOT segfault for
+  `os = push(os, wrap_local(i)); os = push(os, None)` are unchanged (not touched).

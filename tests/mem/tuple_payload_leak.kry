@@ -14,9 +14,36 @@
 //   wrap       fn wrap(t) -> Option<(str, i64)> { return Some(t) } of a named tuple
 //   enum_idx   a user enum variant E.A(ts[0])
 //   enum_named a user enum variant E.A(t) of a named tuple
+//   nested     Some((("n{i}", i), i)): a payload tuple whose element is a tuple (kryos_tuple_release frees
+//              only str/array/map elements; the JIT leaked the inner tuple)
+//   structel   Some((P { name: "p{i}", k: i }, i)): a struct element in the payload tuple
+//   struct_named  let p = P {..}; Some((p, i)): p keeps its own release (no double free)
+//   struct_idx    ps[0] = (P {..}, i); Some(ps[0]) (NOT in the gate: the array-element overwrite itself, struct_ctl, leaks a box per iteration on AOT)
+//   struct_ctl    ps[0] = (P {..}, i) alone
+//   enum_struct   a user enum variant E2.A((P {..}, i))
 //   control    ts[0] = (..) with no payload (already flat)
 use std::option::{Option, Some, None}
 enum E { A((str, i64)), B(i64) }
+struct P { name: str, k: i64 }
+enum E2 { A((P, i64)), B(i64) }
+fn okn(o: Option<((str, i64), i64)>, s: str, n: i64) -> i64 {
+    match o {
+        Some(x) => { if x.0.0 == s && x.0.1 == n && x.1 == n { return 1 } return 0 }
+        None => { return 0 }
+    }
+}
+fn oks(o: Option<(P, i64)>, s: str, n: i64) -> i64 {
+    match o {
+        Some(x) => { if x.0.name == s && x.0.k == n && x.1 == n { return 1 } return 0 }
+        None => { return 0 }
+    }
+}
+fn oke2(e: E2, s: str, n: i64) -> i64 {
+    match e {
+        E2.A(x) => { if x.0.name == s && x.0.k == n && x.1 == n { return 1 } return 0 }
+        E2.B(k) => { return 0 }
+    }
+}
 fn wrap(t: (str, i64)) -> Option<(str, i64)> { return Some(t) }
 fn ok(o: Option<(str, i64)>, s: str, n: i64) -> i64 {
     match o {
@@ -35,6 +62,7 @@ fn main() {
     let iters = parse_int(env_get("LEAK_ITERS"))
     let mode = env_get("LEAK_MODE")
     let mut ts: [(str, i64)] = [("a", 1)]
+    let mut ps: [(P, i64)] = [(P { name: "a", k: 1 }, 1)]
     let mut sink = 0
     let mut i = 0
     while i < iters {
@@ -72,6 +100,27 @@ fn main() {
             let e = E.A(t)
             sink = sink + oke(e, "t{i}", i)
             if t.1 != i { sink = 0 - 1 }
+        } elif mode == "nested" {
+            let o = Some((("n{i}", i), i))
+            sink = sink + okn(o, "n{i}", i)
+        } elif mode == "structel" {
+            let o = Some((P { name: "p{i}", k: i }, i))
+            sink = sink + oks(o, "p{i}", i)
+        } elif mode == "struct_named" {
+            let p = P { name: "p{i}", k: i }
+            let o = Some((p, i))
+            sink = sink + oks(o, "p{i}", i)
+            if p.k != i { sink = 0 - 1 }
+        } elif mode == "struct_idx" {
+            ps[0] = (P { name: "p{i}", k: i }, i)
+            let o = Some(ps[0])
+            sink = sink + oks(o, "p{i}", i)
+        } elif mode == "enum_struct" {
+            let e = E2.A((P { name: "p{i}", k: i }, i))
+            sink = sink + oke2(e, "p{i}", i)
+        } elif mode == "struct_ctl" {
+            ps[0] = (P { name: "p{i}", k: i }, i)
+            sink = sink + 1
         } elif mode == "control" {
             ts[0] = ("t{i}", i)
             sink = sink + 1

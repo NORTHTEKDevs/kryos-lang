@@ -129,6 +129,30 @@ fn tuple_release_kinds(tes: &[MirType]) -> i64 {
     })
 }
 
+/// True when a tuple has an element `kryos_tuple_release` leaves alone: a
+/// struct, enum, nested tuple, closure or handle.
+fn tuple_payload_needs_deep_drop(tes: &[MirType]) -> bool {
+    tes.iter().any(|t| {
+        matches!(
+            t,
+            MirType::Struct(_)
+                | MirType::Enum(_)
+                | MirType::Tuple(_)
+                | MirType::Function { .. }
+                | MirType::Shared(_)
+        )
+    })
+}
+
+/// True when `name` is a struct/enum type element of the tuple, at any tuple depth.
+fn tuple_mentions_type(tes: &[MirType], name: &str) -> bool {
+    tes.iter().any(|t| match t {
+        MirType::Struct(n) | MirType::Enum(n) => n == name,
+        MirType::Tuple(inner) => tuple_mentions_type(inner, name),
+        _ => false,
+    })
+}
+
 /// MIR names a tuple-array dup with `TUPLE_ELEM_DUP_KIND` (it cannot know a
 /// backend's tuple representation); Cranelift's tuple is a refcounted array,
 /// dup kind 1.
@@ -8997,6 +9021,20 @@ fn emit_drop_for_value<M: Module>(
                             // A tuple payload is a refcounted handle the variant owns
                             // one reference to (same release as the drop helper).
                             if let MirType::Tuple(tes) = *field_ty {
+                                // A tuple with a struct / enum / tuple / handle
+                                // element: the tuple's own drop releases those too
+                                // (kryos_tuple_release frees only str/array/map).
+                                // A tuple that names this very enum keeps the flat
+                                // release: expanding it inline would recurse forever
+                                // at compile time.
+                                if tuple_payload_needs_deep_drop(tes)
+                                    && !tuple_mentions_type(tes, enum_name)
+                                {
+                                    emit_drop_for_value(
+                                        field_val, field_ty, builder, translator, module,
+                                    )?;
+                                    continue;
+                                }
                                 let kv = builder.ins().iconst(types::I64, tuple_release_kinds(tes));
                                 let rel = ensure_void_func_ref(
                                     "kryos_tuple_release", builder, translator, module, 2,
