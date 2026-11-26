@@ -775,7 +775,7 @@ impl TypeChecker {
         if !self.in_pure_function {
             return;
         }
-        let io_builtins = ["println", "print", "eprintln", "exit"];
+        let io_builtins = ["println", "print", "eprintln", "exit", "abort"];
         if io_builtins.contains(&name) {
             self.error(
                 format!("`@pure` function cannot call I/O builtin `{name}`"),
@@ -5175,6 +5175,25 @@ impl TypeChecker {
                         name: edef.name.clone(),
                         generics: fresh_generics,
                     }
+                } else if matches!(name.as_str(), "env_set" | "exec" | "spawn_process") {
+                    // The capability model charges these names `process`, but
+                    // none is a callable builtin (process spawning lives in
+                    // `std::process::Command`). Say so, rather than calling
+                    // them undefined variables.
+                    self.error_with_code(
+                        format!(
+                            "`{name}` is not a callable builtin (it is only recognized by the capability model)"
+                        ),
+                        *span,
+                        kryos_errors::codes::E0114,
+                    );
+                    if let Some(diag) = self.diagnostics.last_mut() {
+                        diag.notes.push(
+                            "run other programs with `std::process::Command` (`use std::process`); `env_get` is the only environment builtin"
+                                .to_string(),
+                        );
+                    }
+                    Type::Error
                 } else {
                     self.error_with_code(
                         format!("undefined variable `{name}`"),
@@ -8049,6 +8068,17 @@ fn type_check_with_lambda_params_inner(
         generic_cap_var_ids: vec![],
         own_cap_var: checker.builtin_cap_var,
         params: vec![("code".to_string(), Type::I64)],
+        ret: Type::Void,
+    });
+
+    // abort() -> void  (terminates the process abnormally; ambient like exit)
+    checker.env.define_function(FunctionSig {
+        name: "abort".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
+        params: vec![],
         ret: Type::Void,
     });
 

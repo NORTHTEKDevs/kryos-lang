@@ -920,6 +920,7 @@ impl LlvmCodegen {
         self.emit_line("declare i64 @kryos_builtin_file_exists(i64)");
         self.emit_line("declare i64 @kryos_builtin_env_get(i64)");
         self.emit_line("declare void @kryos_builtin_exit(i64)");
+        self.emit_line("declare void @kryos_builtin_abort()");
         self.emit_line("declare i64 @kryos_builtin_args()");
         self.emit_line("declare i64 @kryos_builtin_read_line()");
         self.emit_line("declare i64 @kryos_builtin_http_get(i64)");
@@ -7338,6 +7339,7 @@ impl LlvmCodegen {
                                 "canvas_fill_rect" => "kryos_canvas_fill_rect_ks",
                                 "env_get" => "kryos_builtin_env_get",
                                 "args" => "kryos_builtin_args",
+                                "abort" => "kryos_builtin_abort",
                                 "read_line" => "kryos_builtin_read_line",
                                 "http_get" => "kryos_builtin_http_get",
                                 "http_request" => "kryos_http_request_ks",
@@ -13092,6 +13094,7 @@ fn post_call_exception_check_applies(value: &RValue) -> bool {
                         | "range"
                         | "to_string"
                         | "exit"
+                        | "abort"
                 )
         }
         RValue::CallIndirect { .. } | RValue::VtableCall { .. } => true,

@@ -3607,6 +3607,7 @@ fn translate_instruction<M: Module>(
                                     | "range"
                                     | "to_string"
                                     | "exit"
+                                    | "abort"
                             )
                     }
                     RValue::CallIndirect { .. } | RValue::VtableCall { .. } => true,
@@ -5541,6 +5542,7 @@ fn translate_rvalue<M: Module>(
                 "buf_write_to_file" => ("kryos_buf_write_to_file", 2),
                 "buf_free" => ("kryos_buf_free", 1),
                 "exit" => ("kryos_builtin_exit", 1),
+                "abort" => ("kryos_builtin_abort", 0),
                 "args" => ("kryos_builtin_args", 0),
                 "map_has" => ("kryos_map_has", 2),
                 "map_has_str" => ("kryos_map_has_str", 2),

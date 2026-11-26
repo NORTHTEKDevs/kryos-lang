@@ -427,6 +427,7 @@ fn is_unwind_source(inst: &Instruction) -> bool {
                         | "range"
                         | "to_string"
                         | "exit"
+                        | "abort"
                         | "malloc"
                         | "calloc"
                         | "free"
@@ -1218,6 +1219,7 @@ pub fn lower_module_with_lambda_params(
         ("buf_write_to_file", MirType::I64),
         ("buf_free", MirType::Void),
         ("exit", MirType::Void),
+        ("abort", MirType::Void),
         ("args", MirType::Array(Box::new(MirType::Str), None)),
         ("trim_start", MirType::Str),
         ("trim_end", MirType::Str),

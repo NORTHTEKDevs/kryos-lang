@@ -1404,6 +1404,15 @@ pub unsafe extern "C" fn kryos_builtin_exit(code: i64) {
     std::process::exit(code as i32);
 }
 
+/// `abort()` -- terminate the process abnormally (exit status 134, the
+/// SIGABRT convention) without running Kryos-level cleanup. Flushes the
+/// allocation report like `exit` so stdout already written is not lost.
+#[no_mangle]
+pub unsafe extern "C" fn kryos_builtin_abort() {
+    crate::allocstats::report();
+    std::process::exit(134);
+}
+
 // ── Command-line arguments ────────────────────────────────────────
 
 #[no_mangle]
