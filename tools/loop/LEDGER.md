@@ -10463,3 +10463,26 @@ NOT covered (not executed): a tuple copy that is not a bare-local `let` (`let mu
 `let mut w = m[k]` of a tuple, reassignment `u = t`, a tuple stored into a struct/array then mutated through one holder);
 a `mut` tuple PARAMETER written inside the callee while the caller keeps its name; closure capture of a mut tuple.
 The unverified num.patch (any-slot str rejection) was NOT applied.
+
+## M6: `u8 << i64` was typed i64 by the MIR, so 1 << 9 printed 512 instead of wrapping to 0
+
+Root cause (read in kryos-mir lower.rs `infer_expr_type`, BinaryOp arm; not guessed): the type checker accepts a shift
+whose count has a different integer width, but the MIR typed EVERY non-comparison binary op through `wider_int_type(l, r)`.
+For `b << k` (b: u8, k: i64) that ranked the COUNT's width in, so the result temp was an i64 slot and the unwrapped 512
+leaked, whether consumed directly (`to_string(b << k)`), through `let r = b << k`, or in a compare. Only `let r2: u8 = ...`
+(narrow store) masked it. A shift's result type is the type of the value being shifted; the count never promotes it.
+Fix: in `infer_expr_type`, `Shl`/`Shr` with a narrow-int (i8/i16/i32/u8/u16/u32) left operand and an integer right operand
+return the LEFT type. The codegen already reduces an i64-computed value to the narrow dest slot (same path `u8 + u8` uses).
+Files: compiler/crates/kryos-mir/src/lower.rs, tests/narrow_shift_pin.{kry,sh}.
+Both-ways evidence: run.sh --only '^(M6)$' FAIL before (`stdout=512\n512\n0\n144\n144\n-2147483648\n44\n want 0\n0\n0\n...`),
+PASS after (JIT and AOT). tests/narrow_shift_pin.sh (u8<<i64, u16, u32, i32 wrap, u8>>i64, i64<<u8, compare on the result):
+master binary FAIL on JIT and AOT (got 512, 512, 0, 80000, 8000000000, 2147483648, ..., big, big), this tree ok on both.
+Regression scan: run.sh --only over A1 A2 A2.ctl A20 A5 A6 A8 M1 M3 M6 NaN-neg0 libm-constfold: A5/A6/A8 fail identically on
+master (pre-existing, other lanes), everything else PASS; tests/backend_divergence_pins.sh, nan_neg0_pin, libm_user_fn_pin,
+tuple_value_copy_pin PASS; all 35 repo .kry files containing a shift run identically master-vs-tree except two examples
+whose output is nondeterministic (random websocket key, live localhost probe).
+NOT covered (not executed): a shift whose LEFT operand is an integer literal or i64/u64 with a narrow count (already
+left-typed i64, unchanged); i128/u128 shifts; compound `<<=` / `>>=` assignment forms; shifts on narrow fields/array
+elements/tuple elems read through paths other than a plain local or expression; signed narrow `>>` of a negative value
+with a wider count beyond what sh_c exercised (i8 -8 >> 1 = -4 only); a count >= the narrow width other than 9 on u8.
+The unverified num.patch (any-slot str rejection in the type checker) was NOT applied: it does not touch shifts.

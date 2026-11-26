@@ -1,0 +1,23 @@
+fn main() {
+    let b: u8 = 1
+    let k: i64 = 9
+    println(to_string(b << k))
+    let r = b << k
+    println(to_string(r))
+    let r2: u8 = b << k
+    println(to_string(r2))
+    let one: i64 = 1
+    let k1: i64 = 1
+    let u: u16 = 40000
+    println(to_string(u << k1))
+    let w: u32 = 4000000000
+    println(to_string(w << k1))
+    let m: i32 = 1073741824
+    println(to_string(m << k1))
+    let c: u8 = 200
+    println(to_string(c >> k1))
+    let k8: u8 = 3
+    println(to_string(one << k8))
+    if (c << k1) > 100 { println("big") } else { println("small") }
+    if (b << k) > 100 { println("big") } else { println("small") }
+}

@@ -13640,6 +13640,18 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
                 }
             }
 
+            // A shift's result has the type of the VALUE being shifted; the
+            // shift count never promotes it. `u8 << i64` is a u8 (wraps to 0
+            // for 1 << 9), not an i64 -- ranking the count's width in via
+            // wider_int_type left the result temp i64-sized so 512 leaked.
+            if matches!(op, ast::BinOp::Shl | ast::BinOp::Shr)
+                && is_narrow_int_ty(&lty)
+                && matches!(rty, MirType::I8 | MirType::I16 | MirType::I32 | MirType::I64
+                    | MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64)
+            {
+                return lty;
+            }
+
             match (&lty, &rty) {
                 (MirType::F64, _) | (_, MirType::F64) => MirType::F64,
                 (MirType::F32, _) | (_, MirType::F32) => MirType::F32,
