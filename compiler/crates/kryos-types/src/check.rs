@@ -95,6 +95,12 @@ pub struct TypeChecker {
     /// already knew and bound `Ok(p)` as an i64 (a `str` printed as a raw
     /// pointer).
     exported_expr_types: Vec<(Span, Type, bool)>,
+    /// Spans of expressions whose resolved type is exported to the MIR even when
+    /// it holds no `Result` / `Option` (the `[str]` of an arg-bound `to_array(r)`).
+    forced_export_spans: std::collections::HashSet<Span>,
+    /// The latest inferred type of every field / index access, so an argument of
+    /// that shape can be read back by span (see `bind_to_array_element`).
+    access_types: std::collections::HashMap<Span, Type>,
     /// The latest inferred type of every call-shaped expression (and whether
     /// it sits in a generic declaration), so an argument's type can be read
     /// back by span after the call that consumes it has been checked.
@@ -266,6 +272,8 @@ impl TypeChecker {
             resolved_lambda_params: std::collections::HashMap::new(),
             resolved_let_types: std::collections::HashMap::new(),
             exported_expr_types: Vec::new(),
+            forced_export_spans: std::collections::HashSet::new(),
+            access_types: std::collections::HashMap::new(),
             call_types: std::collections::HashMap::new(),
             unbindable_calls: Vec::new(),
             call_callee_spans: std::collections::HashSet::new(),
@@ -3630,6 +3638,13 @@ impl TypeChecker {
             } => {
                 // Infer the iterable type and determine element type.
                 let raw_iter_ty = self.infer_expr(iterable);
+                if Self::is_exportable_expr(iterable) {
+                    self.exported_expr_types.push((
+                        iterable.span(),
+                        raw_iter_ty.clone(),
+                        self.generic_scope_depth > 0,
+                    ));
+                }
                 let iter_ty = self.engine.resolve(&raw_iter_ty);
                 let elem_ty = match &iter_ty {
                     Type::Array { element, .. } => *element.clone(),
@@ -4941,8 +4956,89 @@ impl TypeChecker {
         }
     }
 
+    /// Is `e` an expression whose checked type the MIR cannot recompute from
+    /// its parts (a call, a literal aggregate, a block-valued `if` / `match`)?
+    fn is_exportable_expr(e: &Expr) -> bool {
+        matches!(
+            e,
+            Expr::FnCall { .. }
+                | Expr::MethodCall { .. }
+                | Expr::StaticMethodCall { .. }
+                | Expr::TupleLiteral { .. }
+                | Expr::ArrayLiteral { .. }
+                | Expr::IfExpr { .. }
+                | Expr::MatchExpr { .. }
+                | Expr::Block { .. }
+                | Expr::UnsafeBlock { .. }
+        )
+    }
+
+    /// Does matching against `p` read or bind anything of an enum payload (a
+    /// name, a literal, a nested aggregate)? `_` and a payload-less variant do not.
+    fn pattern_reads_payload(p: &Pattern) -> bool {
+        match p {
+            Pattern::Wildcard { .. } => false,
+            Pattern::Ident { name, .. } => name != "None",
+            Pattern::Enum { fields, .. } => fields.iter().any(Self::pattern_reads_payload),
+            Pattern::Or { patterns, .. } => patterns.iter().any(Self::pattern_reads_payload),
+            _ => true,
+        }
+    }
+
+    /// File id under which an expression's checked type is exported to the MIR
+    /// (see `exported_expr_types`); keeps those records apart from the `let`
+    /// records, which share the map.
+    pub const EXPR_TYPE_FILE: u32 = u32::MAX - 7;
+
+    /// `std::result::to_array(r)` returns `[T]` with `T` in no parameter (its `r`
+    /// is a bare `Result`), so nothing binds `T` -- but the argument's own
+    /// `Result<T, E>` says what it is. Bind it, so an index / `for` / formatter
+    /// over the result is typed, not an erased i64 element that prints as a raw
+    /// pointer. The `let`-binding form stays rejected (E0110, see
+    /// `report_unbindable_generic_call`): only a use of the call's value is typed here.
+    fn bind_to_array_element(&mut self, expr: &Expr, ty: &Type) {
+        let arg = match expr {
+            Expr::FnCall { callee, args, .. } if args.len() == 1 => match callee.as_ref() {
+                Expr::Identifier { name, .. } if name == "to_array" => &args[0],
+                _ => return,
+            },
+            Expr::StaticMethodCall { method, args, .. } if method == "to_array" && args.len() == 1 => {
+                &args[0]
+            }
+            _ => return,
+        };
+        if !is_stdlib_fn("to_array") {
+            return;
+        }
+        let arg_ty = match arg {
+            Expr::Identifier { name, .. } => self.env.lookup_var(name).cloned(),
+            Expr::FieldAccess { .. } | Expr::IndexAccess { .. } => {
+                self.access_types.get(&arg.span()).cloned()
+            }
+            _ => self.call_types.get(&arg.span()).map(|(t, _)| t.clone()),
+        };
+        let (Some(arg_ty), Type::Array { element, .. }) = (arg_ty, self.engine.resolve(ty)) else {
+            return;
+        };
+        if !matches!(*element, Type::Var(_)) {
+            return;
+        }
+        if let Type::Result { ok, .. } = self.engine.resolve(&arg_ty) {
+            if !matches!(self.engine.resolve(&ok), Type::Var(_) | Type::Error)
+                && self.engine.unify(&element, &ok, expr.span()).is_ok()
+            {
+                self.forced_export_spans.insert(expr.span());
+                self.exported_expr_types
+                    .push((expr.span(), ty.clone(), self.generic_scope_depth > 0));
+            }
+        }
+    }
+
     pub fn infer_expr(&mut self, expr: &Expr) -> Type {
         let ty = self.infer_expr_inner(expr);
+        if matches!(expr, Expr::FieldAccess { .. } | Expr::IndexAccess { .. }) {
+            self.access_types.insert(expr.span(), ty.clone());
+        }
         let call_shaped = |e: &Expr| {
             matches!(
                 e,
@@ -4956,6 +5052,7 @@ impl TypeChecker {
         if call_shaped(expr) {
             self.call_types
                 .insert(expr.span(), (ty.clone(), self.generic_scope_depth > 0));
+            self.bind_to_array_element(expr, &ty);
             // Arguments of a formatting builtin are consumed by their type.
             if let Expr::FnCall { callee, args, .. } = expr {
                 if matches!(callee.as_ref(), Expr::Identifier { name, .. }
@@ -4965,6 +5062,27 @@ impl TypeChecker {
                         if call_shaped(arg) {
                             if let Some((aty, in_generic)) = self.call_types.get(&arg.span()).cloned() {
                                 self.exported_expr_types.push((arg.span(), aty, in_generic));
+                            }
+                        }
+                    }
+                }
+                // An argument of a generic function binds its type parameter
+                // (`pr(Ok("a"))` binds `T = Result<str, _>`): the MIR instantiates
+                // the callee from the argument's type, which for a constructor
+                // with an open parameter it types as the payload-less stub.
+                else if let Expr::Identifier { name, .. } = callee.as_ref() {
+                    if self
+                        .env
+                        .lookup_function(name)
+                        .is_some_and(|sig| !sig.generic_var_ids.is_empty())
+                    {
+                        for arg in args {
+                            if call_shaped(arg) {
+                                if let Some((aty, in_generic)) =
+                                    self.call_types.get(&arg.span()).cloned()
+                                {
+                                    self.exported_expr_types.push((arg.span(), aty, in_generic));
+                                }
                             }
                         }
                     }
@@ -7002,19 +7120,28 @@ impl TypeChecker {
                 span,
             } => {
                 let subject_ty = self.infer_expr(subject);
-                if matches!(
-                    subject.as_ref(),
-                    Expr::FnCall { .. }
-                        | Expr::MethodCall { .. }
-                        | Expr::StaticMethodCall { .. }
-                        | Expr::TupleLiteral { .. }
-                        | Expr::ArrayLiteral { .. }
-                ) {
+                if Self::is_exportable_expr(subject) {
                     self.exported_expr_types.push((
                         subject.span(),
                         subject_ty.clone(),
                         self.generic_scope_depth > 0,
                     ));
+                }
+                // A `match f()` whose arms only test the tag (`Some(_)`, `None`,
+                // `Ok(_)`) never reads the payload, so an unbound return-only
+                // generic of `f` cannot misprint through it.
+                if !arms.iter().any(|a| Self::pattern_reads_payload(&a.pattern)) {
+                    match subject.as_ref() {
+                        Expr::FnCall { callee, .. } => {
+                            if let Expr::Identifier { span: cspan, .. } = callee.as_ref() {
+                                self.unbindable_reported.insert(*cspan);
+                            }
+                        }
+                        Expr::StaticMethodCall { span: sspan, .. } => {
+                            self.unbindable_reported.insert(*sspan);
+                        }
+                        _ => {}
+                    }
                 }
                 if arms.is_empty() {
                     return Type::Void;
@@ -10405,7 +10532,7 @@ fn type_check_with_lambda_params_inner(
                 resolved = default_open_vars(&resolved, &open_roots);
             }
             let key = format!("{resolved:?}");
-            let te = if type_mentions_result(&resolved) {
+            let te = if type_mentions_result(&resolved) || checker.forced_export_spans.contains(span) {
                 concrete_type_to_type_expr(&resolved)
             } else {
                 None
@@ -10422,7 +10549,8 @@ fn type_check_with_lambda_params_inner(
         }
         for (span, (_, te)) in seen {
             if let (Some(te), false) = (te, ambiguous.contains(&span)) {
-                let_types.entry(span).or_insert(te);
+                let key = Span::new(TypeChecker::EXPR_TYPE_FILE, span.start, span.end);
+                let_types.entry(key).or_insert(te);
             }
         }
     }

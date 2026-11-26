@@ -14180,10 +14180,16 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
         ast::Expr::RangeExpr { .. } => MirType::I64,
 
         ast::Expr::MatchExpr { subject, arms, .. } => {
+            if let Some(t) = exported_subject_type(ctx, expr) {
+                return t;
+            }
             infer_match_result_type(ctx, subject, arms)
         }
 
         ast::Expr::IfExpr { then_branch, else_branch, .. } => {
+            if let Some(t) = exported_subject_type(ctx, expr) {
+                return t;
+            }
             // Type from the first branch that PRODUCES a value; a divergent
             // (throw/return) branch yields no type and is skipped. This MUST
             // match the if-expression lowering (which uses the same
@@ -14210,6 +14216,9 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
         }
 
         ast::Expr::Block { block, .. } | ast::Expr::UnsafeBlock { body: block, .. } => {
+            if let Some(t) = exported_subject_type(ctx, expr) {
+                return t;
+            }
             // A block expression's value is its last expression. Falling to
             // the Void catch-all typed `let x = { 40 + 2 }` (and the
             // `unsafe { ... }` form) as a void slot -- a `store void` codegen
@@ -14966,6 +14975,37 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                     };
                     return lower_expr_to_rvalue(ctx, &rewritten);
                 }
+            }
+
+            // `println(r)` of a `Result` / `Option` VALUE printed the handle of the
+            // enum as a number on both backends (the backends stringify only
+            // scalars). Print its string form instead, exactly what
+            // `println(to_string(r))` prints.
+            if matches!(func_name.as_str(), "println" | "print" | "eprintln" | "eprint")
+                && args.len() == 1
+                && matches!(
+                    infer_expr_type(ctx, &args[0]),
+                    MirType::Enum(ref n)
+                        if n == "Result" || n == "Option"
+                            || n.starts_with("Result___") || n.starts_with("Option___")
+                )
+            {
+                // Synthesized nodes get a span no source expression has: the
+                // exported-type map is keyed by (start, end), so the argument's own
+                // span would read its type back as the type of the `to_string(..)`
+                // call and re-enter this rewrite forever.
+                let span = kryos_errors::Span::new(0, u32::MAX - 9, u32::MAX - 8);
+                let shown = ast::Expr::FnCall {
+                    callee: Box::new(ast::Expr::Identifier { name: "to_string".to_string(), span }),
+                    args: vec![args[0].clone()],
+                    span,
+                };
+                let rewritten = ast::Expr::FnCall {
+                    callee: callee.clone(),
+                    args: vec![shown],
+                    span,
+                };
+                return lower_expr_to_rvalue(ctx, &rewritten);
             }
 
             // `to_string(aggregate)` has no string representation and printed a
@@ -20542,15 +20582,6 @@ fn infer_generic_variant_instance(
 /// any other expression and for a module that declares its own enum named
 /// `Result` / `Option`.
 fn exported_subject_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> Option<MirType> {
-    fn mentions_instance(t: &MirType) -> bool {
-        match t {
-            MirType::Enum(n) => n.starts_with("Result___") || n.starts_with("Option___"),
-            MirType::Array(e, _) | MirType::Shared(e) | MirType::Ptr(e) => mentions_instance(e),
-            MirType::Tuple(es) => es.iter().any(mentions_instance),
-            MirType::Map { key, value } => mentions_instance(key) || mentions_instance(value),
-            _ => false,
-        }
-    }
     let builtin_shape = ["Result", "Option"].iter().all(|n| {
         ctx.enum_defs
             .get(*n)
@@ -20559,9 +20590,10 @@ fn exported_subject_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> Option<
     if !builtin_shape {
         return None;
     }
-    let te = ctx.let_types.get(&expr.span()).cloned()?;
-    let exported = ctx.resolve_type(&te);
-    mentions_instance(&exported).then_some(exported)
+    let sp = expr.span();
+    let key = kryos_errors::Span::new(kryos_types::TypeChecker::EXPR_TYPE_FILE, sp.start, sp.end);
+    let te = ctx.let_types.get(&key).cloned()?;
+    Some(ctx.resolve_type(&te))
 }
 
 fn monomorphize_enum(ctx: &mut LoweringContext, enum_name: &str, type_args: &[MirType]) -> String {

@@ -1,0 +1,38 @@
+// swa closure (2026-11-25): a `Result` / `Option` whose payload type is only
+// known to the checker (a constructor with its other parameter open, or a
+// stdlib API that erases it) printed a raw pointer or an integer on both
+// backends, exit 0. Every line below must print the text on its right.
+use std::result::{Result, Ok, Err, to_array}
+use std::option::{Option, Some, None}
+
+fn pr<T>(x: T) { println(x) }
+fn mk<T>() -> Option<T> { return None }
+
+fn main() {
+  // println of a Result / Option VALUE (was the enum handle as a number)
+  let r = Ok("x")
+  println(r)                       // Ok("x")
+  let xs = [Some("a")]
+  println(xs[0])                   // Some("a")
+  let ann: Result<str, str> = Err("bad")
+  println(ann)                     // Err("bad")
+  pr(Ok("a"))                      // Ok("a")
+  println(Ok("pl"))                // Ok("pl")
+  println(Some(Some(1)))           // Some(Some(1))
+
+  // a constructor inside an if / for as the consumed value
+  let b = true
+  match if b { Ok("t") } else { Err("f") } { Ok(p) => println(p), Err(e) => println(e) }   // t
+  for x in [Ok("a"), Err("b")] { match x { Ok(p) => println(p), Err(e) => println(e) } }  // a, b
+
+  // an unbound return-only generic that no arm reads
+  match mk() { Some(_) => println("s"), None => println("none") }   // none
+
+  // to_array over an annotated Result binds the element type from the argument
+  let q: Result<str, str> = Ok("hi")
+  println(to_array(q)[0] + "x")    // hix
+  for e in to_array(q) { println(e + "!") }   // hi!
+  let f: Result<f64, str> = Ok(2.5)
+  println(to_array(f)[0])          // 2.5
+  println(len(to_array(q)[0]))     // 2
+}
