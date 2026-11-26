@@ -722,6 +722,11 @@ fn compile_module_impl(
         }
     };
 
+    // 9-pre. One ownership rule for `shared` handles (LEDGER item 137): replace
+    // lowering's per-shape retains / drops of handle locals with exactly the
+    // references each slot owns.
+    kryos_mir::shared_own::own_shared_refs_module(&mut mir);
+
     // 9a. Populate source_file / source_line on each MIR function from AST spans.
     //     This is what drives accurate panic traces ("file.kry:42" instead of
     //     "<unknown>:0") at runtime.

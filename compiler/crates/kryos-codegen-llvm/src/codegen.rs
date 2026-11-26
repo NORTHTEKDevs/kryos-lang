@@ -2801,6 +2801,16 @@ impl LlvmCodegen {
         // releases one (payload, then the box).
         let enum_names: Vec<String> = self.enum_defs.keys().cloned().collect();
         for name in enum_names {
+            // `shared <enum>`: the arc block holds the inline `{ tag, words.. }`.
+            // Its drop function releases the active variant's payload (a
+            // `shared` child, a string, ...) and leaves the block itself to
+            // the arc free, as the struct helper above does.
+            self.emit_line(&format!("define internal void @__kryos_arc_drop_{name}(ptr %ptr) {{"));
+            self.emit_line("entry:");
+            self.emit_enum_drop_payload("%ptr", &name, &dummy);
+            self.emit_line("  ret void");
+            self.emit_line("}");
+            self.emit_blank();
             self.emit_line(&format!("define internal void @__kryos_mapval_drop_{name}(ptr %ptr) {{"));
             self.emit_line("entry:");
             self.emit_line("  %isnull = icmp eq ptr %ptr, null");
@@ -4517,7 +4527,7 @@ impl LlvmCodegen {
                                         // owner or the source's element-free releases boxes the
                                         // copy still points at.
                                         MirType::Struct(_) => 4,
-                                        MirType::Function { .. } => 5,
+                                        MirType::Function { .. } | MirType::Shared(_) => 5,
                                         _ => 0,
                                     }
                                 };
@@ -8269,6 +8279,18 @@ impl LlvmCodegen {
                             self.emit_line(&format!(
                                 "  call void @kryos_arc_set_drop(ptr {target_name}, ptr @__kryos_arc_drop_{sname})"
                             ));
+                        }
+                    } else if let Operand::Local(inner_id) = inner {
+                        // An enum is an unnamed `{ tag, words.. }` aggregate: its
+                        // name comes from the MIR type of the operand.
+                        if let Some(MirType::Enum(ename)) =
+                            func.locals.iter().find(|l| l.id == *inner_id).map(|l| &l.ty)
+                        {
+                            if self.enum_defs.contains_key(ename) {
+                                self.emit_line(&format!(
+                                    "  call void @kryos_arc_set_drop(ptr {target_name}, ptr @__kryos_arc_drop_{ename})"
+                                ));
+                            }
                         }
                     }
                 } else {
@@ -12302,7 +12324,7 @@ impl LlvmCodegen {
                 // owner or the source's element-free releases boxes the
                 // copy still points at.
                 MirType::Struct(_) => 4,
-                MirType::Function { .. } => 5,
+                MirType::Function { .. } | MirType::Shared(_) => 5,
                 _ => 0,
             }
         };

@@ -11,7 +11,7 @@
 //!   |-- actual allocation start
 
 use std::alloc::Layout;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 
 /// Sentinel value used to detect valid ArcHeaders. Helps the runtime avoid
 /// dereferencing non-ARC pointers (e.g. static function pointers wrapped
@@ -23,6 +23,39 @@ pub const ARC_MAGIC: u64 = 0xA7C0_DEAD_BEEF_CAFEu64;
 /// sees this magic is a use-after-free the normal allocator would have
 /// turned into silent heap corruption.
 pub const ARC_FREED_MAGIC: u64 = 0xF7EE_DEAD_0000_0001u64;
+
+/// False until the first thread other than the main one can run (a `spawn`
+/// block, an actor, a cooperative task: each calls `note_thread_start` before
+/// it starts the thread). While false nothing else can touch a reference
+/// count, so retain / release use a plain load + store instead of an atomic
+/// read-modify-write -- the count of an arc that never crosses a thread needs
+/// no atomicity, and a `lock xadd` per retain and release dominated programs
+/// that build and free millions of `shared` nodes.
+static MULTI_THREADED: AtomicBool = AtomicBool::new(false);
+
+/// Called by every runtime path that starts an OS thread, BEFORE the thread
+/// exists: the spawn itself orders this store before anything the new thread
+/// reads, and every later retain / release is atomic.
+pub fn note_thread_start() {
+    MULTI_THREADED.store(true, Ordering::SeqCst);
+}
+
+/// 0 = not probed, 1 = plain (the fast retain / release), 2 = a diagnostic
+/// mode (`KRYOS_LEAK_ON_ZERO`, `KRYOS_FREE_DIAG`) wants the checked path.
+static ARC_MODE: AtomicU8 = AtomicU8::new(0);
+
+#[inline(always)]
+fn plain_mode() -> bool {
+    match ARC_MODE.load(Ordering::Relaxed) {
+        1 => true,
+        2 => false,
+        _ => {
+            let diag = crate::leak_on_zero() || crate::free_diag();
+            ARC_MODE.store(if diag { 2 } else { 1 }, Ordering::Relaxed);
+            !diag
+        }
+    }
+}
 
 /// Header prepended to every ARC-managed allocation.
 #[repr(C)]
@@ -104,8 +137,16 @@ pub extern "C" fn kryos_arc_alloc(size: usize, align: usize) -> *mut u8 {
         None => return std::ptr::null_mut(),
     };
 
-    // SAFETY: combined layout has non-zero size.
-    let base = unsafe { std::alloc::alloc(combined) };
+    // Blocks of the common 8-byte alignment come from the per-thread pool (a
+    // freelist pop instead of a system allocation: a freed `shared` node is the
+    // next one built, hot in cache); `free_block` returns them there. The size
+    // class is recomputed from the header's `size` at free time.
+    let base = if effective_align <= 8 {
+        crate::alloc::pool_alloc(combined.size())
+    } else {
+        // SAFETY: combined layout has non-zero size.
+        unsafe { std::alloc::alloc(combined) }
+    };
     if base.is_null() {
         return std::ptr::null_mut();
     }
@@ -181,6 +222,19 @@ pub extern "C" fn kryos_arc_retain(ptr: *mut u8) {
         return;
     }
     unsafe {
+        if plain_mode() {
+            if !is_arc_ptr(ptr) {
+                return;
+            }
+            let header = header_from_ptr(ptr);
+            if MULTI_THREADED.load(Ordering::Relaxed) {
+                (*header).ref_count.fetch_add(1, Ordering::Relaxed);
+            } else {
+                let c = (*header).ref_count.load(Ordering::Relaxed);
+                (*header).ref_count.store(c.wrapping_add(1), Ordering::Relaxed);
+            }
+            return;
+        }
         if crate::free_diag() && is_freed_arc_ptr(ptr) {
             crate::diag_report("arc RETAIN-AFTER-FREE");
             return;
@@ -209,6 +263,30 @@ unsafe fn is_freed_arc_ptr(ptr: *mut u8) -> bool {
 #[no_mangle]
 pub extern "C" fn kryos_arc_release(ptr: *mut u8) {
     if ptr.is_null() {
+        return;
+    }
+    if plain_mode() {
+        unsafe {
+            if !is_arc_ptr(ptr) {
+                return;
+            }
+            let header = header_from_ptr(ptr);
+            if MULTI_THREADED.load(Ordering::Relaxed) {
+                // Use Release ordering on decrement so all prior writes are
+                // visible before we potentially drop.
+                if (*header).ref_count.fetch_sub(1, Ordering::Release) == 1 {
+                    // Synchronize with all prior Release decrements.
+                    std::sync::atomic::fence(Ordering::Acquire);
+                    free_block_bounded(ptr, header);
+                }
+            } else {
+                let c = (*header).ref_count.load(Ordering::Relaxed);
+                (*header).ref_count.store(c.wrapping_sub(1), Ordering::Relaxed);
+                if c == 1 {
+                    free_block_bounded(ptr, header);
+                }
+            }
+        }
         return;
     }
     // Diagnostic / safety knob: when KRYOS_LEAK_ON_ZERO=1, never free ARC
@@ -251,21 +329,90 @@ pub extern "C" fn kryos_arc_release(ptr: *mut u8) {
             // Synchronize with all prior Release decrements.
             std::sync::atomic::fence(Ordering::Acquire);
 
-            // Read fields before deallocation.
-            let drop_fn = (*header).drop_fn;
-            let size = (*header).size;
-            let align = (*header).align;
-
-            // Call drop function if set.
-            if let Some(f) = drop_fn {
-                f(ptr);
-            }
-
-            // Deallocate the entire block.
-            crate::allocstats::note_arc_free();
-            let (combined, _) = arc_layout(size, align).unwrap();
-            std::alloc::dealloc(header as *mut u8, combined);
+            free_block_bounded(ptr, header);
         }
+    }
+}
+
+/// How much native stack nested drops may use below the outermost free
+/// before a block whose count reached zero is queued instead of dropped in
+/// place.
+const MAX_DROP_STACK: usize = 32 * 1024;
+
+thread_local! {
+    /// Stack address of the outermost free in progress on this thread (0 when
+    /// none): one read per nested free, a write only at the outermost.
+    static DROP_BASE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Number of blocks waiting in `DROP_PENDING`, so the outermost free
+    /// touches the queue only when something was deferred.
+    static DROP_NPEND: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static DROP_PENDING: std::cell::RefCell<Vec<*mut u8>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Free a block whose count just reached zero. A long `shared` chain (a list
+/// of a million nodes) frees node by node through the drop function, so the
+/// plain recursion overflows the stack: once the nested frees have used
+/// `MAX_DROP_STACK` bytes of stack the block is queued, and the outermost free
+/// drains the queue iteratively. The queued block's count is already zero and
+/// nothing else can reach it.
+///
+/// # Safety
+/// `ptr` is an arc block (`header` its header) whose reference count this
+/// thread just took to zero.
+unsafe fn free_block_bounded(ptr: *mut u8, header: *mut ArcHeader) {
+    // No drop function: nothing nested can follow, free in place.
+    if (*header).drop_fn.is_none() {
+        free_block(ptr);
+        return;
+    }
+    let here = &ptr as *const *mut u8 as usize;
+    let base = DROP_BASE.with(|b| b.get());
+    if base == 0 {
+        DROP_BASE.with(|b| b.set(here));
+        free_block(ptr);
+        if DROP_NPEND.with(|n| n.get()) != 0 {
+            loop {
+                let next = DROP_PENDING.with(|q| q.borrow_mut().pop());
+                match next {
+                    Some(p) => {
+                        DROP_NPEND.with(|n| n.set(n.get() - 1));
+                        free_block(p)
+                    }
+                    None => break,
+                }
+            }
+        }
+        DROP_BASE.with(|b| b.set(0));
+        return;
+    }
+    if base.abs_diff(here) > MAX_DROP_STACK {
+        DROP_PENDING.with(|q| q.borrow_mut().push(ptr));
+        DROP_NPEND.with(|n| n.set(n.get() + 1));
+        return;
+    }
+    free_block(ptr);
+}
+
+/// Run the drop function and deallocate an arc block whose count is zero.
+unsafe fn free_block(ptr: *mut u8) {
+    let header = header_from_ptr(ptr);
+    // Read fields before deallocation.
+    let drop_fn = (*header).drop_fn;
+    let size = (*header).size;
+    let align = (*header).align;
+
+    // Call drop function if set.
+    if let Some(f) = drop_fn {
+        f(ptr);
+    }
+
+    // Deallocate the entire block.
+    crate::allocstats::note_arc_free();
+    let (combined, _) = arc_layout(size, align).unwrap();
+    if align <= 8 {
+        crate::alloc::pool_free(header as *mut u8, combined.size());
+    } else {
+        std::alloc::dealloc(header as *mut u8, combined);
     }
 }
 

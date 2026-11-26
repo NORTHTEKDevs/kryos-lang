@@ -1,0 +1,212 @@
+// Balance probe for the ONE ownership rule of `shared` handles (LEDGER items
+// 137, 138, 139): a handle slot owns exactly one reference, every copy retains,
+// every overwrite and scope exit releases. Each mode runs one shape LEAK_ITERS
+// times; tests/mem_shared_rule_gate.sh runs it with KRYOS_ALLOC_STATS=1 and
+// checks that every arc block and every struct/enum box was released, and that
+// the printed result is exact (a use-after-free prints garbage).
+// Modes (LEAK_MODE), each a shape an earlier attempt got wrong:
+//   list_walk        linked list `cur = shared L { next: Some(cur), .. }`, walked
+//                    with `cur = (*n).next` (rebinding through a payload bind)
+//   list_return      the same list built in a callee and returned as a handle
+//   pass_pass        `pass(pass(h))`: a call result handed straight to a call
+//   try_temp         a struct holding a chain, passed to a callee inside `try`
+//                    (the callee throws on even k, the caller catches)
+//   for_return       `[shared Rec]` struct field, `return` from inside a `for`
+//   field_push       `rr.items = push(rr.items, a)` and `rr.by = Some(a)`
+//   temp_deref       `(*mk(i)).name`: a field read through a temporary handle
+//   two_structs      two struct literals sharing one handle, one returned
+//   deref_return     `return *s` of a payload bind whose owner dies at return
+//   array_overwrite  `xs[0] = h2`, `xs[1] = xs[0]`, `xs = []` over handles
+//   field_overwrite  `z.h = z.h` and `b.h = <new>` over a handle field
+//   enum_children    `enum Expr { Add(shared Expr, shared Expr), .. }` tree
+//   spawn_handle     a handle captured by a `spawn` block
+//   map_value        a handle stored as a map value
+// Every mode prints one deterministic line: `mode <mode> sum <n>`.
+use std::option::{Option}
+
+struct L { next: Option<shared L>, v: i64, name: str }
+struct Rec { id: i64, name: str }
+struct Reg { items: [shared Rec] }
+struct Acc { items: [shared Rec], by: Option<shared Rec>, n: i64 }
+struct B { h: shared Rec, k: i64 }
+struct W { o: Option<shared L>, n: i64 }
+enum Expr { Lit(i64), Add(shared Expr, shared Expr), Mul(shared Expr, shared Expr) }
+
+fn mkl(v: i64) -> L { return L { next: None(), v: v, name: "node-" + to_string(v) + "-padpadpad" } }
+fn mkr(i: i64) -> shared Rec { return shared Rec { id: i, name: "rec-" + to_string(i) + "-padpadpad" } }
+fn pass(h: shared Rec) -> shared Rec { return h }
+
+fn build_list(n: i64) -> L {
+    let mut cur = mkl(0)
+    let mut i = 1
+    while i < n {
+        let s: shared L = shared cur
+        cur = L { next: Some(s), v: i, name: "w" }
+        i = i + 1
+    }
+    return cur
+}
+
+fn walk(l: L) -> i64 {
+    let mut total = l.v
+    let mut cur = l.next
+    let mut going = true
+    while going {
+        match cur {
+            Option.Some(n) => {
+                total = total + (*n).v
+                cur = (*n).next
+            },
+            Option.None => { going = false },
+        }
+    }
+    return total
+}
+
+fn handle_list(n: i64) -> shared L {
+    let mut cur = shared mkl(0)
+    let mut i = 1
+    while i < n {
+        cur = shared L { next: Some(cur), v: i, name: "w" }
+        i = i + 1
+    }
+    return cur
+}
+
+fn chain(n: i64) -> L {
+    let mut cur = mkl(0)
+    let mut i = 1
+    while i < n {
+        cur = L { next: Some(shared cur), v: i, name: "q" }
+        i = i + 1
+    }
+    return cur
+}
+
+fn consume(c: L, k: i64) -> i64 {
+    if k % 2 == 0 { throw "even" }
+    return c.v
+}
+
+fn make_reg(n: i64) -> Reg {
+    let mut xs: [shared Rec] = []
+    let mut i = 0
+    while i < n {
+        xs = push(xs, shared Rec { id: i, name: "r" + to_string(i) })
+        i = i + 1
+    }
+    return Reg { items: xs }
+}
+
+fn find(r: Reg, id: i64) -> str {
+    for x in r.items {
+        if (*x).id == id { return (*x).name }
+    }
+    return "?"
+}
+
+fn add(r: Acc, a: shared Rec) -> Acc {
+    let mut rr = r
+    rr.items = push(rr.items, a)
+    rr.by = Some(a)
+    rr.n = rr.n + 1
+    return rr
+}
+
+fn pick(i: i64) -> B {
+    let a: shared Rec = mkr(i)
+    let b1 = B { h: a, k: 1 }
+    let b2 = B { h: a, k: 2 }
+    let junk = len(b1.h.name)
+    return b2
+}
+
+fn unwrap_l(w: W) -> L {
+    match w.o {
+        Option.Some(s) => { return *s },
+        Option.None => { return mkl(0 - 1) },
+    }
+}
+
+fn build_expr(d: i64) -> Expr {
+    if d == 0 { return Expr.Lit(2) }
+    if d % 2 == 0 { return Expr.Add(shared build_expr(d - 1), shared build_expr(d - 1)) }
+    return Expr.Mul(shared build_expr(d - 1), shared Expr.Lit(1))
+}
+
+fn eval(e: Expr) -> i64 {
+    match e {
+        Expr.Lit(n) => { return n },
+        Expr.Add(a, b) => { return eval(*a) + eval(*b) },
+        Expr.Mul(a, b) => { return eval(*a) * eval(*b) },
+    }
+}
+
+@capabilities(process)
+fn main() {
+    let n = parse_int(env_get("LEAK_ITERS"))
+    let mode = env_get("LEAK_MODE")
+    let mut i = 0
+    let mut sum = 0
+    while i < n {
+        if mode == "list_walk" {
+            let l = build_list(40)
+            sum = sum + walk(l)
+        } elif mode == "list_return" {
+            let h = handle_list(40)
+            sum = sum + (*h).v
+        } elif mode == "pass_pass" {
+            let h = mkr(i)
+            let q = pass(pass(h))
+            sum = sum + (*q).id + len((*q).name)
+        } elif mode == "try_temp" {
+            try { sum = sum + consume(chain(40), i) } catch e { sum = sum + 1 }
+        } elif mode == "for_return" {
+            let q = make_reg(10)
+            sum = sum + len(find(q, i % 10))
+        } elif mode == "field_push" {
+            let mut r = Acc { items: [], by: None(), n: 0 }
+            let mut j = 0
+            while j < 5 {
+                r = add(r, mkr(i + j))
+                j = j + 1
+            }
+            sum = sum + r.n + len(r.items)
+        } elif mode == "temp_deref" {
+            sum = sum + len((*mkr(i)).name) + (*mkr(i)).id
+        } elif mode == "two_structs" {
+            let b = pick(i)
+            let hh = b.h
+            sum = sum + (*hh).id + len((*hh).name) + b.k
+        } elif mode == "deref_return" {
+            let l = unwrap_l(W { o: Some(shared mkl(i)), n: 0 })
+            sum = sum + l.v + len(l.name)
+        } elif mode == "array_overwrite" {
+            let mut xs: [shared Rec] = []
+            xs = push(xs, mkr(i))
+            xs = push(xs, mkr(i + 1))
+            xs[0] = mkr(i + 2)
+            xs[1] = xs[0]
+            sum = sum + (*xs[0]).id + (*xs[1]).id
+            xs = []
+            sum = sum + len(xs)
+        } elif mode == "field_overwrite" {
+            let mut z = B { h: mkr(i), k: 1 }
+            z.h = z.h
+            z.h = mkr(i + 1)
+            sum = sum + (*z.h).id
+        } elif mode == "enum_children" {
+            sum = sum + eval(build_expr(6))
+        } elif mode == "spawn_handle" {
+            let a = mkr(i)
+            spawn { let z = len((*a).name) }
+            sum = sum + (*a).id
+        } elif mode == "map_value" {
+            let mut m: map<str, shared Rec> = {}
+            m["a"] = mkr(i)
+            sum = sum + (*m["a"]).id
+        }
+        i = i + 1
+    }
+    println("mode " + mode + " sum " + to_string(sum))
+}

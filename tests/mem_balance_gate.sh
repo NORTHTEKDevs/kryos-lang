@@ -69,31 +69,34 @@ EXPECTED_ROWS=16
 # ---------------------------------------------------------------------------
 # EXPECTED-STATE TABLE.
 #   mode  backend  arc_live  box_live  result-line-at-ITERS=3
-# Measured 2026-11-03 on master ef9a66b1 + the counter (kryos 1.3.0).
-# Open defects (the non-zero rows):
-#   tree_*, list_drop  item 137 (a `shared` payload is never freed; on the
-#                      Cranelift backend the struct boxes behind it leak too)
-#   shared_scalar      item 137 (a bare `shared <int>` arc block is never
+# Measured 2026-11-25 on closeout/lane-mem (kryos 1.3.0, the one ownership rule
+# for `shared` handles): every row is balanced on both backends. The rows were
+# non-zero on master (2026-11-03, ef9a66b1) because of three defects, now closed:
+#   tree_*, list_drop  item 137 (a `shared` payload was never freed; on the
+#                      Cranelift backend the struct boxes behind it leaked too)
+#   shared_scalar      item 137 (a bare `shared <int>` arc block was never
 #                      released to zero; invisible to RSS)
 #   match_field        item 139 (match on an Option field of a by-value param)
+# A row that leaks again fails as a REGRESSION; tests/mem_shared_rule_gate.sh pins
+# the finer shapes of the rule (copies, overwrites, containers, early exits).
 # ---------------------------------------------------------------------------
 EXPECTED='
-tree_drop      llvm 6138  0     mode tree_drop sum 3
-tree_drop      cl   6138  18420 mode tree_drop sum 3
-tree_let_call  llvm 6138  0     mode tree_let_call sum 6141
-tree_let_call  cl   6138  18423 mode tree_let_call sum 6141
-tree_embedded  llvm 6138  0     mode tree_embedded sum 6141
-tree_embedded  cl   6138  18423 mode tree_embedded sum 6141
-list_drop      llvm 6000  0     mode list_drop sum 3
-list_drop      cl   6000  12003 mode list_drop sum 3
-match_field    llvm 0     3     mode match_field sum 39
-match_field    cl   0     9     mode match_field sum 39
-shared_scalar  llvm 3     0     mode shared_scalar sum 3
-shared_scalar  cl   3     0     mode shared_scalar sum 3
-plain_embedded llvm 0     0     mode plain_embedded sum 93
-plain_embedded cl   0     0     mode plain_embedded sum 93
-array_tree     llvm 0     0     mode array_tree sum 6141
-array_tree     cl   0     0     mode array_tree sum 6141
+tree_drop      llvm 0  0  mode tree_drop sum 3
+tree_drop      cl   0  0  mode tree_drop sum 3
+tree_let_call  llvm 0  0  mode tree_let_call sum 6141
+tree_let_call  cl   0  0  mode tree_let_call sum 6141
+tree_embedded  llvm 0  0  mode tree_embedded sum 6141
+tree_embedded  cl   0  0  mode tree_embedded sum 6141
+list_drop      llvm 0  0  mode list_drop sum 3
+list_drop      cl   0  0  mode list_drop sum 3
+match_field    llvm 0  0  mode match_field sum 39
+match_field    cl   0  0  mode match_field sum 39
+shared_scalar  llvm 0  0  mode shared_scalar sum 3
+shared_scalar  cl   0  0  mode shared_scalar sum 3
+plain_embedded llvm 0  0  mode plain_embedded sum 93
+plain_embedded cl   0  0  mode plain_embedded sum 93
+array_tree     llvm 0  0  mode array_tree sum 6141
+array_tree     cl   0  0  mode array_tree sum 6141
 '
 # Backend canary: plain_embedded box ALLOCS differ by backend (LLVM keeps the
 # struct inline, Cranelift boxes it).

@@ -133,6 +133,7 @@ pub extern "C" fn kryos_coop_spawn(fn_ptr: i64, args_ptr: *const i64, arg_count:
         id
     };
 
+    crate::arc::note_thread_start();
     let addr = fn_ptr as usize;
     std::thread::spawn(move || {
         CURRENT_TASK.with(|c| c.set(id));

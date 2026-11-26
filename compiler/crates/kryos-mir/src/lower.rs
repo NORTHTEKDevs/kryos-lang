@@ -42,6 +42,16 @@ pub struct LoweringContext {
     /// scope-end drop block emitted by `lower_block_stmts`), leaking on
     /// every `break`/`continue` out of a block holding a live heap local.
     loop_scope_starts: Vec<usize>,
+    /// The unnamed iterable temps of the enclosing `for x in <call | field |
+    /// element | literal>` loops that own a reference (released after the
+    /// loop). A `return` from inside such a loop leaves through none of the
+    /// loop's own exit blocks, so it releases them itself.
+    loop_iter_drops: Vec<LocalId>,
+    /// The struct / enum params of the function being lowered that the callee
+    /// owns (it took its own owner at entry and drops at scope end). A `throw`
+    /// leaves the function through the codegen's unwind path, which releases
+    /// named locals but never params, so the `throw` statement releases these.
+    owned_param_locals: Vec<LocalId>,
     /// Struct definitions: struct_name -> ordered list of (field_name, MirType).
     struct_defs: HashMap<String, Vec<(String, MirType)>>,
     /// Enum definitions: enum_name -> ordered list of variants.
@@ -341,6 +351,10 @@ pub struct LoweringContext {
     /// Set while lowering `let x = <closure field read>` (`h.f`, `hs[i].f`,
     /// `mk(i).f`): the binding retains the closure right after its Assign.
     pending_let_fn_retain: bool,
+    /// Unnamed temps holding a COPY read out of a `shared` handle (`*h`): each
+    /// took its own reference at the read (`lower_shared_deref_owned`), so the
+    /// statement-end temp drop treats it like a fresh call result.
+    owned_deref_temps: std::collections::HashSet<u32>,
     /// The resolved annotation of the `let` whose initializer is currently
     /// being lowered. Consumed (take()) by `monomorphize_impl_fn` when a
     /// no-argument generic static constructor leaves type params unbound --
@@ -500,6 +514,8 @@ impl LoweringContext {
             loop_headers: Vec::new(),
             loop_exits: Vec::new(),
             loop_scope_starts: Vec::new(),
+            loop_iter_drops: Vec::new(),
+            owned_param_locals: Vec::new(),
             struct_defs: HashMap::new(),
             enum_defs: HashMap::new(),
             func_ret_types: HashMap::new(),
@@ -561,6 +577,7 @@ impl LoweringContext {
             keep_closure_locals_once: false,
             pending_let_share: false,
             pending_let_fn_retain: false,
+            owned_deref_temps: std::collections::HashSet::new(),
             pending_let_expected: None,
             pending_lambda_ret_hint: None,
         }
@@ -730,10 +747,85 @@ impl LoweringContext {
         } else {
             None
         };
+        // The check splits the statement into blocks, which the statement-end
+        // temp drop does not follow (it bails): a fresh temp this call
+        // BORROWS is released here instead, on both edges of the check.
+        let drops = if target.is_some() { self.fresh_borrowed_arg_temps(&inst) } else { Vec::new() };
         self.current_instructions.push(inst);
         if let Some(t) = target {
-            emit_exception_check(self, t.result_local, t.check_block);
+            emit_exception_check(self, t.result_local, t.check_block, &drops);
         }
+    }
+
+    /// The unnamed temps among the arguments of a call to a USER function (or
+    /// through a function value) that hold a reference the statement owns and
+    /// nothing else will release: a fresh call result, literal or concat that
+    /// the callee only borrows. Used inside a `try`, where every call is
+    /// followed by an exception check that ends the block.
+    fn fresh_borrowed_arg_temps(&self, inst: &Instruction) -> Vec<LocalId> {
+        let Instruction::Assign { value, .. } = inst else { return Vec::new() };
+        let args: &[Operand] = match value {
+            RValue::Call { func, args }
+                if self.user_fn_names.contains(func) && !self.builtin_fn_names.contains(func) =>
+            {
+                args
+            }
+            RValue::CallIndirect { args, .. } => args,
+            _ => return Vec::new(),
+        };
+        let mut out: Vec<LocalId> = Vec::new();
+        for a in args {
+            let Operand::Local(l) = a else { continue };
+            if out.contains(l) {
+                continue;
+            }
+            let Some(local) = self.locals.iter().find(|x| x.id == *l) else { continue };
+            if local.name.is_some() || local.mutable {
+                continue;
+            }
+            let ty = &local.ty;
+            let droppable = matches!(ty, MirType::Str | MirType::Array(_, _) | MirType::Map { .. })
+                || is_owned_struct_ty(self, ty)
+                || is_owned_enum_ty(self, ty)
+                || is_owned_tuple_ty(self, ty);
+            if !droppable {
+                continue;
+            }
+            // The definition of the temp: the last assignment to it, in this
+            // block or an earlier one of the function.
+            let def = self
+                .current_instructions
+                .iter()
+                .rev()
+                .chain(self.blocks.iter().rev().flat_map(|b| b.instructions.iter().rev()))
+                .find_map(|i| match i {
+                    Instruction::Assign { dest, value } if dest == l => Some(value),
+                    _ => None,
+                });
+            let Some(def) = def else { continue };
+            let fresh = match def {
+                RValue::StringConcat(_) => true,
+                RValue::Array(_) | RValue::Map(_) => true,
+                RValue::BinOp { op: MirBinOp::Add, .. } => matches!(ty, MirType::Str),
+                RValue::Struct { .. } => matches!(ty, MirType::Struct(_)),
+                RValue::EnumVariant { .. } => matches!(ty, MirType::Enum(_)),
+                RValue::Tuple(_) => matches!(ty, MirType::Tuple(_)),
+                RValue::CallIndirect { .. } | RValue::VtableCall { .. } => true,
+                RValue::Deref { .. } => self.owned_deref_temps.contains(&l.0),
+                RValue::Call { func, .. } => {
+                    func == "to_string"
+                        || func == "kryos_string_concat"
+                        || (self.user_fn_names.contains(func.as_str())
+                            && !self.builtin_fn_names.contains(func.as_str())
+                            && self.func_ret_types.get(func.as_str()).is_some_and(|rt| !is_copy_type(self, rt)))
+                }
+                _ => false,
+            };
+            if fresh {
+                out.push(*l);
+            }
+        }
+        out
     }
 
     /// Finish the current block with the given terminator and start a new open
@@ -771,6 +863,8 @@ impl LoweringContext {
         self.loop_headers.clear();
         self.loop_exits.clear();
         self.loop_scope_starts.clear();
+        self.loop_iter_drops.clear();
+        self.owned_param_locals.clear();
         self.dropped_locals.clear();
         self.param_locals.clear();
         self.hidden_locals.clear();
@@ -812,6 +906,8 @@ impl LoweringContext {
             loop_headers: std::mem::take(&mut self.loop_headers),
             loop_exits: std::mem::take(&mut self.loop_exits),
             loop_scope_starts: std::mem::take(&mut self.loop_scope_starts),
+            loop_iter_drops: std::mem::take(&mut self.loop_iter_drops),
+            owned_param_locals: std::mem::take(&mut self.owned_param_locals),
             hidden_locals: std::mem::take(&mut self.hidden_locals),
             closure_locals: std::mem::take(&mut self.closure_locals),
             closure_local_ids: std::mem::take(&mut self.closure_local_ids),
@@ -871,6 +967,8 @@ impl LoweringContext {
         self.loop_headers = state.loop_headers;
         self.loop_exits = state.loop_exits;
         self.loop_scope_starts = state.loop_scope_starts;
+        self.loop_iter_drops = state.loop_iter_drops;
+        self.owned_param_locals = state.owned_param_locals;
         self.hidden_locals = state.hidden_locals;
         self.closure_locals = state.closure_locals;
         self.closure_local_ids = state.closure_local_ids;
@@ -901,6 +999,8 @@ struct FunctionState {
     loop_headers: Vec<BlockId>,
     loop_exits: Vec<BlockId>,
     loop_scope_starts: Vec<usize>,
+    loop_iter_drops: Vec<LocalId>,
+    owned_param_locals: Vec<LocalId>,
     hidden_locals: HashSet<u32>,
     closure_locals: HashMap<String, (String, Vec<Operand>)>,
     closure_local_ids: HashMap<String, u32>,
@@ -2361,6 +2461,8 @@ pub fn lower_module_with_lambda_params(
 
     keep_closures_passed_to_escaping_params(&mut functions);
     crate::dyn_own::own_dyn_refs(&mut functions);
+    // (`shared` handles: `kryos_mir::shared_own::own_shared_refs_module`, run by
+    // the driver on the finished module.)
     widen_unsigned_map_keys(&mut functions);
 
     MirModule {
@@ -2855,6 +2957,46 @@ fn is_owned_struct_ty(ctx: &LoweringContext, ty: &MirType) -> bool {
         if !ctx.copy_structs.contains(n.as_str()) && struct_is_shareable(ctx, n))
 }
 
+/// `*h` of a `shared T` handle whose `T` carries ownership (a shareable
+/// struct / enum / tuple, a str / array / map, a closure): the read is a COPY
+/// out of the arc, so the value takes its own reference right at the read --
+/// the arc keeps the one its slot owns. As a bare alias the value dangled the
+/// moment the arc was released (`return *s` of a payload bind, `Some(*a)`,
+/// `[*a, *a]`: LEDGER item 137), and every consumer needed its own rule to
+/// share it. An unnamed temp holding the copy is released by the ordinary
+/// temp drop; a binding or a container that keeps it owns that reference.
+/// (A field path `(*h).f` is NOT a copy: it lowers as an auto-deref of the
+/// handle, the way `h.f` does.) None for a scalar payload, or an `x` that is
+/// not a handle at all.
+fn lower_shared_deref_owned(ctx: &mut LoweringContext, inner: &ast::Expr) -> Option<Operand> {
+    let MirType::Shared(t) = infer_expr_type(ctx, inner) else {
+        return None;
+    };
+    let t = *t;
+    let share = is_owned_value_ty(ctx, &t);
+    let retain = if share { None } else { retain_for_ty(&t) };
+    if !share && retain.is_none() {
+        return None;
+    }
+    let h = lower_expr_to_operand(ctx, inner);
+    let tmp = ctx.alloc_temp(t);
+    ctx.owned_deref_temps.insert(tmp.0);
+    ctx.emit(Instruction::Assign {
+        dest: tmp,
+        value: RValue::Deref { operand: h },
+    });
+    if share {
+        emit_value_share(ctx, tmp);
+    } else if let Some(rf) = retain {
+        let sink = ctx.alloc_temp(MirType::I64);
+        ctx.emit(Instruction::Assign {
+            dest: sink,
+            value: RValue::Call { func: rf.to_string(), args: vec![Operand::Local(tmp)] },
+        });
+    }
+    Some(Operand::Local(tmp))
+}
+
 /// The struct counterpart of `retain_for_ty`: a borrowed (param) struct value
 /// is about to become OWNED by `holder` (returned, or bound to a droppable
 /// local), so it needs its own reference. Lowered per backend: Cranelift
@@ -3212,6 +3354,9 @@ pub fn lower_function(
                 && !ctx.param_locals.contains(&p.local.0)
             {
                 emit_struct_share(ctx, p.local);
+                if !ctx.borrowed_locals.contains(&p.local.0) && is_owned_value_ty(ctx, &p.ty) {
+                    ctx.owned_param_locals.push(p.local);
+                }
             }
         }
     }
@@ -4419,6 +4564,17 @@ fn drop_unescaped_str_temps(
     // just never extended to Array/Map, so `map<str, [i64]>` leaked the
     // array contents every loop iteration (measured ~260MB/2M iters) despite
     // the map's own typed free (`kryos_map_free_typed`) working correctly.
+    // A bare `None()` / `Opt::None` has no payload to type, so its temp keeps the
+    // generic enum's own (erased, never "owned") type; it is still a fresh box
+    // of one owner, which a struct literal retains for its field and the temp
+    // must release.
+    let nullary_enum_temp = |l: &MirLocal| -> bool {
+        matches!(l.ty, MirType::Enum(_))
+            && ctx.current_instructions[inst_mark..].iter().any(|i| {
+                matches!(i, Instruction::Assign { dest, value: RValue::EnumVariant { fields, .. } }
+                    if *dest == l.id && fields.is_empty())
+            })
+    };
     let candidates: Vec<LocalId> = ctx.locals[locals_mark..]
         .iter()
         .filter(|l| {
@@ -4426,7 +4582,8 @@ fn drop_unescaped_str_temps(
                 && (matches!(l.ty, MirType::Str | MirType::Array(_, _) | MirType::Map { .. } | MirType::Function { .. })
                     || is_owned_struct_ty(ctx, &l.ty)
                     || is_owned_enum_ty(ctx, &l.ty)
-                    || is_owned_tuple_ty(ctx, &l.ty))
+                    || is_owned_tuple_ty(ctx, &l.ty)
+                    || nullary_enum_temp(l))
                 && !l.mutable
                 && escaping != Some(l.id.0)
         })
@@ -4468,6 +4625,10 @@ fn drop_unescaped_str_temps(
             // value itself is handled by the per-candidate walk below, which
             // treats it as the escape it is.
             | Instruction::StoreField { .. }
+            // `let h = shared x` retains `h` (`ptr` is always a `shared`
+            // handle, never one of the candidate temps below).
+            | Instruction::ArcRetain { .. }
+            | Instruction::ArcRelease { .. }
             | Instruction::Nop
             | Instruction::DebugLine(_) => {}
             _ => return,
@@ -4591,6 +4752,8 @@ fn drop_unescaped_str_temps(
                     // A fresh closure value (its env is a new arc block).
                     // Captures or not, a closure value is a fresh env block.
                     RValue::Closure { .. } => matches!(cand_ty, MirType::Function { .. }),
+                    // A copy read out of a `shared` handle took its own reference.
+                    RValue::Deref { .. } => ctx.owned_deref_temps.contains(&id.0),
                     RValue::Call { func, .. } => {
                         func == "to_string"
                             || func == "kryos_string_concat"
@@ -4824,6 +4987,10 @@ fn drop_unescaped_str_temps(
                         if shared && container_store {
                             continue;
                         }
+                        // A deep clone only reads its source.
+                        if matches!(func.as_str(), "__kryos_struct_index_clone" | "__kryos_enum_index_clone") {
+                            continue;
+                        }
                         if !(ctx.user_fn_names.contains(func) && !ctx.builtin_fn_names.contains(func)) {
                             continue 'cand;
                         }
@@ -4887,8 +5054,15 @@ fn drop_unescaped_str_temps(
                                     && mentions(&args[2], id)
                                     && !mentions(&args[0], id)
                                     && !mentions(&args[1], id)));
+                        // The deep-clone markers only READ their source; the clone
+                        // is an independent value (see BORROWING_CALL_ARGS).
+                        let clone_read = matches!(
+                            func.as_str(),
+                            "__kryos_struct_index_clone" | "__kryos_enum_index_clone"
+                        );
                         if matches!(cand_ty, MirType::Struct(_))
                             && !shared_store
+                            && !clone_read
                             && (func == "push"
                                 || !(ctx.user_fn_names.contains(func)
                                     && !ctx.builtin_fn_names.contains(func)))
@@ -5470,12 +5644,27 @@ fn is_variant_expr(ctx: &LoweringContext, e: &ast::Expr) -> bool {
             if ctx.enum_defs.contains_key(name.as_str()) && find_local_by_name(ctx, name).is_none()))
 }
 
+/// Two field places written the same way: `a.b.c` and `a.b.c` (a plain name
+/// followed by field reads, nothing that evaluates anything twice).
+fn same_field_place(a: &ast::Expr, b: &ast::Expr) -> bool {
+    match (a, b) {
+        (ast::Expr::Identifier { name: n1, .. }, ast::Expr::Identifier { name: n2, .. }) => n1 == n2,
+        (
+            ast::Expr::FieldAccess { object: o1, field: f1, .. },
+            ast::Expr::FieldAccess { object: o2, field: f2, .. },
+        ) => f1 == f2 && same_field_place(o1, o2),
+        _ => false,
+    }
+}
+
 fn rooted_at_local(ctx: &LoweringContext, e: &ast::Expr) -> bool {
     match e {
         ast::Expr::Identifier { name, .. } => {
             find_local_by_name(ctx, name).is_some() || ctx.mutable_globals.contains_key(name.as_str())
         }
         ast::Expr::FieldAccess { object, .. } | ast::Expr::IndexAccess { object, .. } => rooted_at_local(ctx, object),
+        // `(*h).f`: a field of the value the arc holds, a named place like `h.f`.
+        ast::Expr::Deref { inner, .. } => rooted_at_local(ctx, inner),
         _ => false,
     }
 }
@@ -5714,6 +5903,9 @@ fn type_array_releases(blocks: &mut [BasicBlock], locals: &[MirLocal]) {
                     MirType::Str => 1,
                     MirType::Array(..) => 2,
                     MirType::Map { .. } => 3,
+                    // `shared` handles: the last reference to the array
+                    // releases each element's (an arc release).
+                    MirType::Shared(_) => 5,
                     _ => 0,
                 },
                 _ => 0,
@@ -6783,6 +6975,34 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
             } else {
                 None
             };
+
+            // `s.items = push(s.items, v)`: `push` grows the array IN PLACE and
+            // hands back the same handle, so storing the result into the field
+            // it came from changes nothing. Lowered as an assignment it is the
+            // one shape the overwrite protocol below cannot balance: the old and
+            // the new value are the same pointer, so both `release_if_ne`s skip
+            // while the field read and the receiver retain each took a reference
+            // -- the array (and every element, every `shared` handle in it) was
+            // never freed. It is the bare `push(s.items, v)` statement, which
+            // balances.
+            if actor_field_target.is_none() && matches!(op, ast::AssignOp::Assign) {
+                if let (ast::Expr::FieldAccess { .. }, ast::Expr::FnCall { callee, args, span: call_span }) = (target, value) {
+                    let is_push = matches!(callee.as_ref(), ast::Expr::Identifier { name, .. } if name == "push")
+                        && (!ctx.user_fn_names.contains("push") || ctx.builtin_fn_names.contains("push"));
+                    if is_push
+                        && args.len() == 2
+                        && same_field_place(target, &args[0])
+                        && matches!(infer_expr_type(ctx, target), MirType::Array(_, _))
+                    {
+                        let bare = ast::Stmt::Expr {
+                            expr: ast::Expr::FnCall { callee: callee.clone(), args: args.clone(), span: *call_span },
+                            span: *call_span,
+                        };
+                        lower_stmt_inner(ctx, &bare);
+                        return;
+                    }
+                }
+            }
 
             if let Some((state_ptr, field_offset, field_ty)) = actor_field_target {
                 // Actor state field assignment.
@@ -8736,6 +8956,14 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
             for id in path_drops {
                 ctx.dropped_locals.remove(&id);
             }
+            // The iterables of the enclosing `for` loops: leaving through
+            // `return` skips the drop after the loop.
+            let iter_drops: Vec<LocalId> = ctx.loop_iter_drops.iter().rev().copied().collect();
+            for it in iter_drops {
+                if returned_local_id != Some(it.0) {
+                    ctx.emit(Instruction::Drop { local: it });
+                }
+            }
             let next = ctx.alloc_block();
             ctx.finish_block(Terminator::Return(operand), next);
         }
@@ -8930,6 +9158,18 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                 // Outside try: store the exception in the thread-local via
                 // kryos_exception_throw and return from this function so the
                 // caller can detect the pending exception and unwind.
+                // The unwind path releases the named locals but never a param:
+                // the struct / enum params this function owns go here, as a
+                // `return` would release them.
+                let owned: Vec<LocalId> = ctx.owned_param_locals.clone();
+                for p in owned {
+                    if !ctx.dropped_locals.contains(&p.0)
+                        && !ctx.partial_moved_locals.contains(&p.0)
+                        && !ctx.borrowed_locals.contains(&p.0)
+                    {
+                        ctx.emit(Instruction::Drop { local: p });
+                    }
+                }
                 let throw_result = ctx.alloc_temp(MirType::I64);
                 ctx.emit(Instruction::Assign {
                     dest: throw_result,
@@ -9580,7 +9820,25 @@ fn lower_for(
     ctx.loop_exits.push(exit_bb);
     // From the loop variable on: `break`/`continue` release an owned one.
     ctx.loop_scope_starts.push(if loop_var_owned { loop_scope_start } else { ctx.locals.len() });
+    // The iterable's own reference (see the drop after the loop below): a
+    // `return` inside the body releases it too.
+    let iter_owned = matches!(iter_type, MirType::Array(_, _))
+        && matches!(
+            iterable,
+            ast::Expr::FnCall { .. }
+                | ast::Expr::MethodCall { .. }
+                | ast::Expr::StaticMethodCall { .. }
+                | ast::Expr::ArrayLiteral { .. }
+                | ast::Expr::IndexAccess { .. }
+                | ast::Expr::FieldAccess { .. }
+        );
+    if iter_owned {
+        ctx.loop_iter_drops.push(iter_local);
+    }
     lower_block_stmts(ctx, &body.stmts);
+    if iter_owned {
+        ctx.loop_iter_drops.pop();
+    }
     ctx.loop_headers.pop();
     ctx.loop_exits.pop();
     ctx.loop_scope_starts.pop();
@@ -10162,7 +10420,7 @@ fn lower_coop_spawn(ctx: &mut LoweringContext, arg: &ast::Expr) {
 ///   continue_bb:
 ///     ... (subsequent instructions) ...
 /// ```
-fn emit_exception_check(ctx: &mut LoweringContext, result_local: LocalId, check_bb: BlockId) {
+fn emit_exception_check(ctx: &mut LoweringContext, result_local: LocalId, check_bb: BlockId, drops: &[LocalId]) {
     let exc_flag = ctx.alloc_temp(MirType::I64);
     ctx.emit(Instruction::Assign {
         dest: exc_flag,
@@ -10201,9 +10459,16 @@ fn emit_exception_check(ctx: &mut LoweringContext, result_local: LocalId, check_
             fields: vec![Operand::Local(exc_val)],
         },
     });
+    // The call threw: what it only borrowed is still the statement's.
+    for d in drops {
+        ctx.emit(Instruction::Drop { local: *d });
+    }
     ctx.finish_block(Terminator::Goto(check_bb), continue_bb);
 
     // continue_bb: normal execution continues here.
+    for d in drops {
+        ctx.emit(Instruction::Drop { local: *d });
+    }
 }
 
 /// Lower `try { body } catch e { handler }` into:
@@ -10283,7 +10548,7 @@ fn lower_try_catch(
                 };
                 // Before wrapping in Ok, check if a cross-function throw
                 // set the thread-local exception during this expression.
-                emit_exception_check(ctx, result_local, check_bb);
+                emit_exception_check(ctx, result_local, check_bb, &[]);
                 ctx.emit(Instruction::Assign {
                     dest: result_local,
                     value: RValue::EnumVariant {
@@ -10316,7 +10581,7 @@ fn lower_try_catch(
                     }
                     other => other,
                 };
-                emit_exception_check(ctx, result_local, check_bb);
+                emit_exception_check(ctx, result_local, check_bb, &[]);
                 ctx.emit(Instruction::Assign {
                     dest: result_local,
                     value: RValue::EnumVariant {
@@ -10327,7 +10592,7 @@ fn lower_try_catch(
                 });
             } else {
                 lower_stmt(ctx, stmt);
-                emit_exception_check(ctx, result_local, check_bb);
+                emit_exception_check(ctx, result_local, check_bb, &[]);
                 ctx.emit(Instruction::Assign {
                     dest: result_local,
                     value: RValue::EnumVariant {
@@ -10339,7 +10604,7 @@ fn lower_try_catch(
             }
         } else {
             lower_stmt(ctx, stmt);
-            emit_exception_check(ctx, result_local, check_bb);
+            emit_exception_check(ctx, result_local, check_bb, &[]);
         }
     }
 
@@ -11862,6 +12127,36 @@ fn infer_one_arm_type(
     inferred
 }
 
+/// True when every payload of every variant of the enum `ty` either is a
+/// scalar or gets its OWN reference at a match payload bind (str/array/map,
+/// an owned struct/enum, a `shared` handle -- the shared-handle pass retains
+/// an alias): a bind of any other payload is a bare alias of the subject, so
+/// the subject must outlive the arm.
+fn enum_payloads_own_refs(ctx: &LoweringContext, ty: &MirType) -> bool {
+    let MirType::Enum(name) = ty else { return false };
+    let Some(variants) = ctx.enum_defs.get(name.as_str()) else { return false };
+    variants.iter().all(|v| {
+        v.fields.iter().all(|f| {
+            is_copy_type(ctx, f)
+                || matches!(
+                    f,
+                    MirType::Str
+                        | MirType::Array(_, _)
+                        | MirType::Map { .. }
+                        | MirType::Shared(_)
+                        | MirType::I8
+                        | MirType::I16
+                        | MirType::U16
+                        | MirType::U32
+                        | MirType::U64
+                        | MirType::Char
+                )
+                || is_owned_struct_ty(ctx, f)
+                || is_owned_enum_ty(ctx, f)
+        })
+    })
+}
+
 /// `match <call> { .. }` on a str/array/map or shareable enum: the call's
 /// result was never released (a leak per match). Bind it to a hidden local,
 /// match on that, and release it after the match (a `return` inside an arm
@@ -11881,6 +12176,37 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
     );
     if fresh || retained_read {
         let sty = infer_expr_type(ctx, subject);
+        // An enum read out of a struct FIELD (`match h.o { .. }`): the read is a
+        // bit-copy alias that marked the struct partially moved, so the struct
+        // (a callee-owned param, a local) was never dropped and its reference
+        // leaked (LEDGER item 139). The struct keeps its field and its drop;
+        // every payload bind takes its OWN reference (see
+        // `enum_payloads_own_refs`), so the alias is only read to dispatch and
+        // bind and needs neither a reference nor a release of its own.
+        let field_enum_read = matches!(subject, ast::Expr::FieldAccess { .. })
+            && is_owned_enum_ty(ctx, &sty)
+            && enum_payloads_own_refs(ctx, &sty);
+        let binds_whole_field = arms.iter().any(|a| {
+            matches!(&a.pattern, ast::Pattern::Ident { name, .. }
+                if find_enum_variant(ctx, name).is_none())
+        });
+        if field_enum_read && !binds_whole_field {
+            let partial_before = ctx.partial_moved_locals.clone();
+            let op = lower_expr_to_operand(ctx, subject);
+            let added: Vec<u32> =
+                ctx.partial_moved_locals.difference(&partial_before).copied().collect();
+            for id in added {
+                ctx.partial_moved_locals.remove(&id);
+            }
+            let hidden = format!("__match_subj_{}", ctx.locals.len());
+            let subj = ctx.alloc_local(Some(hidden.clone()), sty, false);
+            ctx.borrowed_locals.insert(subj.0);
+            ctx.emit(Instruction::Assign { dest: subj, value: RValue::Use(op) });
+            let ident = ast::Expr::Identifier { name: hidden, span: subject.span() };
+            let result = lower_match_inner(ctx, &ident, arms);
+            ctx.hidden_locals.insert(subj.0);
+            return result;
+        }
         let owned = matches!(sty, MirType::Str | MirType::Array(_, _) | MirType::Map { .. })
             || (fresh && is_owned_enum_ty(ctx, &sty))
             // A fresh tuple: its pattern bindings retain str/array/map
@@ -14173,6 +14499,17 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
             }
         }
         ast::Expr::MoveExpr { inner, .. } => infer_expr_type(ctx, inner),
+        // `shared X` is an arc handle to an X. It had no arm and typed Void, so
+        // a binding of it held an untyped handle that no ownership logic could
+        // see, and `Some(shared X)` kept the generic variant template type.
+        ast::Expr::SharedExpr { inner, .. } => {
+            let inner_ty = infer_expr_type(ctx, inner);
+            if matches!(inner_ty, MirType::Void) {
+                MirType::Void
+            } else {
+                MirType::Shared(Box::new(inner_ty))
+            }
+        }
         ast::Expr::WeakExpr { inner, .. } => {
             let inner_ty = infer_expr_type(ctx, inner);
             MirType::Shared(Box::new(inner_ty))
@@ -14533,6 +14870,11 @@ fn lower_expr_to_operand(ctx: &mut LoweringContext, expr: &ast::Expr) -> Operand
             Operand::Local(local)
         }
         _ => {
+            if let ast::Expr::Deref { inner, .. } = expr {
+                if let Some(owned) = lower_shared_deref_owned(ctx, inner) {
+                    return owned;
+                }
+            }
             // Complex expression - lower to rvalue, store in temp.
             // Infer the type so the temp has the correct MIR type instead
             // of defaulting to I64 for everything.
@@ -16227,7 +16569,19 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             }
         }
 
-        ast::Expr::FieldAccess { object, field, .. } => {
+        ast::Expr::FieldAccess { object, field, span } => {
+            // `(*h).f` of a shared handle is the auto-deref path `h.f`: a read
+            // of one field through the arc, no copy of the whole value.
+            if let ast::Expr::Deref { inner: dinner, .. } = object.as_ref() {
+                if matches!(infer_expr_type(ctx, dinner), MirType::Shared(_)) {
+                    let through = ast::Expr::FieldAccess {
+                        object: dinner.clone(),
+                        field: field.clone(),
+                        span: *span,
+                    };
+                    return lower_expr_to_rvalue(ctx, &through);
+                }
+            }
             // Check if this is an enum variant construction (e.g., `Color.Red`).
             if let ast::Expr::Identifier { name, .. } = object.as_ref() {
                 if let Some(variants) = ctx.enum_defs.get(name.as_str()) {
@@ -16319,6 +16673,11 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                                         // dyn_own retains a trait object read
                                         // out of a field.
                                         | MirType::DynTrait(_)
+                                        // shared_own retains a `shared` handle
+                                        // read out of a field: the reader owns
+                                        // a reference of its own, the struct
+                                        // keeps and drops the one it holds.
+                                        | MirType::Shared(_)
                                 );
                                 if !is_copy_type(ctx, &field_ty) && !retained_read {
                                     ctx.partial_moved_locals.insert(source_id.0);
@@ -16539,12 +16898,42 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
 
         ast::Expr::Deref { inner, .. } => {
             // *x → load from reference
+            if let Some(owned) = lower_shared_deref_owned(ctx, inner) {
+                return RValue::Use(owned);
+            }
             let inner_op = lower_expr_to_operand(ctx, inner);
             RValue::Deref { operand: inner_op }
         }
 
         ast::Expr::SharedExpr { inner, .. } => {
+            let partial_before = ctx.partial_moved_locals.clone();
             let inner_op = lower_expr_to_operand(ctx, inner);
+            // `shared x` of a value that something else still owns (a named
+            // local or param, a field or element read) copies it into the arc
+            // block, which then holds the SAME box / heap leaves: the arc takes
+            // its own owner and the source keeps and drops its own. As an alias
+            // the source's drop freed what the arc still pointed at (LEDGER
+            // items 137, 138). A fresh temp (`shared make(..)`) hands its own
+            // reference over.
+            if matches!(
+                inner.as_ref(),
+                ast::Expr::Identifier { .. } | ast::Expr::FieldAccess { .. } | ast::Expr::IndexAccess { .. }
+            ) {
+                if let Operand::Local(l) = &inner_op {
+                    let lty = ctx.locals.iter().find(|x| x.id == *l).map(|x| x.ty.clone());
+                    if lty
+                        .as_ref()
+                        .is_some_and(|t| is_owned_struct_ty(ctx, t) || is_owned_enum_ty(ctx, t))
+                    {
+                        emit_value_share(ctx, *l);
+                        let added: Vec<u32> =
+                            ctx.partial_moved_locals.difference(&partial_before).copied().collect();
+                        for id in added {
+                            ctx.partial_moved_locals.remove(&id);
+                        }
+                    }
+                }
+            }
             RValue::ArcAlloc { inner: inner_op }
         }
 
@@ -17878,6 +18267,16 @@ fn mir_type_to_type_expr(ty: &MirType) -> Option<ast::TypeExpr> {
                 elements: elem_tys,
                 span,
             })
+        }
+        // A captured `shared` handle: without its type the closure / spawn body
+        // saw an opaque i64, so `(*h).field` had no struct to read (LLVM could
+        // not type the access) and no ownership logic could see the handle.
+        MirType::Shared(inner) => {
+            let inner_ty = mir_type_to_type_expr(inner).unwrap_or_else(|| ast::TypeExpr::Simple {
+                name: "i64".to_string(),
+                span,
+            });
+            Some(ast::TypeExpr::Shared { inner: Box::new(inner_ty), span })
         }
         _ => None, // fall back to default i64
     }
@@ -22028,6 +22427,13 @@ fn mir_type_to_type_expr_spanned(ty: &MirType, span: kryos_errors::Span) -> ast:
         // with no retain while the caller released the result as owned.
         MirType::DynTrait(name) => ast::TypeExpr::DynTrait {
             trait_name: name.clone(),
+            span,
+        },
+        // Likewise a `shared T` binding: as a plain name the instance's param
+        // and return were typed i64, so its `return x` of a borrowed handle took
+        // no reference while the caller released the result as owned.
+        MirType::Shared(inner) => ast::TypeExpr::Shared {
+            inner: Box::new(mir_type_to_type_expr_spanned(inner, span)),
             span,
         },
         other => ast::TypeExpr::Simple {

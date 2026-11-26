@@ -84,6 +84,7 @@ mod imp {
                 DUPLICATE_SAME_ACCESS,
             );
         }
+        crate::arc::note_thread_start();
         let main_thread_usize = main_thread as usize;
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_secs(secs));

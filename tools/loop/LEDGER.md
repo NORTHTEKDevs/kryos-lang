@@ -10287,3 +10287,121 @@ waves stayed on the branch: 4abc3237, 93eb2775, edaefeca, 2adcb631, 9a451e31,
 225e8175, ae044fb8. This commit restores every file except this ledger to
 25af4db3, the last head that passed all three verifiers. The refuted-wave
 entries above stay as history; their items remain open.
+
+## Wave: one ownership rule for `shared` handles -- items 137, 138 and 139 closed on the finish line's entries (2026-11-25, branch closeout/lane-mem)
+
+Replaces the reverted per-consumer wave of 2026-11-24 (entry "shared-ownership REVERTED" above). Built on closeout/lane-mem
+3dadb3a5. Every number below was measured on this tree's release build (`kbuild.sh`, kryos 1.3.0) and, where stated, on the
+master binary (kryos-co-nov).
+
+### Items
+
+Finish line (`finish/run.sh <tree> -j 2 --only ...`), master tree vs this tree:
+
+| entry | master | this tree |
+|---|---|---|
+| 138 `r138.kry` | FAIL aot rc=0xC0000374 (heap corruption) | PASS |
+| 137 `r137_r7_scaled` n=250 | FAIL jit +95.1MB | PASS |
+| 139 `r139b_scaled` n=250000 | FAIL jit +129.8MB | PASS |
+| 137:e1 / 137:e2 | FAIL jit +56.0MB / +56.0MB | PASS / PASS |
+| 137:b19 | FAIL jit +159.3MB | PASS |
+| 137:c2 | FAIL jit +35.4MB | PASS |
+| 137:d3 / 137:b17 | FAIL jit +56.2MB / +56.4MB | PASS / PASS |
+| 137:l06 | FAIL jit +53.5MB | PASS |
+| 137:n26 | FAIL jit +53.3MB | PASS |
+| 137:l12, 139.ctl (controls) | PASS | PASS |
+| 137-perf (binary_trees, release AOT) | peak 1161.3MB (>= 64MB), median 1.466s | peak 37.0MB, median 0.999s = x0.68 of master |
+
+Memory corpus of the reverted wave (`--only '^mem:'`, 389 entries, 0 regressions): master 224 PASS; this tree 379 PASS. The 10 that
+still fail are listed under "Not covered" (4 are defective entries). `A10`-`A19` do not move at all (see below).
+
+### The rule (compiler/crates/kryos-mir/src/shared_own.rs, new)
+
+A handle SLOT owns exactly one reference; every copy retains; every overwrite and every scope exit releases. A slot is a local, a
+struct field, an enum payload, an array element, a map value, a global. The pass runs on the finished module (the driver calls
+`shared_own::own_shared_refs_module` right after lowering; lowering's own unit tests still see lowering's output), deletes
+lowering's per-shape `Drop`/`ArcRetain`/`ArcRelease` of handle locals and derives them again from one table of uses
+(borrow / copy / own / return) and one table of definitions (owned / copied / alias read). An unnamed temporary moves its
+reference at its last owning use; any other handle local releases at overwrite and at every return. Defaults are the leak-safe
+ones. Callees are classified by signature: a callee whose parameter or result is typed `shared` follows the contract (borrows,
+returns an owned reference), one typed otherwise (an erased generic instance, a closure) does not, so the caller retains for it.
+
+What had to change around it (each was a hole the rule exposed, none is a per-consumer patch of handle ownership):
+
+- Reading OUT of a handle. `*h` of a struct / enum / str / array / map is now a COPY that takes its own reference at the read
+  (`lower_shared_deref_owned`); the unnamed temp is released by the ordinary temp drop. `(*h).f` lowers as the auto-deref `h.f`.
+  Round 1 of the reverted wave died on exactly this (`return (*a, 3)` printed 317968 for 314868). A temporary handle that was
+  dereferenced is released at the end of its block (a field read after the deref used to read freed memory).
+- Nothing freed what an arc held. Cranelift got `__kryos_arc_drop_<T>` thunks for structs and enums and registers them at the
+  `arc_alloc`; LLVM already had them for structs and got them for enums. kryos-rt frees a block bounded: nested drops use at most
+  32KB of stack, the rest is queued and drained by the outermost free (a 1,000,000-node list x3 frees on both backends).
+- Performance (owner-approved budget 1.10x of master). The free path itself was the cost (x1.67 at first): arc blocks come from the
+  per-thread pool instead of the system allocator, and retain/release use a plain count while no second thread exists
+  (`note_thread_start()` in spawn.rs, actor.rs, executor.rs, fault.rs flips it before any thread starts; atomic from then on;
+  8 threads x 30000 copies of one handle: 5 runs per backend clean). binary_trees: x0.68 of master, peak 1161MB -> 37MB.
+- Handle types that were erased to i64 now keep their type: `mir_type_to_type_expr` and `mir_type_to_type_expr_spanned` carry
+  `shared T` (a closure / spawn capture, a monomorphized generic instance). Before, a generic instance over a handle typed its
+  param and result i64, so its `return x` took no reference while the caller released the argument and treated the result as owned
+  (a use-after-free: the program lost its output), and a closure that captured a handle did not build on LLVM (a03, a16, b13, d08,
+  d14, n03, n16, b06, b08 of the corpus).
+- Slots outside locals: a store into a handle field, `xs[i] = h`, `G = h` release the old value (pass); an array of handles
+  overwritten (`xs = []`) releases its elements (`kryos_array_typed_release_if_ne` kind 5); a map frees handle values (kind 5);
+  a `spawn` wrapper releases the reference its `Spawn` retained.
+- Generic leaks the verifier shapes combined with handles (each pre-existing, none specific to `shared`):
+  `s.items = push(s.items, v)` (the old and the new value are the same pointer, so both `release_if_ne`s skipped while the read and
+  the receiver retain each took a count: lowered as the bare `push(s.items, v)` statement now; a `[str]` field built this way
+  went 99MB -> 4MB at 100k and 384MB -> 4MB at 400k iterations, master and the old tree identical); a `for` iterable temp was not
+  released by a `return` inside the loop (l06); a fresh temp passed to a user fn inside `try` was never released, on the throw
+  edge either (every call in a try ends the block, which the statement-end temp drop skips; now dropped on both edges of the
+  check), and a callee's owned struct param was not released by `throw` (d3, b17); a bare `None()` temp (type erased to the
+  generic `Option`) was never released on Cranelift (one box per struct literal: 6144 boxes in `tree_drop`); the deep-clone
+  markers are borrowing readers; a `let` statement carrying an `ArcRetain` no longer bails the whole temp drop; a `shared` field
+  read is not a move out of the struct; `match h.o` of an owned Option field no longer marks the param partially moved (139).
+
+### Evidence
+
+- `tests/mem_shared_rule_gate.sh` (new; probe `tests/mem/shared_rule.kry`, 14 modes x 2 backends): this tree PASS (28 rows, arc and
+  box live 0 on every row, exact result lines checked by hand). Master binary (`KRYOS_BIN=kryos-co-nov`): FAIL, the LLVM build of
+  the probe is rejected by clang (a `spawn` capture of a handle); with that mode removed the Cranelift leg prints
+  `KRYOS-FREE-DIAG: double free` on `list_walk` and no report on the others (master has no counters).
+- `tests/mem_balance_gate.sh`: its table pinned the open state (tree_*, list_drop, shared_scalar, match_field non-zero); every row is
+  now 0 0 on both backends (the gate tells the fixer to flip them in the same change) and the gate PASSES (16 rows).
+- Gates on this tree: conformance 120/120 (both backends), no_double_free, type_soundness, backend_divergence_pins, ir_signature,
+  builtin_borrow_mir, minilisp 22/22, concurrency_smoke, stdlib_compile 66/66, run_examples (+ e2e), wasm_differential 66/66,
+  diagnostics, cli_smoke, security_gate, selfhost_wholeprogram, selfhost_regressions, bootstrap 16/16, all `mem_*_gate.sh` except
+  `mem_agg_ops_gate.sh`; memsafety_fuzz 40 programs 0 double free; diff-fuzz gen2 60 programs 0 flagged.
+- Runtime oracle: 1255 repo programs run under `kryos run` and diffed with `rundiff_v2.sh` against the two master baselines: 65
+  changes, 64 are capability diagnostics from the cap waves already on this branch, 1 is `dir_walker` listing the scratch dir. None
+  is memory related, so `closeout_targets.txt` gets no line.
+- Not run, and why: `cargo test` of any crate (the lane rule forbids running cargo; the one unit test that looks at shared lowering,
+  kryos-mir/tests/mir.rs `arc_retain_release_shared`, asserts lowering's own `ArcRetain`, which is why the pass lives in the
+  driver and not in `lower_module`); `mem_agg_ops_gate.sh` (36 minutes alone); `parity`, `fuzz_gate*`, the `check-*.sh` scripts.
+
+### Not covered (executed unless stated)
+
+- A handle held in a TUPLE is never released (`let t = (b.h, 3)`, x_tuple: 1 arc per iteration). A tuple of handles is not an
+  "owned tuple" to lowering or to either backend's tuple drop.
+- Item 139 beyond the entry: an `Option` payload that is a tuple, closure or trait object in a by-value struct param (n139_f,
+  v139_g, v139_tuple leak a box per call on Cranelift; the bind takes no reference and `strip_escaping_tuple_drops` removes the
+  share, the two need designing together), and n139_e, whose leak is a `str` field read inside an `if` condition in a `match` arm
+  (a plain struct param does not leak that, a payload bind does; not traced to its cause).
+- A map slot overwritten by a second `m[k] = h` under the same key keeps the first handle (the free at the map's end is right).
+- A handle in an `@copy` struct (Cranelift's `@copy` literal retains `Shared` fields on its own, so the pass double retains: a leak).
+- `weak`: lowered as a strong handle; no repo program uses it, not executed.
+- Unwinding: a `throw` releases the callee's owned struct params and a try releases its argument temps, but a handle LOCAL assigned
+  before a throw is not released on that path (leak). Async functions keep lowering-time treatment (the pass skips them).
+- `shared x` of an UNSHAREABLE struct/enum (a generic template, an `@copy` payload) from a named source is not shared, and the
+  arc's drop thunk runs for every non-`@copy` type: a double free is possible there. Not executed (no program of the corpus has
+  that shape); the fix is to skip the thunk for such arcs.
+- A10-A19 (non-handle aggregates: `[struct]` reassignment, `pop()` statements, json nodes, globals' aggregates, tuples) are NOT
+  fixed by the rule; each measures the same as master (A10 +72.5MB, A11 +72.5, A12 +83.7, A13 +72.5, A14 +84.0, A15 +72.5, A16 +118.3,
+  A17 +72.5, A18 +282.8, A19 +118.3 at n=250000 -> 1000000, jit). Their `.ctl` controls pass.
+- Defective corpus entries (cannot pass with a correct compiler): `mem:closure/.../v137_uaf` records the output of a use-after-free
+  (`tot 355349` at n=2200; the program's true sum is 2463990, which this tree prints, and master prints another garbage value);
+  `mem:attacks/.../e7f16887/n/n03` asserts `g() == len(name)` where `g` returns `(*t).v` (JIT and AOT agree on this tree: `g 1`);
+  `mem:closure/.../work/n139_a_50` has a `;` in its source. `c06_deref_field_write_then_old_copy` fails on AOT identically on
+  master (an LLVM store through `(*a).name = ..` does not reach the arc).
+- Documents that still describe 137/138/139 as open (CLAUDE.md "OPEN exceptions", docs/claude/FULL-REFERENCE.md, STABILITY.md as
+  the docs lane writes it) were not edited here; the integration step has to reconcile them with this entry.
+
+ITEMS: 137 CLOSED on the finish line's 9 entries, 138 CLOSED, 139 CLOSED on its entry (residual shapes above stay open).
