@@ -10357,3 +10357,30 @@ Files: kryos-lexer/src/{lexer,token}.rs, kryos-parser/src/parser.rs, kryos-error
 Evidence: run.sh --only '^(ASI-nonW0001-tokens)$': master/pre-fix FAIL (stdout=6 7 14), now PASS (3 x W0001). tests/asi_nonw0001_pin.sh: master FAIL (want 3 W0001, got 0), here PASS. tests/diagnostics_gate.sh PASS (existing || - [ ( warn cases, bit-packing and chain no-false-positive cases). `kryos check` over all 1874 tracked .kry files: W0001 count identical to master on every file (no new warnings in the corpus).
 
 Residual / NOT covered: the item's second alternative (each line its own statement) was not implemented -- the merge still happens, only warned. `&` and unary-`-`-style same-indent lines were not changed. A newline-led `+`/`*`/`|` that is indented deeper than its statement is deliberately silent even if the author meant a fresh statement. Same-indent heuristic is by leading space/tab byte count (a tab counts as 1). `kryos fmt` refuses files carrying the new warnings (existing W0001 behavior); not exercised on the new shapes. The LSP/REPL W0001 delivery (A21) is a separate item and still FAILs.
+
+## 2c-hardrule6: CLAUDE.md hard rule #6 claimed annotations are required; the compiler never enforced it
+
+- **Root cause:** doc drift, not a compiler gap. The language infers top-level
+  `let` (`let count = 5` is an `i64`) and unannotated fn params
+  (`fn add(a, b) -> i64 { return a + b }` runs, prints 3), on the master binary
+  and on this tree alike, jit path. Enforcing the rule would reject
+  programs that have always worked (the corpus relies on inference), so the
+  finish-line's "doc or enforce" was resolved on the doc side.
+- **Files:** `CLAUDE.md` and `docs/claude/FULL-REFERENCE.md` (rule #6
+  reworded: annotations optional and house style, but a value-returning fn
+  still needs `-> T`: `fn add(a, b) { return a + b }` gives E0100 "declared to
+  return `void`"). Pin: `tests/hardrule6_doc_pin.sh`.
+- **Evidence both ways:** `KRYOS_DOC_ROOT=<master tree> tests/hardrule6_doc_pin.sh`
+  prints 2x `FAIL ... stale 'annotations required' claim` (rc=1); on this tree
+  `PASS hardrule6_doc_pin`. `run.sh --only '^(2c\-hardrule6)$'` FAIL on master
+  docs, PASS 2c-hardrule6 + 2c-hardrule6.ctl here.
+- **NOT covered:** other stale statements in rule #6's neighbours (rule #8,
+  top-level `let mut` calling functions) were not re-verified; the claim
+  "return type is required" was checked only for a body that returns an i64;
+  struct-field and closure-param annotation requirements were not examined.
+  The pin is a text + one-program check, not a grammar proof. Non-lane items
+  still failing in the same --only sweep (M7, B5, docs-stability-stale,
+  docs-claude-narrow-int, buf_get_byte-sentinel, abort-undefined,
+  import-shadows-builtin, import-struct-reachability, turbofish-struct) were
+  failing before this change and are untouched; `tests/docs_status_gate.sh`
+  also fails (README conformance count 118 vs 120), unrelated to this edit.
