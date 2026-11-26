@@ -4736,7 +4736,7 @@ fn drop_unescaped_str_temps(
                             matches!(i, Instruction::Assign { value: RValue::Call { func: f2, args: a2 }, .. }
                                 if f2 == STRUCT_SHARE_FN && a2.len() == 1 && mentions(&a2[0], *dest))
                         });
-                        let alias_lent_only = ety.is_some_and(|t| matches!(t, MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_)))
+                        let alias_lent_only = ety.is_some_and(|t| matches!(t, MirType::Struct(_) | MirType::Enum(_)))
                             && (dest_shared || ctx.locals.iter().any(|l| l.id == *dest && l.name.is_none()))
                             && (dest_shared || ctx.current_instructions[inst_mark..].iter().all(|i| match i {
                                 Instruction::Assign { dest: d2, value: v2 } => {
@@ -7138,12 +7138,6 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             };
                             let partial_before_rhs = ctx.partial_moved_locals.clone();
                             let mut rvalue = lower_expr_to_rvalue(ctx, value);
-                            // `v = mk()` with `v: (i64, i64)`, `mk() -> (i32, i32)`:
-                            // rebuild at the variable's integer widths.
-                            if let Some(want @ MirType::Tuple(_)) = dest_ty.as_ref() {
-                                let have = infer_expr_type(ctx, value);
-                                rvalue = widen_tuple_rvalue(ctx, rvalue, &have, want);
-                            }
                             // dyn Trait coercion on REASSIGNMENT: `d = Square {
                             // .. }` where `d: dyn Shape` must wrap the concrete
                             // struct in a trait fat-pointer (MakeTraitObject),
@@ -7650,17 +7644,6 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             let map_op = lower_expr_to_operand(ctx, object);
                             let key_op = lower_expr_to_operand(ctx, index);
                             let val_op = lower_expr_to_operand(ctx, value);
-                            // `xs[i] = mk()` / `m[k] = mk()` of a narrow-int tuple
-                            // into a wider tuple element.
-                            let val_op = match &obj_ty {
-                                MirType::Array(et, _) if matches!(**et, MirType::Tuple(_)) => {
-                                    coerce_tuple_int_widths(ctx, val_op, et)
-                                }
-                                MirType::Map { value: vt, .. } if matches!(**vt, MirType::Tuple(_)) => {
-                                    coerce_tuple_int_widths(ctx, val_op, vt)
-                                }
-                                _ => val_op,
-                            };
                             // The container now holds a second reference to a
                             // container VALUE (the runtime stores the raw
                             // pointer; it cannot retain because only the
@@ -8100,7 +8083,7 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             // reassignment case above; struct-literal FIELD INIT
                             // already coerces, reassignment did not).
                             let field_ty = infer_expr_type(ctx, target);
-                            let val_op = coerce_to_slot_if_needed(ctx, val_op, &field_ty, value);
+                            let val_op = coerce_to_dyn_if_needed(ctx, val_op, &field_ty, value);
                             // Overwriting a heap FIELD replaces the stored
                             // handle, and nothing released the previous one:
                             // `r.name = compute()` in a loop leaked a buffer
@@ -14727,56 +14710,9 @@ fn is_int_mir_ty(t: &MirType) -> bool {
 /// or garbage, or an LLVM build error). Rebuild the tuple element by element
 /// with an explicit cast per differing element. Only all-integer tuples of the
 /// same arity are rebuilt; anything else is returned untouched.
-fn int_tuple_compatible(have: &MirType, want: &MirType) -> bool {
-    match (have, want) {
-        (MirType::Tuple(h), MirType::Tuple(w)) => {
-            h.len() == w.len() && h.iter().zip(w.iter()).all(|(a, b)| int_tuple_compatible(a, b))
-        }
-        (h, w) => is_int_mir_ty(h) && is_int_mir_ty(w),
-    }
-}
-
-/// Nested all-integer tuples (`((i32, i32), i64)` into `((i64, i64), i64)`)
-/// are rebuilt recursively; every leaf must be an integer.
 fn tuple_int_widths_differ(have: &MirType, want: &MirType) -> bool {
-    matches!((have, want), (MirType::Tuple(_), MirType::Tuple(_)))
-        && have != want
-        && int_tuple_compatible(have, want)
-}
-
-/// Field-read every element of `src` (of tuple type `have`) and cast / rebuild it
-/// at the width `want` expects; returns the operands of the new tuple.
-fn widened_tuple_ops(
-    ctx: &mut LoweringContext,
-    src: LocalId,
-    have: &MirType,
-    want: &MirType,
-) -> Vec<Operand> {
-    let (MirType::Tuple(h), MirType::Tuple(w)) = (have, want) else { return Vec::new() };
-    let mut ops = Vec::new();
-    for (i, (he, we)) in h.iter().zip(w.iter()).enumerate() {
-        let t = ctx.alloc_temp(he.clone());
-        ctx.emit(Instruction::Assign {
-            dest: t,
-            value: RValue::Field { object: Operand::Local(src), field: i.to_string() },
-        });
-        if he == we {
-            ops.push(Operand::Local(t));
-        } else if matches!(he, MirType::Tuple(_)) {
-            let inner = widened_tuple_ops(ctx, t, he, we);
-            let it = ctx.alloc_temp(we.clone());
-            ctx.emit(Instruction::Assign { dest: it, value: RValue::Tuple(inner) });
-            ops.push(Operand::Local(it));
-        } else {
-            let c = ctx.alloc_temp(we.clone());
-            ctx.emit(Instruction::Assign {
-                dest: c,
-                value: RValue::Cast { operand: Operand::Local(t), ty: we.clone() },
-            });
-            ops.push(Operand::Local(c));
-        }
-    }
-    ops
+    let (MirType::Tuple(h), MirType::Tuple(w)) = (have, want) else { return false };
+    h.len() == w.len() && h != w && h.iter().chain(w.iter()).all(is_int_mir_ty)
 }
 
 fn coerce_tuple_int_widths(
@@ -14798,6 +14734,7 @@ fn coerce_tuple_int_widths_inner(
     target_ty: &MirType,
     as_rvalue: bool,
 ) -> Result<Operand, RValue> {
+    let MirType::Tuple(want) = target_ty else { return Ok(operand) };
     let Operand::Local(src) = &operand else { return Ok(operand) };
     let Some(have_ty) = ctx.locals.iter().find(|l| l.id == *src).map(|l| l.ty.clone()) else {
         return Ok(operand);
@@ -14805,8 +14742,26 @@ fn coerce_tuple_int_widths_inner(
     if !tuple_int_widths_differ(&have_ty, target_ty) {
         return Ok(operand);
     }
+    let MirType::Tuple(have) = have_ty else { return Ok(operand) };
     let src = *src;
-    let ops = widened_tuple_ops(ctx, src, &have_ty, target_ty);
+    let mut ops = Vec::new();
+    for (i, (h, w)) in have.iter().zip(want.iter()).enumerate() {
+        let t = ctx.alloc_temp(h.clone());
+        ctx.emit(Instruction::Assign {
+            dest: t,
+            value: RValue::Field { object: Operand::Local(src), field: i.to_string() },
+        });
+        if h == w {
+            ops.push(Operand::Local(t));
+        } else {
+            let c = ctx.alloc_temp(w.clone());
+            ctx.emit(Instruction::Assign {
+                dest: c,
+                value: RValue::Cast { operand: Operand::Local(t), ty: w.clone() },
+            });
+            ops.push(Operand::Local(c));
+        }
+    }
     // `as_rvalue`: hand the fresh tuple back as a `let` initializer (a `Use` of
     // a temp would be treated as an alias read and shared once too often).
     if as_rvalue {
@@ -14815,35 +14770,6 @@ fn coerce_tuple_int_widths_inner(
     let dst = ctx.alloc_temp(target_ty.clone());
     ctx.emit(Instruction::Assign { dest: dst, value: RValue::Tuple(ops) });
     Ok(Operand::Local(dst))
-}
-
-/// An rvalue about to be stored into a tuple slot `want` (`v = mk()`): when its
-/// own tuple type `have` differs only in integer widths, evaluate it into a temp
-/// and return the fresh rebuilt tuple as the rvalue.
-fn widen_tuple_rvalue(
-    ctx: &mut LoweringContext,
-    rv: RValue,
-    have: &MirType,
-    want: &MirType,
-) -> RValue {
-    if !tuple_int_widths_differ(have, want) {
-        return rv;
-    }
-    let tmp = ctx.alloc_temp(have.clone());
-    ctx.emit(Instruction::Assign { dest: tmp, value: rv });
-    RValue::Tuple(widened_tuple_ops(ctx, tmp, have, want))
-}
-
-/// `coerce_to_dyn_if_needed` plus the tuple integer-width rebuild, for a value
-/// flowing into a slot of type `target_ty` (call argument, struct field, store).
-fn coerce_to_slot_if_needed(
-    ctx: &mut LoweringContext,
-    operand: Operand,
-    target_ty: &MirType,
-    source_expr: &ast::Expr,
-) -> Operand {
-    let operand = coerce_to_dyn_if_needed(ctx, operand, target_ty, source_expr);
-    coerce_tuple_int_widths(ctx, operand, target_ty)
 }
 
 fn lower_expr_to_operand(ctx: &mut LoweringContext, expr: &ast::Expr) -> Operand {
@@ -15838,16 +15764,8 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                         .filter(|_| !shortcut_stale)
                     {
                         let mut mir_args: Vec<Operand> = capture_ops;
-                        let cl_params = visible_local(ctx, &func_name).and_then(|l| match &l.ty {
-                            MirType::Function { params, .. } => Some(params.clone()),
-                            _ => None,
-                        });
-                        for (i, a) in args.iter().enumerate() {
-                            let op = lower_expr_to_operand(ctx, a);
-                            mir_args.push(match cl_params.as_ref().and_then(|p| p.get(i)) {
-                                Some(t @ MirType::Tuple(_)) => coerce_tuple_int_widths(ctx, op, t),
-                                _ => op,
-                            });
+                        for a in args {
+                            mir_args.push(lower_expr_to_operand(ctx, a));
                         }
                         return RValue::Call {
                             func: real_func,
@@ -15857,21 +15775,8 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
 
                     let callee_local = find_local_by_name(ctx, &func_name)
                         .expect("internal: indirect call callee local not found");
-                    let cl_params = ctx.locals.iter().find(|l| l.id == callee_local).and_then(|l| match &l.ty {
-                        MirType::Function { params, .. } => Some(params.clone()),
-                        _ => None,
-                    });
-                    let mir_args: Vec<Operand> = args
-                        .iter()
-                        .enumerate()
-                        .map(|(i, a)| {
-                            let op = lower_expr_to_operand(ctx, a);
-                            match cl_params.as_ref().and_then(|p| p.get(i)) {
-                                Some(t @ MirType::Tuple(_)) => coerce_tuple_int_widths(ctx, op, t),
-                                _ => op,
-                            }
-                        })
-                        .collect();
+                    let mir_args: Vec<Operand> =
+                        args.iter().map(|a| lower_expr_to_operand(ctx, a)).collect();
                     return RValue::CallIndirect {
                         callee: Operand::Local(callee_local),
                         args: mir_args,
@@ -16002,22 +15907,7 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                             }
                         }
                     }
-                    // A tuple argument whose integer widths differ from the
-                    // parameter's (`take((a, b))`, `take(m)` into `(i64, i64)`)
-                    // is rebuilt at the parameter's widths; `push(xs, t)` into
-                    // `[(i64, i64)]` at the element's.
-                    let slot_ty = if func_name == "push" && i == 1 {
-                        match infer_expr_type(ctx, &args[0]) {
-                            MirType::Array(et, _) => Some(*et),
-                            _ => None,
-                        }
-                    } else {
-                        param_types.as_ref().and_then(|p| p.get(i)).cloned()
-                    };
-                    match slot_ty {
-                        Some(t @ MirType::Tuple(_)) => coerce_tuple_int_widths(ctx, operand, &t),
-                        _ => operand,
-                    }
+                    operand
                 })
                 .collect();
             RValue::Call {
@@ -16080,23 +15970,13 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 if ctx.struct_defs.contains_key(name.as_str())
                     || ctx.enum_defs.contains_key(name.as_str())
                 {
+                    let mir_args: Vec<Operand> =
+                        args.iter().map(|a| lower_expr_to_operand(ctx, a)).collect();
                     let func_name = ctx
                         .method_owners
                         .get(&(name.clone(), method.clone()))
                         .cloned()
                         .unwrap_or_else(|| format!("{name}__{method}"));
-                    let param_types = ctx.func_param_types.get(&func_name).cloned();
-                    let mir_args: Vec<Operand> = args
-                        .iter()
-                        .enumerate()
-                        .map(|(i, a)| {
-                            let operand = lower_expr_to_operand(ctx, a);
-                            match param_types.as_ref().and_then(|p| p.get(i)) {
-                                Some(t @ MirType::Tuple(_)) => coerce_tuple_int_widths(ctx, operand, t),
-                                _ => operand,
-                            }
-                        })
-                        .collect();
                     return RValue::Call {
                         func: func_name,
                         args: mir_args,
@@ -16217,7 +16097,7 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                             let operand = lower_expr_to_operand(ctx, a);
                             let operand = match param_tys.get(i) {
                                 Some(target_ty) => {
-                                    coerce_to_slot_if_needed(ctx, operand, target_ty, a)
+                                    coerce_to_dyn_if_needed(ctx, operand, target_ty, a)
                                 }
                                 None => operand,
                             };
@@ -16390,7 +16270,7 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             for (i, a) in args.iter().enumerate() {
                 let operand = lower_expr_to_operand(ctx, a);
                 let operand = match param_types.as_ref().and_then(|p| p.get(i)) {
-                    Some(target_ty) => coerce_to_slot_if_needed(ctx, operand, target_ty, a),
+                    Some(target_ty) => coerce_to_dyn_if_needed(ctx, operand, target_ty, a),
                     None => operand,
                 };
                 mir_args.push(operand);
@@ -16487,7 +16367,7 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 .map(|(i, a)| {
                     let operand = lower_expr_to_operand(ctx, a);
                     match param_types.as_ref().and_then(|p| p.get(i)) {
-                        Some(target_ty) => coerce_to_slot_if_needed(ctx, operand, target_ty, a),
+                        Some(target_ty) => coerce_to_dyn_if_needed(ctx, operand, target_ty, a),
                         None => operand,
                     }
                 })
@@ -16703,7 +16583,7 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                         fs.iter().find(|(fname, _)| fname == n).map(|(_, t)| t.clone())
                     });
                     let op = if let Some(ref fty) = field_ty {
-                        coerce_to_slot_if_needed(ctx, op, fty, e)
+                        coerce_to_dyn_if_needed(ctx, op, fty, e)
                     } else {
                         op
                     };
