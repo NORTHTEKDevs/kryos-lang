@@ -380,6 +380,12 @@ jobs:
         # 1M: every leg over the ceiling. Windows-only -- SKIPs elsewhere.
         run: bash tests/mem_tuple_struct_arr_gate.sh
 
+      - name: Whole-subject match bind memory gate
+        # `match <call> { x => body }` owns the call result like `let x = <call>`
+        # (A19); master at 1M: every non-copy leg over the ceiling. Windows-only --
+        # SKIPs elsewhere.
+        run: bash tests/mem_whole_subject_gate.sh
+
       - name: Throw and closure-capture memory gate
         # A function that `throw`s directly releases the named locals live at
         # the throw; a closure env capturing [[(str, i64)]] releases the

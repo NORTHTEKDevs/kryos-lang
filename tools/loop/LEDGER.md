@@ -11114,3 +11114,50 @@ RESIDUAL (executed, NOT covered)
 - The owned-struct registry is process-global and keyed by struct name: two modules lowered in one process with the same
   struct name and different shareability would share the last published answer (insert / remove per lowering).
 - A19 and the shared-ownership items 137 / 139 are not touched by this change.
+
+## a19 -- a sole whole-subject `match <call> { x => body }` owns the call result (2026-11-26, branch closeout/lane-mem)
+
+ITEM: A19 (`leaks3.kry` whole_subject, jit + aot). Master and this tree before the change: FAIL A19 jit +118.3MB / +118.4MB.
+
+ROOT CAUSE (read in MIR with --emit-mir): `lower_match` wraps a FRESH subject (call) in an owned hidden local only when no arm is a
+whole-subject bind (`owned && !binds_whole`). With `match mkt(i) { x => .. }` the call result went `_3 = call mkt; _5 = _3; _6 = _5`
+and `x` was a borrowed alias of a temporary that nothing owned: no `drop` for any of the three slots, so the tuple (and its str)
+leaked once per match. The same hole applied to a struct, str, array, map or enum call result. This is not a `shared` handle shape
+(the shared-ownership pass of 2026-11-25 does not see it).
+
+FIX (compiler/crates/kryos-mir/src/lower.rs, `lower_match`, one block): a match whose subject is a call and whose ONLY arm is an
+unguarded whole-subject bind (`x` / `mut x`, not an enum variant name) over a non-copy, non-void type lowers as the block
+`{ let x = <call>  <arm body> }`. `x` is then an ordinary owning local, so the scope-end drop, the move out of a tail `x` / `return x`,
+the retain on `outer = x` / `push(keep, x)` / a closure capture, and the break / continue / return edges all use the path every
+`let x = <call>` already uses; nothing about match-specific aliasing is decided per consumer.
+
+FILES: compiler/crates/kryos-mir/src/lower.rs, tests/mem/whole_subject_leak.kry, tests/mem_whole_subject_gate.sh (new, 12 modes x
+JIT + LLVM AOT, 1M iters, ceiling 40MB), tests/conformance/conf_match_whole_subject.kry (new, use-after-free direction),
+tests/no_double_free.sh, .github/workflows/ci.yml.
+
+EVIDENCE (executed, both ways)
+- finish run.sh --only '^(A19|A19\.ctl)$': master binary tree (kryos-co-nov) FAIL A19 jit +118.4MB; this tree before the change FAIL
+  A19 jit +118.3MB; after: PASS A19, PASS A19.ctl (jit and aot legs).
+- tests/mem_whole_subject_gate.sh: master binary (KRYOS_BIN=kryos-co-nov) FAIL on val_tup, ret, escape, push, closure, brk, mut_x
+  (AOT 90-96MB, JIT 182-279MB at 1M iters; tail of the run, the leading legs scrolled); this tree rc 0, every leg 3-4MB.
+- Use-after-free direction: tests/conformance/conf_match_whole_subject.kry (match value of tuple / str / array / struct / enum,
+  field read, nested match, `return x` from the arm, `outer = x`, `push(keep, x)`, a closure capturing x, `x` shadowing an outer
+  `x`, all followed by allocation churn) prints PASS on JIT, Cranelift AOT and LLVM AOT (run_conformance.sh 122/122, both
+  backends) and with KRYOS_FREE_DIAG=1 no diagnostic; tests/no_double_free.sh "all programs clean" with the program added. The
+  program also passes on master (the shape leaked, it did not corrupt), so it pins no-regression, the gate pins the leak.
+- Regression scan: finish run.sh '^(A1[0-9]|A1[0-9]\.ctl|A19|A19\.ctl|leakmode.*|copy-assign-leak.*|137.*|139.*|138.*)$' 52 PASS 0 FAIL;
+  '^mem:' 379 PASS / 10 FAIL, the same 10 that fail on master and before the change (c06, n03, n139_a_50, n139_e, n139_f, v139_g x2,
+  x_tuple, v137_uaf, v139_tuple); mem_balance, mem_shared_rule, mem_field_of_temp, mem_struct_arg, mem_copy_assign,
+  mem_element_read, mem_tuple, mem_tuple_payload, mem_enum_arg, mem_enum_nested, mem_loop, mem_tuple_struct_arr gates PASS;
+  stdlib_compile 66/66. No repo .kry program other than the new ones has this shape, so no closeout_targets.txt line.
+- Not run: `cargo test` (lane rule), the full run.sh, parity / fuzz gates. docs_status_gate reports README "118/118" vs 122 files;
+  it was stale before this change (121 files at A18).
+
+RESIDUAL (executed, NOT covered)
+- A whole-subject arm that is not the ONLY arm (`x if g => .. , y => ..`, or a whole bind after refutable arms) and a whole bind
+  over a field / index read keep the old alias behaviour: the temporary is still not released.
+- Copy and void subjects are untouched (nothing to release).
+- A match whose VALUE is a field read of the bound local (`let s = match mkt(i) { x => x.0 }`) still leaks about 90 B per match;
+  the explicit block `{ let x = mkt(i)  x.0 }` leaks identically on master, so it is the block-tail field-read defect (A17 family),
+  not part of this item. val_str mode exists in the probe and is NOT in the gate.
+- A19 `.ctl` modes and A10-A18 are unchanged by this edit.

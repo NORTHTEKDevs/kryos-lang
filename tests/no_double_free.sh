@@ -467,6 +467,7 @@ no_df_both capture_box_name_scope "$ROOT/tests/conformance/conf_capture_box_name
 no_df_both struct_array_overwrite "$ROOT/tests/mem/adv_struct_array_overwrite.kry"
 no_df_both array_tuple_ownership "$ROOT/tests/conformance/conf_array_tuple_ownership.kry"
 no_df_both array_tuple_struct_ownership "$ROOT/tests/conformance/conf_array_tuple_struct_ownership.kry"
+no_df_both match_whole_subject "$ROOT/tests/conformance/conf_match_whole_subject.kry"
 no_df_both dyn_ownership "$ROOT/tests/conformance/conf_dyn_ownership.kry"
 no_df_both branch_global_ownership "$ROOT/tests/conformance/conf_branch_global_ownership.kry"
 no_df_both mut_global_aggregate "$ROOT/tests/conformance/conf_mut_global_aggregate.kry"

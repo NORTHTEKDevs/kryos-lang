@@ -12455,6 +12455,41 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
         subject,
         ast::Expr::FieldAccess { .. } | ast::Expr::IndexAccess { .. }
     );
+    // A whole-subject bind of a fresh call result is `let x = <call>` over the
+    // arm body: `match mkt(i) { x => body }` bound `x` as an alias of a
+    // temporary nothing owned, so the tuple / struct / str / array leaked once
+    // per match (LEDGER item A19). Lowered as a `let`, `x` is an ordinary owning
+    // local: the scope-end drop, the move-out of a tail / `return x`, and every
+    // consumer of an owned local already apply to it.
+    if fresh && arms.len() == 1 && arms[0].guard.is_none() {
+        if let ast::Pattern::Ident { name, mutable, span: pspan } = &arms[0].pattern {
+            if find_enum_variant(ctx, name).is_none() {
+                let sty = infer_expr_type(ctx, subject);
+                if !is_copy_type(ctx, &sty) && !matches!(sty, MirType::Void) {
+                    let mut stmts = vec![ast::Stmt::Let {
+                        name: name.clone(),
+                        mutable: *mutable,
+                        ty: None,
+                        value: Some(subject.clone()),
+                        pattern: None,
+                        span: pspan.clone(),
+                    }];
+                    match arms[0].body.as_ref() {
+                        ast::Expr::Block { block, .. } => stmts.extend(block.stmts.iter().cloned()),
+                        other => stmts.push(ast::Stmt::Expr {
+                            expr: other.clone(),
+                            span: other.span(),
+                        }),
+                    }
+                    let block = ast::Expr::Block {
+                        block: ast::Block { stmts, span: arms[0].span.clone() },
+                        span: arms[0].span.clone(),
+                    };
+                    return lower_expr_to_operand(ctx, &block);
+                }
+            }
+        }
+    }
     if fresh || retained_read {
         let sty = infer_expr_type(ctx, subject);
         // An enum read out of a struct FIELD (`match h.o { .. }`): the read is a
