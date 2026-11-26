@@ -11027,3 +11027,23 @@ RESIDUAL (executed, NOT covered)
 - A struct / enum / tuple / closure / shared FIELD read off an if / match temporary (an unretained alias into the
   slot): the slot is still not released.
 - A read off an if / match whose branches do not all own a fresh struct (struct_value_owned false): unchanged.
+
+## a17: REOPENED -- fix refuted by verifier
+
+Reverted 1baff207. Verifier findings:
+- Step 1 passes: run.sh -j 2 --only '^(A17)$' printed PASS A17, RESULT: ALL PASS.
+- Step 2 clean: diff touched only lower.rs, the .kry probe, the gate script and LEDGER.md; nothing weakened; kryos-oracle untouched.
+- Step 4 passes: tests/mem_field_of_temp_gate.sh ends "mem-field-of-temp: PASS"; with KRYOS_BIN set to the master binary it prints 34 FAIL lines.
+- Step 3 REFUTES the fix: the rule is still narrow. The same defect (a field read off an if/match temporary) leaks in natural positions the fix does not cover. Peak RSS at 1M iterations, JIT and AOT.
+- Covered shapes (baseline 4-5MB AOT / 34-35MB JIT): function-call argument, string interpolation, .tags[0], for t in match..{}.tags, nested if in an arm, + "z" concat, .t.0 tuple chain, .q.name inside an if condition, named+fresh mixed branch.
+
+Residual shapes (tree vs baseline 4MB; master 230/294MB), all linear leaks:
+- `if i >= 0 && len(match i % 2 { 0 => mkp(i), _ => mkp(i + 1) }.name) > 1 { .. }`: tree AOT 65MB, JIT 69MB.
+- Same read behind `||`: `if i < 0 || len(if .. { mkp(i) } else { mkp(i+1) }.name) > 1`: 65MB AOT / 69MB JIT.
+- `while k < 1 && len(match ..{}.name) > 1 { .. }`: 69MB AOT / 68MB JIT.
+- `elif i >= 0 && len(match ..{}.name) > 1`: 69MB AOT / 67MB JIT.
+- `fn okr(i) -> bool { return i >= 0 && len(if ..{}.name) > 1 }`: 66MB / 66MB; `return i < 0 || len(match ..{}.name) > 1`: 68MB / 67MB.
+- `let v = if len(match ..{mkp..}.name) > 1 { 3 } else { 4 }`: 69MB AOT / 68MB JIT.
+- `match len(if c { mkp(i) } else { mkp(i+1) }.name) { 1 => .. _ => .. }`: 66MB AOT / 68MB JIT (AOT 250k = 21MB, 1M = 65MB, linear).
+- `len(match..{}.name) + len(if..{}.name)` in one statement: 69MB / 68MB (known residual; master 455/583MB).
+- `let q = match i%2 { 0 => mkw(i), _ => mkw(i+1) }.q`: tree 359MB AOT / 551MB JIT, identical to master (known residual).
