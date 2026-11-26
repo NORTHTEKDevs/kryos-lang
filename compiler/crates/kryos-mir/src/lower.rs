@@ -6048,7 +6048,17 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
             span: let_span,
             ..
         } => {
-            let mir_ty = if let Some(t) = ty {
+            // LEDGER item 6: an immutable `let x: any = v` whose concrete type the
+            // checker proved (`resolved_let_types`) takes that type for its slot.
+            let any_refined = match ty {
+                Some(ast::TypeExpr::Simple { name: tn, .. }) if tn == "any" || tn == "Any" => {
+                    ctx.let_types.get(let_span).cloned()
+                }
+                _ => None,
+            };
+            let mir_ty = if let Some(te) = any_refined {
+                ctx.resolve_type(&te)
+            } else if let Some(t) = ty {
                 // A generic function body monomorphized for concrete type args
                 // still carries the RAW generic annotation on its locals
                 // (`let inner: T` / `let inner: Box<T>`) -- resolve_type would

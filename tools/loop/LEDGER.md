@@ -10287,3 +10287,27 @@ waves stayed on the branch: 4abc3237, 93eb2775, edaefeca, 2adcb631, 9a451e31,
 225e8175, ae044fb8. This commit restores every file except this ledger to
 25af4db3, the last head that passed all three verifiers. The refuted-wave
 entries above stay as history; their items remain open.
+
+
+### num lane: finish-line item `6` (`let x: any = "hi"; println(to_string(x))`) -- narrow shape CLOSED (2026-11-25)
+
+Root cause (read, not guessed): `any` resolves to `Type::Error` in the checker
+and `MirType::I64` in `lower_type_expr`; the `let` slot took the ANNOTATION's
+type, so a `str` initializer was stored in an i64 slot. `to_string(_0)` then
+printed the raw pointer on the JIT and the LLVM module failed in clang
+(`'%_0' defined with type 'ptr' but expected 'i64'`).
+Fix: an IMMUTABLE, non-destructuring `let x: any = <v>` whose initializer has a
+concrete non-integer/bool/float type keeps that type for the binding. Checker
+(`kryos-types/src/check.rs`, Stmt::Let) binds the concrete type and records it in
+`resolved_let_types`; MIR (`kryos-mir/src/lower.rs`, Stmt::Let) uses the
+recorded type instead of `i64` when the annotation is `any`/`Any`.
+Pin: tests/conformance/conf_any_let_concrete.kry (master: JIT `CONF FAIL: to_string
+of an any-annotated str literal`, AOT clang error; here: both backends pass).
+Evidence: run.sh --only '^(6|6\.ctl)$' PASS/PASS; conformance 121/121; diagnostics_gate
+and backend_divergence_pins PASS; 98-item `any`/swa-payload family scan: no item
+that passed on master fails here.
+NOT covered (executed, still wrong): `let mut m: any = "s"; to_string(m)` still prints
+the pointer on the JIT (a mut binding can be reassigned to another type, so it keeps
+the erased i64); an `any`-typed fn PARAMETER or `[any]` element holding a str still has
+no tag (the item-6 ABI design note above is unchanged); `let x: any = <int>` is
+unchanged (already i64-shaped). A real tagged `any` remains the only general fix.
