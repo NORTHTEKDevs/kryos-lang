@@ -10968,3 +10968,13 @@ RESIDUAL (executed, still leaking or failing; not claimed)
 - Pre-existing, not changed here: AOT segfault for `os = push(os, wrap_local(i)); os = push(os, None)` on `[Option<(str, i64)>]`
   (master crashes identically at 300k iterations); a str argument temp is never dropped when the same statement contains an
   if-expression (`sink + ok(o, "t{i}", i) + (if .. {0} else {0 - 1})`, ~70B/iter).
+
+## a16: REOPENED -- fix refuted by verifier
+
+Fix d660022c reverted. Verifier findings:
+
+- Check 1 PASSED: A13/A13.ctl/A14/A15/A16/A16.ctl 6 PASS 0 FAIL. Check 2 CLEAN: only codegen.rs, tests/mem/tuple_payload_leak.kry, tests/mem_tuple_payload_gate.sh, LEDGER touched; no oracle changes, no name special-casing. Check 4 CONFIRMED: gate PASS on tree (26 rows 3-4MB); with master binary it fails (AOT 127MB / JIT 248MB, structel 127/185MB, struct_named 127/188MB, enum_struct 127MB AOT).
+- Check 3 FAILED, so refuted. The rule is not general: tuple_payload_needs_deep_drop only matches Struct/Enum/Tuple/Function/Shared elements, and tuple_mentions_type forces the flat release for any tuple naming the enum. Variants still leak at 1M iterations, JIT peak RSS (control 4MB). (a) Array element in payload tuple: Some(([P{name:"p{i}",k:i}], i)) 97MB (master 280MB); Some(([("q{i}", i)], i)) 157MB; same tuples without Option are 4MB. (b) Recursive enum: enum L{Nil,Cons((i64,L))} built as L.Cons((i,L.Cons((i,L.Cons((i,L.Nil)))))) leaks 268MB JIT / 249MB AOT (master 371/249); enum S{Cons((str,S))} 402MB JIT / 368MB AOT (master 555/371); enum L{Cons((P,L))} 3-node 555MB JIT / 432MB AOT (master 647/418); R.Node((R.Node((R.Leaf(i),i)),i)) 146MB both backends. This is the original A16 defect (tuple stored as enum payload), still live on JIT.
+- Not attributable to the fix: standalone (Col.R("c{i}"), i) leaks 189MB JIT / 123MB AOT; Some((Col.R(..),i)) 127MB AOT; Some((Some((P..,i)),i)) and E3.A((Some((P,i)),i)) 184-188MB AOT only; JIT leak 94MB for keep=[o] with o: Option<(P,i64)>; AOT printed no answer for that program on tree and master (pre-existing crash).
+- No regressions or unsoundness found. Correctness variants all printed 1000000, no crash, 4MB on tree vs 177-188MB on master JIT. Refcount-checked deep drop looks sound; weakness is coverage.
+- Residual shapes: JIT let o = Some(([P{name:"p{i}",k:i}], i)) 97MB (array-of-struct element not in tuple_payload_needs_deep_drop); JIT let o = Some(([("q{i}", i)], i)) 157MB (array-of-tuple element).
