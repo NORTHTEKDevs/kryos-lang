@@ -196,7 +196,9 @@ pub extern "C" fn kryos_arc_alloc(size: usize, align: usize) -> *mut u8 {
 /// guard against without a signal handler. The magic check filters out the
 /// common case of static-data pointers.
 unsafe fn is_arc_ptr(ptr: *mut u8) -> bool {
-    if ptr.is_null() {
+    // -1 is the error handle of the `json_*` builtins (`json_parse` of bad
+    // text): a value a handle slot can hold that no block ever has.
+    if ptr.is_null() || ptr as usize == usize::MAX {
         return false;
     }
     let min_align = std::mem::align_of::<ArcHeader>();
@@ -249,6 +251,9 @@ pub extern "C" fn kryos_arc_retain(ptr: *mut u8) {
 
 /// Diag-mode check: does this pointer's header carry the quarantine magic?
 unsafe fn is_freed_arc_ptr(ptr: *mut u8) -> bool {
+    if ptr as usize == usize::MAX {
+        return false;
+    }
     let min_align = std::mem::align_of::<ArcHeader>();
     let candidate = header_from_user_ptr(ptr, min_align);
     std::ptr::read_unaligned(&(*candidate).magic as *const u64) == ARC_FREED_MAGIC

@@ -10652,3 +10652,58 @@ RESIDUAL (not covered, not claimed)
 - A discarded `pop` of a NON-shareable enum (payload with a non-shareable struct) keeps the Void temp: master behavior, the
   box still leaks on AOT. `pop` of `[shared T]` / `[fn]` as a statement (separate defect, the bound form leaks too).
 - A12-A19 are different shapes and untouched.
+
+## A12: `json_*` node table never freed -- closed for node-handle locals (2026-11-26, branch closeout/lane-mem)
+
+Item A12 (`json_string("v{i}")` in a loop, +83.7MB from 250k to 1M iterations on JIT and AOT). It is not a `shared` handle shape, but
+the same ownership rule applies to it once the handle is provable.
+
+Root cause: the builtin JSON API hands out nodes as plain `i64` ids into a process-global `HashMap<i64, Box<JsonNode>>`
+(kryos-stdlib-native json.rs) with no remove path reachable from anywhere (`NodeTable::remove` was dead code). Containers stored child
+ids, so nothing could say when a node was unreachable, and lowering saw an `i64` it owned nothing about.
+
+Fix (one rule, no per-consumer patch):
+- Runtime (json.rs): a node is an arc block (`kryos_arc_alloc`) holding a `JsonNode`; the handle is the block address. A producer
+  returns it with ONE reference; `json_object` / `json_array` take a reference of their own on every child they store (a value that is
+  not a live node is stored as 0); the block's destructor releases the children, so a tree is freed link by link (kryos-rt's bounded
+  drain). `json_get` / `json_get_index` return the child without a reference. A registry of live addresses keeps a stale or foreign
+  integer passed to a `json_*` builtin harmless (reads as "no such node", as with table ids). The parser releases what it built on
+  every error path and frees the key node it only used as a carrier. `http_request` / `https_get` release the nodes they build.
+  kryos-rt arc.rs treats -1 (the `json_parse` error handle) like null in retain/release.
+- Ownership (kryos-mir shared_own.rs, `json_handle_locals`): an `i64` local is taken on as a handle slot only when it is PROVABLY a
+  node handle with no escaping integer copy: every definition is a node producer, a child read, a copy of such a local or the empty
+  handle (0 / -1), and every use lends it to a `json_*` reader, compares it, or copies it to such a local. A child alias that is not
+  tracked pins its parent out. Then the existing rule runs unchanged (an alias read retains, a copy retains, overwrite and function
+  exit release). Releases are `kryos_fn_release_if_ne(h, 0)` calls, retains `kryos_fn_retain`, both already known to every backend
+  (wasm: no-ops). A user fn named like a builtin (std::json `json_string`) is not the builtin.
+- LLVM codegen: a mutable `i64` local is zero-initialised like the heap-typed ones (the function-end release of a handle assigned on
+  one branch only read alloca garbage: AOT segfault of leaks.kry in json_string mode before this).
+
+Files: compiler/crates/kryos-stdlib-native/src/json.rs, bindings.rs, compiler/crates/kryos-rt/src/arc.rs,
+compiler/crates/kryos-mir/src/shared_own.rs, compiler/crates/kryos-codegen-llvm/src/codegen.rs, tests/mem/json_handles.kry,
+tests/mem_json_handle_gate.sh.
+
+Both-ways evidence:
+- Finish line `--only '^(A12|A12\.ctl)$'`: master binary FAIL jit +83.8MB / aot +83.7MB (README row A12); this tree PASS (A12, A12.ctl).
+- tests/mem_json_handle_gate.sh (13 modes x JIT/AOT, KRYOS_ALLOC_STATS=1): this tree PASS 26 rows; the 7 tracked modes (unused,
+  read_chain, copy, child_outlives, error_handle, reassign, cond_def) end with arc live = 0 and print the master compiler's exact
+  result lines. The master binary FAILS the gate (no [alloc-stats] report: it cannot prove the balance). Adversarial probe (throw,
+  early return, closure capture, struct-held child alias, break, copy then overwrite) prints the same sum on master and this tree
+  (17013) on JIT and AOT; partial-failure parses balance (arc allocs=1250 frees=1250).
+- Regression scan, this tree: `--only '^(A1[0-9]|A1[0-9]\.ctl|137.*|138.*|139.*)$'` 24 PASS / 7 FAIL, the seven being A13-A19 exactly as
+  before (same growth numbers), 137-perf x0.615 of master; `--only '^mem:'` 379 PASS / 10 FAIL, the same ten documented failures;
+  gates mem_balance, mem_shared_rule, no_double_free, backend_divergence_pins, builtin_borrow_mir, type_soundness, jit_symbols,
+  mem_pop_stmt, mem_tuple, mem_struct_array_overwrite, mem_enum_array_push, run_examples, stdlib_compile 66/66, minilisp 22/22,
+  selfhost_wholeprogram, wasm_differential 66/66, concurrency_smoke, ecosystem_check 259/259, conformance 120/120: PASS.
+  json_roundtrip, json_nested_bug, test_tracked_generic output identical to master (JIT and AOT).
+
+RESIDUAL (not covered, not claimed)
+- A node handle that ESCAPES is still leaked (safe, as on master): passed to a user function, returned, stored in a struct field,
+  array literal, tuple, map or closure capture, interpolated, used in arithmetic. In particular the children handed to `json_array([..])`
+  / `json_object([..], [..])` as array-literal elements (tests/mem/json_handles.kry modes `build`, `shared_child`, `escape_*`: live
+  = iterations). Not covered: the container then keeps the only reference, and the escaped local is never released.
+- Handles from `http_request` / `https_get` results held in locals (not a producer the pass knows) and any handle that comes in as a
+  parameter are untracked.
+- The wasm backend has its own host-side json handles; unchanged and not executed beyond wasm_differential 66/66.
+- A garbage integer passed to a `json_*` call reads as "no such node"; retain / release of a non-node address is guarded only for 0 and -1.
+- A13-A19 are different shapes and untouched.

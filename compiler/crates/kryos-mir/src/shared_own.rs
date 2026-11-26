@@ -139,6 +139,215 @@ impl Sig {
     }
 }
 
+// ---------------------------------------------------------------------------
+// `json_*` node handles (LEDGER item A12)
+// ---------------------------------------------------------------------------
+//
+// The builtin JSON API hands out nodes as plain `i64` handles. A node is an arc
+// block in the runtime (kryos-stdlib-native `json.rs`): a producer returns a
+// block with ONE reference, a container (`json_object` / `json_array`) takes a
+// reference of its own on every child it stores and releases them when it goes,
+// `json_get` / `json_get_index` return the child WITHOUT a reference (an
+// alias). The handle's static type is `i64`, so nothing in lowering knew it
+// owned anything and every node was leaked (+83.7MB per 750k `json_string`).
+//
+// The rule above applies to such a handle local unchanged: it owns one
+// reference, a copy retains, an overwrite and the function's end release, an
+// alias read retains. Because the type is a plain integer the pass only takes
+// a local on when it can PROVE the integer is a node handle and that no
+// integer copy of it escapes: every definition is a node producer / child read
+// / a copy of another such local / the empty handle (0, -1), and every use
+// lends it to a `json_*` reader, compares it, or copies it to another such
+// local. Any other use (an argument of a user function, a struct / array /
+// closure slot, a `return`, string interpolation, arithmetic) leaves the local
+// out and the node is leaked, as before: a missed release is a leak, a missed
+// retain would be a use-after-free. A parent whose child alias escapes is left
+// out too, because the child is only valid while a reference to the parent (or
+// to the child itself) is held.
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum JsonFn {
+    /// Returns a fresh node with one reference.
+    Producer,
+    /// Returns a child of argument 0 (no reference taken).
+    ChildRead,
+    /// Reads argument 0 and returns a scalar or a string.
+    Reader,
+    No,
+}
+
+const JSON_PRODUCERS: &[&str] =
+    &["json_parse", "json_string", "json_object", "json_array", "json_number", "json_bool", "json_null"];
+const JSON_CHILD_READS: &[&str] = &["json_get", "json_get_index"];
+const JSON_READERS: &[&str] = &[
+    "json_stringify",
+    "json_to_str",
+    "json_to_int",
+    "json_to_float",
+    "json_is_null",
+    "json_length",
+    "json_type",
+];
+
+/// The builtin a call names; a user function of the same name (std::json
+/// `json_string(v) -> JsonValue`) is not the builtin.
+fn json_kind(func: &str, callees: &Callees) -> JsonFn {
+    if callees.fns.contains_key(func) {
+        return JsonFn::No;
+    }
+    if JSON_PRODUCERS.contains(&func) {
+        JsonFn::Producer
+    } else if JSON_CHILD_READS.contains(&func) {
+        JsonFn::ChildRead
+    } else if JSON_READERS.contains(&func) {
+        JsonFn::Reader
+    } else {
+        JsonFn::No
+    }
+}
+
+/// The `i64` locals of `func` that provably hold `json_*` node handles with no
+/// escaping integer copy (see above). Fixpoint: dropping a local can drop
+/// others.
+fn json_handle_locals(func: &MirFunction, callees: &Callees, addr_taken: &HashSet<u32>) -> HashSet<u32> {
+    let param_ids: HashSet<u32> = func.params.iter().map(|p| p.local.0).collect();
+    let mut cand: HashSet<u32> = func
+        .locals
+        .iter()
+        .filter(|l| l.ty == MirType::I64)
+        .filter(|l| !param_ids.contains(&l.id.0) && !addr_taken.contains(&l.id.0))
+        .filter(|l| !l.name.as_deref().is_some_and(|n| n.starts_with("__capbox_")))
+        .map(|l| l.id.0)
+        .collect();
+    // Only code that calls a json builtin can have a handle.
+    let mentions_json = func.blocks.iter().any(|b| {
+        b.instructions.iter().any(|i| match i {
+            Instruction::Assign { value: RValue::Call { func: f, .. }, .. } => {
+                json_kind(f, callees) != JsonFn::No
+            }
+            _ => false,
+        })
+    });
+    if !mentions_json || cand.is_empty() {
+        return HashSet::new();
+    }
+    let is_empty_handle = |v: &RValue| match v {
+        RValue::ConstInt(0) | RValue::ConstInt(-1) => true,
+        RValue::Use(Operand::Constant(Constant::Int(0))) | RValue::Use(Operand::Constant(Constant::Int(-1))) => true,
+        _ => false,
+    };
+    // Definitions: every one must be a producer, a child read, a copy, or an
+    // empty handle; a local with no definition is out.
+    let mut has_def: HashSet<u32> = HashSet::new();
+    for b in &func.blocks {
+        for inst in &b.instructions {
+            match inst {
+                Instruction::Assign { dest, value } if cand.contains(&dest.0) => {
+                    let ok = match value {
+                        RValue::Call { func: f, .. } => {
+                            matches!(json_kind(f, callees), JsonFn::Producer | JsonFn::ChildRead)
+                        }
+                        RValue::Use(Operand::Local(_)) => true,
+                        v => is_empty_handle(v),
+                    };
+                    if ok {
+                        has_def.insert(dest.0);
+                    } else {
+                        cand.remove(&dest.0);
+                    }
+                }
+                Instruction::Receive { dest, .. }
+                | Instruction::ActorStateLoad { dest, .. }
+                | Instruction::ActorSpawn { dest, .. } => {
+                    cand.remove(&dest.0);
+                }
+                _ => {}
+            }
+        }
+    }
+    cand.retain(|l| has_def.contains(l));
+    let no_fn_locals: HashMap<u32, Sig> = HashMap::new();
+    loop {
+        let before = cand.len();
+        let mut drop_set: Vec<u32> = Vec::new();
+        for b in &func.blocks {
+            for inst in &b.instructions {
+                if let Instruction::Assign { dest, value } = inst {
+                    // A copy's source must be a node handle too (a plain integer
+                    // would be retained as if it were an arc).
+                    if cand.contains(&dest.0) {
+                        if let RValue::Use(Operand::Local(src)) = value {
+                            if !cand.contains(&src.0) {
+                                drop_set.push(dest.0);
+                            }
+                        }
+                    }
+                    // A child alias that is not tracked pins its parent out.
+                    if let RValue::Call { func: f, args } = value {
+                        if json_kind(f, callees) == JsonFn::ChildRead && !cand.contains(&dest.0) {
+                            if let Some(Operand::Local(p)) = args.first() {
+                                drop_set.push(p.0);
+                            }
+                        }
+                    }
+                }
+                let uses = inst_uses(inst, &cand, callees, &no_fn_locals);
+                if uses.is_empty() {
+                    continue;
+                }
+                match inst {
+                    Instruction::Assign { value: RValue::Call { func: f, args }, .. }
+                        if matches!(json_kind(f, callees), JsonFn::Reader | JsonFn::ChildRead) =>
+                    {
+                        for (i, a) in args.iter().enumerate() {
+                            if i > 0 {
+                                if let Operand::Local(l) = a {
+                                    drop_set.push(l.0);
+                                }
+                            }
+                        }
+                    }
+                    Instruction::Assign {
+                        value:
+                            RValue::BinOp {
+                                op:
+                                    MirBinOp::Eq
+                                    | MirBinOp::Neq
+                                    | MirBinOp::Lt
+                                    | MirBinOp::Gt
+                                    | MirBinOp::LtEq
+                                    | MirBinOp::GtEq,
+                                ..
+                            },
+                        ..
+                    } => {}
+                    Instruction::Assign { dest, value: RValue::Use(Operand::Local(_)) } if cand.contains(&dest.0) => {}
+                    _ => drop_set.extend(uses.iter().map(|(l, _)| *l)),
+                }
+            }
+            let mut term_ops: Vec<&Operand> = Vec::new();
+            match &b.terminator {
+                Terminator::Return(Some(o)) => term_ops.push(o),
+                Terminator::Branch { cond, .. } => term_ops.push(cond),
+                Terminator::Switch { value, .. } => term_ops.push(value),
+                _ => {}
+            }
+            for o in term_ops {
+                if let Operand::Local(l) = o {
+                    drop_set.push(l.0);
+                }
+            }
+        }
+        for l in drop_set {
+            cand.remove(&l);
+        }
+        if cand.len() == before {
+            break;
+        }
+    }
+    cand
+}
+
 /// Every use of a handle local by `inst`, one entry per operand position.
 fn inst_uses(
     inst: &Instruction,
@@ -155,6 +364,15 @@ fn inst_uses(
     match inst {
         Instruction::Assign { value, .. } => match value {
             RValue::Use(op) => push(op, Use::Copy),
+            RValue::Call { func, args }
+                if matches!(json_kind(func, callees), JsonFn::Reader | JsonFn::ChildRead) =>
+            {
+                // A `json_*` reader lends its node argument; nothing else it
+                // is given is a handle.
+                for (i, a) in args.iter().enumerate() {
+                    push(a, if i == 0 { Use::Borrow } else { Use::Own });
+                }
+            }
             RValue::Call { func, args } => {
                 // A user function BORROWS its handle parameters (a callee that
                 // keeps one takes its own reference). Anything else (`push`, the
@@ -331,6 +549,8 @@ fn inst_def(
                     },
                     _ => DefKind::Owned,
                 },
+                // A `json_*` constructor returns a fresh node with one reference.
+                RValue::Call { func, .. } if json_kind(func, callees) == JsonFn::Producer => DefKind::Owned,
                 // A user function typed to return a handle returns an owned
                 // reference (its own `return` retains a borrowed handle).
                 RValue::Call { func, .. }
@@ -526,6 +746,27 @@ fn release_overwritten_fields(
     func.locals.extend(new_locals);
 }
 
+/// The release of the reference a handle local owns: a `Drop` for a `shared`
+/// local (type-directed), the guarded runtime release for a `json_*` node
+/// handle, whose static type is a plain `i64` (the call is the same one the
+/// element-overwrite rule uses, so every backend already knows it; 0 and -1 are
+/// no-ops).
+fn release_inst(l: LocalId, json_ids: &HashSet<u32>, next_local: &mut u32, new_locals: &mut Vec<MirLocal>) -> Instruction {
+    if !json_ids.contains(&l.0) {
+        return Instruction::Drop { local: l };
+    }
+    let sink = LocalId(*next_local);
+    *next_local += 1;
+    new_locals.push(MirLocal { id: sink, name: None, ty: MirType::I64, mutable: false });
+    Instruction::Assign {
+        dest: sink,
+        value: RValue::Call {
+            func: "kryos_fn_release_if_ne".to_string(),
+            args: vec![Operand::Local(l), Operand::Constant(Constant::Int(0))],
+        },
+    }
+}
+
 #[derive(Default)]
 struct Edits {
     /// Instructions to delete (lowering's own drops / retains of handles).
@@ -573,7 +814,7 @@ fn own_shared_refs_in(func: &mut MirFunction, callees: &Callees) {
     }
     // Every local of a shared type, except closure capture boxes (balanced by
     // lowering and the closure env) and address-taken ones.
-    let ids: HashSet<u32> = func
+    let shared_ids: HashSet<u32> = func
         .locals
         .iter()
         .filter(|l| matches!(l.ty, MirType::Shared(_)))
@@ -581,6 +822,8 @@ fn own_shared_refs_in(func: &mut MirFunction, callees: &Callees) {
         .filter(|l| !addr_taken.contains(&l.id.0))
         .map(|l| l.id.0)
         .collect();
+    let json_ids = json_handle_locals(func, callees, &addr_taken);
+    let ids: HashSet<u32> = shared_ids.union(&json_ids).copied().collect();
     if ids.is_empty() {
         return;
     }
@@ -892,7 +1135,7 @@ fn own_shared_refs_in(func: &mut MirFunction, callees: &Callees) {
             if temp_dest.is_none() {
                 if let Some(ls) = e.release_before.get(&ii) {
                     for l in ls {
-                        out.push(Instruction::Drop { local: LocalId(*l) });
+                        out.push(release_inst(LocalId(*l), &json_ids, &mut next_local, &mut new_locals));
                     }
                 }
                 out.push(inst);
@@ -915,7 +1158,7 @@ fn own_shared_refs_in(func: &mut MirFunction, callees: &Callees) {
                         let sink = fresh_sink(&mut next_local, &mut new_locals);
                         out.push(retain_inst(tmp.0, sink));
                     }
-                    out.push(Instruction::Drop { local: dest });
+                    out.push(release_inst(dest, &json_ids, &mut next_local, &mut new_locals));
                     out.push(Instruction::Assign {
                         dest,
                         value: RValue::Use(Operand::Local(tmp)),
@@ -936,7 +1179,7 @@ fn own_shared_refs_in(func: &mut MirFunction, callees: &Callees) {
                 }
                 if let Some(ls) = after_releases {
                     for l in ls {
-                        out.push(Instruction::Drop { local: LocalId(*l) });
+                        out.push(release_inst(LocalId(*l), &json_ids, &mut next_local, &mut new_locals));
                     }
                 }
             }
@@ -946,7 +1189,7 @@ fn own_shared_refs_in(func: &mut MirFunction, callees: &Callees) {
             out.push(retain_inst(*l, sink));
         }
         for l in &e.release_at_term {
-            out.push(Instruction::Drop { local: LocalId(*l) });
+            out.push(release_inst(LocalId(*l), &json_ids, &mut next_local, &mut new_locals));
         }
         func.blocks[bi].instructions = out;
     }

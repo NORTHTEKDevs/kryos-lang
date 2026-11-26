@@ -1,0 +1,113 @@
+// Balance probe for the ownership of `json_*` node handles (LEDGER item A12).
+// A node is an arc block in the runtime; its handle is a plain `i64`. The
+// ownership pass (kryos-mir shared_own.rs, `json_handle_locals`) takes a local
+// on when it can prove it holds a node handle and no integer copy escapes:
+// each tracked mode below must end with every arc block released
+// (tests/mem_json_handle_gate.sh reads KRYOS_ALLOC_STATS=1) AND print the exact
+// result line (a use-after-free prints garbage or aborts). The `escape_*`
+// modes hand the handle to something the pass does not model (a user function,
+// a struct field, an array, a return value): they must still print the exact
+// result, and are allowed to leak (never to over-release).
+// Modes (LEAK_MODE):
+//   unused         `let n = json_string(..)` never read (the A12 shape)
+//   read_chain     parse, then get / get_index / to_int / to_str / stringify
+//   copy           `let b = a`; both read
+//   child_outlives a child alias read out of an inner scope after its parent
+//                  local went out of use
+//   error_handle   json_parse of bad text (-1), json_get of a missing key (0)
+//   reassign       `h = json_parse(..)` over a live handle in a loop
+//   cond_def       a handle assigned on one branch only
+//   shared_child   one child node stored in two containers
+//   build          json_object / json_array built from node locals, then read
+//   escape_fn      handle passed to a user function
+//   escape_ret     handle returned from a user function
+//   escape_field   handle stored in a struct field
+//   escape_array   handle stored in an array literal
+use std::option::{Option}
+
+struct Holder { h: i64, k: i64 }
+
+fn rd(h: i64) -> i64 { return json_to_int(h) }
+fn mk(i: i64) -> i64 { return json_number(i as f64) }
+
+@capabilities(process)
+fn main() {
+    let iters = parse_int(env_get("LEAK_ITERS"))
+    let mode = env_get("LEAK_MODE")
+    let mut sink = 0
+    let mut i = 0
+    while i < iters {
+        if mode == "unused" {
+            let n = json_string("v{i}")
+            sink = sink + 1
+        } elif mode == "read_chain" {
+            let d = json_parse("\{\"a\":\{\"b\":[1,2,\{\"c\":\"x{i}\"\}]\}\}")
+            let b = json_get(json_get(d, "a"), "b")
+            let two = json_to_int(json_get_index(b, 1))
+            let c = json_to_str(json_get(json_get_index(b, 2), "c"))
+            sink = sink + two + len(c) + len(json_stringify(d))
+        } elif mode == "copy" {
+            let a = json_parse("[{i}, 5]")
+            let b = a
+            sink = sink + json_to_int(json_get_index(a, 0)) + json_to_int(json_get_index(b, 1)) + json_length(b)
+        } elif mode == "child_outlives" {
+            let mut c = 0
+            if i >= 0 {
+                let p = json_parse("\{\"k\":[{i}, 7]\}")
+                c = json_get(p, "k")
+            }
+            sink = sink + json_to_int(json_get_index(c, 0)) + json_to_int(json_get_index(c, 1))
+        } elif mode == "error_handle" {
+            let h = json_parse("\{bad")
+            let z = json_get(0, "x")
+            let y = json_get_index(h, 0)
+            if h == -1 {
+                sink = sink + 1
+            }
+            if json_is_null(z) {
+                sink = sink + 1
+            }
+            if json_is_null(y) {
+                sink = sink + 1
+            }
+        } elif mode == "reassign" {
+            let mut h = json_parse("[{i}]")
+            h = json_parse("[{i}, 1]")
+            h = json_parse("[{i}, 1, 2]")
+            sink = sink + json_length(h)
+        } elif mode == "cond_def" {
+            let mut h = 0
+            if i % 2 == 0 {
+                h = json_number(3.0)
+            }
+            if i % 3 == 0 {
+                h = json_parse("[1, 2]")
+            }
+            sink = sink + json_to_int(h) + json_length(h)
+        } elif mode == "shared_child" {
+            let k = json_string("shared{i}")
+            let a = json_array([k])
+            let b = json_array([k, k])
+            sink = sink + len(json_stringify(a)) + len(json_stringify(b))
+        } elif mode == "build" {
+            let o = json_object(["a", "b"], [json_number(1.0), json_array([json_number(i as f64)])])
+            sink = sink + len(json_stringify(o)) + json_length(o)
+        } elif mode == "escape_fn" {
+            let n = json_number(4.0)
+            sink = sink + rd(n)
+        } elif mode == "escape_ret" {
+            let n = mk(i)
+            sink = sink + json_to_int(n)
+        } elif mode == "escape_field" {
+            let n = json_number(5.0)
+            let hd = Holder { h: n, k: 1 }
+            sink = sink + json_to_int(hd.h) + hd.k
+        } elif mode == "escape_array" {
+            let n = json_number(6.0)
+            let xs = [n, n]
+            sink = sink + json_to_int(xs[1])
+        }
+        i = i + 1
+    }
+    println("mode {mode} sum {sink}")
+}

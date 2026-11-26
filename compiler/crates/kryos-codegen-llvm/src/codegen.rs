@@ -3735,6 +3735,10 @@ impl LlvmCodegen {
                     // pointer, 0 for i64, and all-zero for an aggregate enum/
                     // struct slot (`{ i64, i64 }`), where `store ... null`
                     // would be invalid IR.
+                    // An `i64` slot too: a `json_*` node handle lives in a plain
+                    // `i64` local, and the ownership pass releases it at the
+                    // function's end whether or not a branch ever assigned it
+                    // (0 releases nothing).
                     match &local.ty {
                         MirType::Str
                         | MirType::Array(..)
@@ -3743,6 +3747,7 @@ impl LlvmCodegen {
                         | MirType::Struct(_)
                         | MirType::Ptr(_)
                         | MirType::Shared(_)
+                        | MirType::I64
                         | MirType::Function { .. } => {
                             self.emit_line(&format!(
                                 "  store {ty} zeroinitializer, ptr %_{}.addr",
