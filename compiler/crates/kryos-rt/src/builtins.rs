@@ -768,6 +768,32 @@ pub extern "C" fn kryos_builtin_contains(haystack: i64, needle: i64) -> i64 {
     if haystack == 0 || needle == 0 {
         return 0;
     }
+    // An `any` parameter has no runtime tag, so `contains(a, "x")` with `a: any`
+    // reaches this STRING entry even when the handle is a `[str]` (reading the
+    // array header as a KryosString segfaulted). The two headers differ at byte
+    // 16: a KryosString holds its `data` pointer there (always a real address,
+    // static or heap), a KryosArray holds `elem_size` (a small constant). A
+    // small word there means an array header: test membership by content.
+    // Elements below the same bound cannot be string handles (an int array
+    // asked for a str needle) and never match.
+    const MIN_PTR: i64 = 0x10000;
+    unsafe {
+        let word16 = *((haystack as *const i64).add(2));
+        if word16 < MIN_PTR {
+            let arr = haystack as *const crate::array::KryosArray;
+            let data = (*arr).data as *const i64;
+            let ks_n = needle as *const crate::string::KryosString;
+            for i in 0..(*arr).len.max(0) as usize {
+                let el = *data.add(i);
+                if el >= MIN_PTR
+                    && crate::string::kryos_string_eq(el as *const crate::string::KryosString, ks_n)
+                {
+                    return 1;
+                }
+            }
+            return 0;
+        }
+    }
     let ks_h = haystack as *const crate::string::KryosString;
     let ks_n = needle as *const crate::string::KryosString;
     unsafe { crate::string::kryos_string_contains(ks_h, ks_n) }

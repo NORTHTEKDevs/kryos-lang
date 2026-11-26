@@ -10287,3 +10287,12 @@ waves stayed on the branch: 4abc3237, 93eb2775, edaefeca, 2adcb631, 9a451e31,
 225e8175, ae044fb8. This commit restores every file except this ledger to
 25af4db3, the last head that passed all three verifiers. The refuted-wave
 entries above stay as history; their items remain open.
+
+## closeout/lane-crash: A7 -- `contains(a, "s")` with `a: any` holding a `[str]` segfaulted (rc 139 / 0xC0000005) -- FIXED
+
+- Item: finish-line A7 (`inv/A7/a7_c8.kry`: `fn has(a: any, v: str) -> bool { return contains(a, v) }`, called with `["x", "y"]`).
+- Root cause: an `any` param is `Type::Error` with no runtime tag. `check_contains_shape` (kryos-types) deliberately accepts an opaque first argument with a str needle (it must keep `has("axb", "x")` working, pinned as `contains_any_param_str`), so MIR lowers to the STRING `kryos_builtin_contains`, which read the array header as a `KryosString` -> segfault on JIT and AOT. Rejecting it was not possible without breaking that pinned str shape.
+- Fix: `kryos_builtin_contains` (kryos-rt/src/builtins.rs) now tells the two headers apart at byte 16: a KryosString stores its `data` pointer there (always a real address, static or heap), a KryosArray stores `elem_size` (a small constant). A word below 0x10000 means an array header, and membership is tested by content (`kryos_string_eq` per element; elements below 0x10000 cannot be string handles and never match). One runtime function, so both backends and every path that routes an untyped first argument to the string entry are covered.
+- Files: compiler/crates/kryos-rt/src/builtins.rs, tests/type_soundness.sh (`contains_any_param_str_array`), tests/conformance/conf_array_contains.kry (`has_any` block).
+- Evidence: master `kryos.exe run a7_c8.kry` -> Segmentation fault rc=139; this build -> `true`. `run.sh --only '^(A7)$'`: FAIL on the pre-fix build (rc=0xC0000005), PASS after. `type_soundness.sh` with master: `BREAK contains_any_param_str_array`; with this build: that probe passes. `conf_array_contains.kry` master rc=139, here PASS (jit and `build --release`).
+- NOT covered: an `any` holding a `[i64]` / `[f64]` with a str needle is still an unrejectable user type error (no tag); small-int elements are skipped, large ints are read as string handles. An `any` holding a `map<str, V>` with a str needle still takes the string path (map header is not sniffed). `type_soundness.sh` had one flaky probe (`bare_variant_tuple_pattern_not_a_dup`) on the first run that passed on re-run.

@@ -11,6 +11,8 @@
 
 struct Box1 { names: [str], ids: [i64] }
 
+fn has_any(a: any, v: str) -> bool { return contains(a, v) }
+
 fn expect(cond: bool, what: str) {
     if not cond {
         println("CONF FAIL: {what}")
@@ -192,5 +194,11 @@ fn main() {
         i = i + 1
     }
     expect(hits == 50, "200 rounds, 50 hits, got {hits}")
+    // A7: an `any` parameter has no runtime tag, so a `[str]` passed through it
+    // reached the STRING contains (array header read as a KryosString: rc 139).
+    let anyarr = ["x", "y"]
+    let anystr = "axb"
+    expect(has_any(anyarr, "y") and not has_any(anyarr, "z"), "any holding [str]")
+    expect(has_any(anystr, "x") and not has_any(anystr, "q"), "any holding str")
     println("PASS")
 }
