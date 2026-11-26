@@ -10315,3 +10315,33 @@ Not covered: `kryos run` killed by a signal / hard-killed leaves its
 `kryos_run_*` directory behind (no destructor runs); `kryos build` default output
 path and other temp users (eval, test, LLVM AOT already uses unique stems) were
 not changed or probed for same-name collisions.
+
+## CI-WIN-1 - WALL (oracle expectation contradicts the program; compiler side already fixed)
+
+Item: finish/run.sh `CI-WIN-1` builds the tree's kryos-rt + kryos-stdlib-native with
+rustc 1.100, links `inv/CI-WIN-1/actor_basic.kry` via `kryos build --release` with
+KRYOS_STDLIB_NATIVE_LIB/KRYOS_RT_LIB, runs it, and requires stdout exactly
+`total: 5\ntotal: 15\nlog: hello\n`.
+
+Root cause of the original red (LNK2019 `__imp_WaitOnAddress` / `WakeByAddressAll`):
+rustc 1.100 std needs synchronization.lib on the Windows link line. Already fixed in
+this branch's history by 60071762 (kryos-driver runtime.rs adds `synchronization`;
+unit test pins it). Master binary lacks it: executed with the same two .lib files,
+master `kryos build` -> LNK2019 x3 and no exe; this build links and runs.
+
+Why the item still FAILs here: `actor_basic.kry` sends four messages (add 5, add 10,
+note, sub 3) and prints four lines, the last being `total: 12`. Its own header says
+`expect-stdout: total: 12`. The oracle's `expect.stdout` has only the first three
+lines. Executed evidence: this build's exe, the inventory's own known-good
+kryos-inventory/ci-win-1/actor_100_fix.exe and actor_95.exe all print the 4 lines
+(rc=0). The oracle's accept_runs (20261125-131039, 145627) and integ_run0.txt show the
+identical `stdout=...total: 12\n want ...log: hello\n` failure. The only way to emit 3
+lines is to drop the last queued message at main exit, i.e. break the graceful-drain
+guarantee that the actor_basic test and docs assert. Not done: that would be an unsound
+change made to satisfy a wrong expectation, and the oracle (read-only) must be fixed
+to expect `total: 12\n`.
+
+No source change, no pin test (a pin would pass on master only for the link half, which
+60071762 already pins). Residual: once the oracle expects 4 lines the item should PASS
+(link + run verified by hand above); not executed through run.sh because that expectation
+cannot be edited from this lane.
