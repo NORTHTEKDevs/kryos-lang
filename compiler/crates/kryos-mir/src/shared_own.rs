@@ -123,6 +123,10 @@ fn handle(ids: &HashSet<u32>, op: &Operand) -> Option<u32> {
 struct Sig {
     handle_params: Vec<bool>,
     handle_ret: bool,
+    /// `json_*` (LEDGER A12): the function returns an owned node handle (or 0 / -1).
+    json_ret: bool,
+    /// `json_*`: parameter `i` is only lent, never kept (see `JsonFacts`).
+    json_borrow: Vec<bool>,
 }
 
 /// The callees the pass knows by name: user functions that are not async.
@@ -135,6 +139,8 @@ impl Sig {
         Sig {
             handle_params: params.iter().map(|p| matches!(p, MirType::Shared(_))).collect(),
             handle_ret: matches!(ret, MirType::Shared(_)),
+            json_ret: false,
+            json_borrow: vec![false; params.len()],
         }
     }
 }
@@ -156,14 +162,23 @@ impl Sig {
 // alias read retains. Because the type is a plain integer the pass only takes
 // a local on when it can PROVE the integer is a node handle and that no
 // integer copy of it escapes: every definition is a node producer / child read
-// / a copy of another such local / the empty handle (0, -1), and every use
-// lends it to a `json_*` reader, compares it, or copies it to another such
-// local. Any other use (an argument of a user function, a struct / array /
-// closure slot, a `return`, string interpolation, arithmetic) leaves the local
-// out and the node is leaked, as before: a missed release is a leak, a missed
-// retain would be a use-after-free. A parent whose child alias escapes is left
-// out too, because the child is only valid while a reference to the parent (or
-// to the child itself) is held.
+// / a copy of another such local / the empty handle (0, -1) / the result of a
+// user function that provably returns an owned handle, and every use lends it
+// to a `json_*` reader, compares it, copies it to another such local, lends it
+// to a user function parameter that is itself only lent, is an element of the
+// child list of a `json_array` / `json_object` call, or is `return`ed (the
+// reference moves to the caller). Any other use (a struct / array / closure
+// slot, string interpolation, arithmetic, a parameter that is kept) leaves the
+// local out and the node is leaked, as before: a missed release is a leak, a
+// missed retain would be a use-after-free. A parent whose child alias escapes
+// is left out too, because the child is only valid while a reference to the
+// parent (or to the child itself) is held.
+//
+// Two facts about a whole function are computed by a module-wide greatest
+// fixpoint (`json_sig_fixpoint`): whether it returns an owned handle (every
+// `return` is a tracked local or 0 / -1), and which `i64` parameters it only
+// lends (never kept, copied, returned or stored, and no untracked child alias
+// of it escapes). Both only ever shrink, so a cycle of functions terminates.
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum JsonFn {
@@ -206,11 +221,176 @@ fn json_kind(func: &str, callees: &Callees) -> JsonFn {
     }
 }
 
+/// What the analysis of one function proves about `json_*` node handles.
+#[derive(Default)]
+struct JsonFacts {
+    /// `i64` locals that provably hold node handles (the pass owns them).
+    locals: HashSet<u32>,
+    /// `borrow[i]`: parameter `i` is only lent (to a `json_*` reader, a
+    /// comparison, a borrowing parameter of another function), never kept,
+    /// copied, returned or stored, and no child alias escapes it.
+    borrow: Vec<bool>,
+    /// Every `return` hands back an owned node handle (or 0 / -1), at least
+    /// one of them a tracked local.
+    ret_ok: bool,
+}
+
+/// `[a, b, ..]` array literals whose ONLY use is as the child list of a
+/// `json_array` / `json_object` call of the same block: the container takes its
+/// own reference on every child, so the element locals are merely lent to the
+/// call. Maps (block, array instruction) to the call instruction at which the
+/// lend happens (a temp child is released after that call, not after the
+/// literal).
+fn json_child_arrays(func: &MirFunction, callees: &Callees) -> HashMap<(usize, usize), usize> {
+    let mut out: HashMap<(usize, usize), usize> = HashMap::new();
+    let mut def_count: HashMap<u32, usize> = HashMap::new();
+    let mut arr_def: HashMap<u32, (usize, usize)> = HashMap::new();
+    for (bi, b) in func.blocks.iter().enumerate() {
+        for (ii, inst) in b.instructions.iter().enumerate() {
+            if let Instruction::Assign { dest, value } = inst {
+                *def_count.entry(dest.0).or_insert(0) += 1;
+                if matches!(value, RValue::Array(_)) {
+                    arr_def.insert(dest.0, (bi, ii));
+                }
+            }
+        }
+    }
+    arr_def.retain(|l, _| def_count.get(l) == Some(&1));
+    if arr_def.is_empty() {
+        return out;
+    }
+    let ids: HashSet<u32> = arr_def.keys().copied().collect();
+    let no_fn_locals: HashMap<u32, Sig> = HashMap::new();
+    let mut use_count: HashMap<u32, usize> = HashMap::new();
+    for b in &func.blocks {
+        for inst in &b.instructions {
+            for (l, _) in inst_uses(inst, &ids, callees, &no_fn_locals) {
+                *use_count.entry(l).or_insert(0) += 1;
+            }
+        }
+        let op = match &b.terminator {
+            Terminator::Return(Some(o)) => Some(o),
+            Terminator::Branch { cond, .. } => Some(cond),
+            Terminator::Switch { value, .. } => Some(value),
+            _ => None,
+        };
+        if let Some(l) = op.and_then(|o| handle(&ids, o)) {
+            *use_count.entry(l).or_insert(0) += 1;
+        }
+    }
+    for (arr, (bi, ii)) in arr_def {
+        if use_count.get(&arr) != Some(&1) {
+            continue;
+        }
+        let b = &func.blocks[bi];
+        let Instruction::Assign { value: RValue::Array(elems), .. } = &b.instructions[ii] else { continue };
+        let elem_locals: HashSet<u32> = elems
+            .iter()
+            .filter_map(|o| match o {
+                Operand::Local(l) => Some(l.0),
+                _ => None,
+            })
+            .collect();
+        for (cj, inst) in b.instructions.iter().enumerate().skip(ii + 1) {
+            let Instruction::Assign { value: RValue::Call { func: f, args }, .. } = inst else { continue };
+            if json_kind(f, callees) != JsonFn::Producer {
+                continue;
+            }
+            let arg = match f.as_str() {
+                "json_array" => 0,
+                "json_object" => 1,
+                _ => continue,
+            };
+            if !matches!(args.get(arg), Some(Operand::Local(l)) if l.0 == arr) {
+                continue;
+            }
+            // Nothing between the literal and the call may redefine an element.
+            let redefined = b.instructions[ii + 1..cj]
+                .iter()
+                .any(|i| matches!(i, Instruction::Assign { dest, .. } if elem_locals.contains(&dest.0)));
+            if !redefined {
+                out.insert((bi, ii), cj);
+            }
+            break;
+        }
+    }
+    out
+}
+
+/// The locals whose use by `inst` rules them out of the node-handle model.
+/// `ids` is the candidate set being filtered; a use that only lends the handle
+/// (a `json_*` reader / child read's node argument, a comparison, a parameter
+/// another function only lends, a child list of a container) is fine, a copy
+/// into another candidate is judged by the caller.
+fn json_bad_uses(
+    inst: &Instruction,
+    at: (usize, usize),
+    ids: &HashSet<u32>,
+    callees: &Callees,
+    child_arrays: &HashMap<(usize, usize), usize>,
+    fn_locals: &HashMap<u32, Sig>,
+) -> Vec<u32> {
+    let uses = inst_uses(inst, ids, callees, fn_locals);
+    if uses.is_empty() {
+        return Vec::new();
+    }
+    match inst {
+        Instruction::Assign { value: RValue::Call { func: f, args }, .. }
+            if matches!(json_kind(f, callees), JsonFn::Reader | JsonFn::ChildRead) =>
+        {
+            args.iter()
+                .enumerate()
+                .filter(|(i, _)| *i > 0)
+                .filter_map(|(_, a)| match a {
+                    Operand::Local(l) => Some(l.0),
+                    _ => None,
+                })
+                .collect()
+        }
+        // A user function that only lends the parameter lends it on.
+        Instruction::Assign { value: RValue::Call { func: f, args }, .. } if callees.fns.contains_key(f.as_str()) => {
+            let sig = &callees.fns[f.as_str()];
+            args.iter()
+                .enumerate()
+                .filter(|(i, _)| !sig.json_borrow.get(*i).copied().unwrap_or(false))
+                .filter_map(|(_, a)| match a {
+                    Operand::Local(l) => Some(l.0),
+                    _ => None,
+                })
+                .collect()
+        }
+        Instruction::Assign {
+            value:
+                RValue::BinOp {
+                    op:
+                        MirBinOp::Eq | MirBinOp::Neq | MirBinOp::Lt | MirBinOp::Gt | MirBinOp::LtEq | MirBinOp::GtEq,
+                    ..
+                },
+            ..
+        } => Vec::new(),
+        // The child list of a container call: lent to that call.
+        Instruction::Assign { value: RValue::Array(_), .. } if child_arrays.contains_key(&at) => Vec::new(),
+        Instruction::Assign { dest, value: RValue::Use(Operand::Local(_)) } if ids.contains(&dest.0) => Vec::new(),
+        _ => uses.iter().map(|(l, _)| *l).collect(),
+    }
+}
+
 /// The `i64` locals of `func` that provably hold `json_*` node handles with no
-/// escaping integer copy (see above). Fixpoint: dropping a local can drop
+/// escaping integer copy (see above), which parameters it only lends and
+/// whether it returns owned handles. Fixpoint: dropping a local can drop
 /// others.
-fn json_handle_locals(func: &MirFunction, callees: &Callees, addr_taken: &HashSet<u32>) -> HashSet<u32> {
+fn json_handle_locals(
+    func: &MirFunction,
+    callees: &Callees,
+    addr_taken: &HashSet<u32>,
+) -> JsonFacts {
     let param_ids: HashSet<u32> = func.params.iter().map(|p| p.local.0).collect();
+    let i64_params: Vec<u32> = func
+        .params
+        .iter()
+        .filter(|p| p.ty == MirType::I64 && !addr_taken.contains(&p.local.0))
+        .map(|p| p.local.0)
+        .collect();
     let mut cand: HashSet<u32> = func
         .locals
         .iter()
@@ -219,26 +399,35 @@ fn json_handle_locals(func: &MirFunction, callees: &Callees, addr_taken: &HashSe
         .filter(|l| !l.name.as_deref().is_some_and(|n| n.starts_with("__capbox_")))
         .map(|l| l.id.0)
         .collect();
-    // Only code that calls a json builtin can have a handle.
+    // Only code that calls a json builtin (or a function returning a node) can
+    // hold a handle.
     let mentions_json = func.blocks.iter().any(|b| {
         b.instructions.iter().any(|i| match i {
             Instruction::Assign { value: RValue::Call { func: f, .. }, .. } => {
-                json_kind(f, callees) != JsonFn::No
+                json_kind(f, callees) != JsonFn::No || callees.fns.get(f.as_str()).is_some_and(|s| s.json_ret)
             }
             _ => false,
         })
     });
-    if !mentions_json || cand.is_empty() {
-        return HashSet::new();
+    if !mentions_json {
+        cand.clear();
     }
+    let mut facts = JsonFacts { borrow: vec![false; func.params.len()], ..Default::default() };
+    if cand.is_empty() && i64_params.is_empty() {
+        return facts;
+    }
+    let child_arrays = json_child_arrays(func, callees);
     let is_empty_handle = |v: &RValue| match v {
         RValue::ConstInt(0) | RValue::ConstInt(-1) => true,
         RValue::Use(Operand::Constant(Constant::Int(0))) | RValue::Use(Operand::Constant(Constant::Int(-1))) => true,
+        // `-1` lowers to `neg(1)`.
+        RValue::UnOp { op: MirUnOp::Neg, operand: Operand::Constant(Constant::Int(1)) } => true,
         _ => false,
     };
     // Definitions: every one must be a producer, a child read, a copy, or an
     // empty handle; a local with no definition is out.
     let mut has_def: HashSet<u32> = HashSet::new();
+    let mut param_defined: HashSet<u32> = HashSet::new();
     for b in &func.blocks {
         for inst in &b.instructions {
             match inst {
@@ -246,6 +435,7 @@ fn json_handle_locals(func: &MirFunction, callees: &Callees, addr_taken: &HashSe
                     let ok = match value {
                         RValue::Call { func: f, .. } => {
                             matches!(json_kind(f, callees), JsonFn::Producer | JsonFn::ChildRead)
+                                || callees.fns.get(f.as_str()).is_some_and(|s| s.json_ret)
                         }
                         RValue::Use(Operand::Local(_)) => true,
                         v => is_empty_handle(v),
@@ -260,8 +450,14 @@ fn json_handle_locals(func: &MirFunction, callees: &Callees, addr_taken: &HashSe
                 | Instruction::ActorStateLoad { dest, .. }
                 | Instruction::ActorSpawn { dest, .. } => {
                     cand.remove(&dest.0);
+                    param_defined.insert(dest.0);
                 }
                 _ => {}
+            }
+            if let Instruction::Assign { dest, .. } = inst {
+                if param_ids.contains(&dest.0) {
+                    param_defined.insert(dest.0);
+                }
             }
         }
     }
@@ -270,8 +466,8 @@ fn json_handle_locals(func: &MirFunction, callees: &Callees, addr_taken: &HashSe
     loop {
         let before = cand.len();
         let mut drop_set: Vec<u32> = Vec::new();
-        for b in &func.blocks {
-            for inst in &b.instructions {
+        for (bi, b) in func.blocks.iter().enumerate() {
+            for (ii, inst) in b.instructions.iter().enumerate() {
                 if let Instruction::Assign { dest, value } = inst {
                     // A copy's source must be a node handle too (a plain integer
                     // would be retained as if it were an arc).
@@ -291,51 +487,17 @@ fn json_handle_locals(func: &MirFunction, callees: &Callees, addr_taken: &HashSe
                         }
                     }
                 }
-                let uses = inst_uses(inst, &cand, callees, &no_fn_locals);
-                if uses.is_empty() {
-                    continue;
-                }
-                match inst {
-                    Instruction::Assign { value: RValue::Call { func: f, args }, .. }
-                        if matches!(json_kind(f, callees), JsonFn::Reader | JsonFn::ChildRead) =>
-                    {
-                        for (i, a) in args.iter().enumerate() {
-                            if i > 0 {
-                                if let Operand::Local(l) = a {
-                                    drop_set.push(l.0);
-                                }
-                            }
-                        }
-                    }
-                    Instruction::Assign {
-                        value:
-                            RValue::BinOp {
-                                op:
-                                    MirBinOp::Eq
-                                    | MirBinOp::Neq
-                                    | MirBinOp::Lt
-                                    | MirBinOp::Gt
-                                    | MirBinOp::LtEq
-                                    | MirBinOp::GtEq,
-                                ..
-                            },
-                        ..
-                    } => {}
-                    Instruction::Assign { dest, value: RValue::Use(Operand::Local(_)) } if cand.contains(&dest.0) => {}
-                    _ => drop_set.extend(uses.iter().map(|(l, _)| *l)),
-                }
+                drop_set.extend(json_bad_uses(inst, (bi, ii), &cand, callees, &child_arrays, &no_fn_locals));
             }
-            let mut term_ops: Vec<&Operand> = Vec::new();
-            match &b.terminator {
-                Terminator::Return(Some(o)) => term_ops.push(o),
-                Terminator::Branch { cond, .. } => term_ops.push(cond),
-                Terminator::Switch { value, .. } => term_ops.push(value),
-                _ => {}
-            }
-            for o in term_ops {
-                if let Operand::Local(l) = o {
-                    drop_set.push(l.0);
-                }
+            // A `return` of a tracked local moves its reference to the caller
+            // (a caller that does not track the result leaks it, as before).
+            let term_op = match &b.terminator {
+                Terminator::Branch { cond, .. } => Some(cond),
+                Terminator::Switch { value, .. } => Some(value),
+                _ => None,
+            };
+            if let Some(Operand::Local(l)) = term_op {
+                drop_set.push(l.0);
             }
         }
         for l in drop_set {
@@ -345,7 +507,59 @@ fn json_handle_locals(func: &MirFunction, callees: &Callees, addr_taken: &HashSe
             break;
         }
     }
-    cand
+
+    // Parameters only lent: never defined, and every use a lend. A child read
+    // of the parameter whose result is not tracked would outlive the caller's
+    // reference to the parent.
+    let mut pset: HashSet<u32> = i64_params.iter().copied().filter(|p| !param_defined.contains(p)).collect();
+    if !pset.is_empty() {
+        for (bi, b) in func.blocks.iter().enumerate() {
+            for (ii, inst) in b.instructions.iter().enumerate() {
+                if let Instruction::Assign { dest, value: RValue::Call { func: f, args } } = inst {
+                    if json_kind(f, callees) == JsonFn::ChildRead && !cand.contains(&dest.0) {
+                        if let Some(Operand::Local(p)) = args.first() {
+                            pset.remove(&p.0);
+                        }
+                    }
+                }
+                for l in json_bad_uses(inst, (bi, ii), &pset, callees, &child_arrays, &no_fn_locals) {
+                    pset.remove(&l);
+                }
+            }
+            let term_op = match &b.terminator {
+                Terminator::Return(Some(o)) => Some(o),
+                Terminator::Branch { cond, .. } => Some(cond),
+                Terminator::Switch { value, .. } => Some(value),
+                _ => None,
+            };
+            if let Some(Operand::Local(l)) = term_op {
+                pset.remove(&l.0);
+            }
+        }
+        for (i, p) in func.params.iter().enumerate() {
+            facts.borrow[i] = pset.contains(&p.local.0);
+        }
+    }
+
+    // Returns: every one an owned tracked handle or the empty handle.
+    if func.ret_ty == MirType::I64 && !func.blocks.is_empty() {
+        let mut tracked = false;
+        let mut all_ok = true;
+        for b in &func.blocks {
+            if let Terminator::Return(r) = &b.terminator {
+                match r {
+                    Some(Operand::Local(l)) if cand.contains(&l.0) => tracked = true,
+                    Some(Operand::Constant(Constant::Int(0 | -1))) => {}
+                    // The unreachable epilogue block lowering leaves behind.
+                    None => {}
+                    _ => all_ok = false,
+                }
+            }
+        }
+        facts.ret_ok = tracked && all_ok;
+    }
+    facts.locals = cand;
+    facts
 }
 
 /// Every use of a handle local by `inst`, one entry per operand position.
@@ -382,7 +596,9 @@ fn inst_uses(
                 match callees.fns.get(func.as_str()) {
                     Some(sig) => {
                         for (i, a) in args.iter().enumerate() {
-                            let k = if sig.handle_params.get(i).copied().unwrap_or(false) {
+                            let k = if sig.handle_params.get(i).copied().unwrap_or(false)
+                                || sig.json_borrow.get(i).copied().unwrap_or(false)
+                            {
                                 Use::Borrow
                             } else {
                                 Use::Own
@@ -554,7 +770,7 @@ fn inst_def(
                 // A user function typed to return a handle returns an owned
                 // reference (its own `return` retains a borrowed handle).
                 RValue::Call { func, .. }
-                    if callees.fns.get(func.as_str()).is_some_and(|sig| sig.handle_ret) =>
+                    if callees.fns.get(func.as_str()).is_some_and(|sig| sig.handle_ret || sig.json_ret) =>
                 {
                     DefKind::Owned
                 }
@@ -594,7 +810,7 @@ pub fn own_shared_refs(
     if std::env::var_os("KRYOS_NO_SHARED_OWN").is_some() {
         return;
     }
-    let callees = Callees {
+    let mut callees = Callees {
         fns: functions
             .iter()
             .filter(|f| !f.attributes.is_async)
@@ -604,10 +820,67 @@ pub fn own_shared_refs(
             })
             .collect(),
     };
+    json_sig_fixpoint(functions, &mut callees);
     for func in functions.iter_mut() {
         own_shared_refs_in(func, &callees);
         release_overwritten_fields(func, struct_defs);
         release_overwritten_elements(func);
+    }
+}
+
+fn addr_taken_of(func: &MirFunction) -> HashSet<u32> {
+    let mut addr_taken: HashSet<u32> = HashSet::new();
+    for b in &func.blocks {
+        for inst in &b.instructions {
+            if let Instruction::Assign { value: RValue::AddrOf { local, .. }, .. } = inst {
+                addr_taken.insert(local.0);
+            }
+        }
+    }
+    addr_taken
+}
+
+/// Which user functions return an owned `json_*` node handle and which only
+/// lend a parameter. Greatest fixpoint: every `i64`-returning function and
+/// `i64` parameter starts optimistic and is removed when its body breaks the
+/// property under the CURRENT answer for the functions it calls; removal only
+/// ever shrinks the sets, so it terminates. Not converged (never expected):
+/// answer "no" everywhere, which is the leak-safe default.
+fn json_sig_fixpoint(functions: &[MirFunction], callees: &mut Callees) {
+    for f in functions.iter().filter(|f| !f.attributes.is_async) {
+        if let Some(sig) = callees.fns.get_mut(&f.name) {
+            sig.json_ret = f.ret_ty == MirType::I64 && !f.blocks.is_empty();
+            sig.json_borrow = f.params.iter().map(|p| p.ty == MirType::I64).collect();
+        }
+    }
+    let addr: Vec<HashSet<u32>> = functions.iter().map(addr_taken_of).collect();
+    for _round in 0..64 {
+        let mut changed = false;
+        for (fi, f) in functions.iter().enumerate() {
+            if f.attributes.is_async {
+                continue;
+            }
+            let facts = json_handle_locals(f, callees, &addr[fi]);
+            if let Some(sig) = callees.fns.get_mut(&f.name) {
+                if sig.json_ret && !facts.ret_ok {
+                    sig.json_ret = false;
+                    changed = true;
+                }
+                for (i, b) in sig.json_borrow.iter_mut().enumerate() {
+                    if *b && !facts.borrow.get(i).copied().unwrap_or(false) {
+                        *b = false;
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if !changed {
+            return;
+        }
+    }
+    for sig in callees.fns.values_mut() {
+        sig.json_ret = false;
+        sig.json_borrow.iter_mut().for_each(|b| *b = false);
     }
 }
 
@@ -822,7 +1095,8 @@ fn own_shared_refs_in(func: &mut MirFunction, callees: &Callees) {
         .filter(|l| !addr_taken.contains(&l.id.0))
         .map(|l| l.id.0)
         .collect();
-    let json_ids = json_handle_locals(func, callees, &addr_taken);
+    let json_ids = json_handle_locals(func, callees, &addr_taken).locals;
+    let child_arrays = json_child_arrays(func, callees);
     let ids: HashSet<u32> = shared_ids.union(&json_ids).copied().collect();
     if ids.is_empty() {
         return;
@@ -900,8 +1174,14 @@ fn own_shared_refs_in(func: &mut MirFunction, callees: &Callees) {
                 }
                 _ => {}
             }
+            // The children of a `json_array` / `json_object` literal are lent
+            // to that call, where the container takes its own references.
+            let lend_at = child_arrays.get(&(bi, ii)).copied();
             for (l, k) in inst_uses(inst, &ids, callees, &fn_locals) {
-                uses.entry(l).or_default().push((bi, At::Inst(ii), k));
+                match lend_at {
+                    Some(cj) => uses.entry(l).or_default().push((bi, At::Inst(cj), Use::Borrow)),
+                    None => uses.entry(l).or_default().push((bi, At::Inst(ii), k)),
+                }
             }
             if let Some((l, k)) = inst_def(inst, &ids, callees, &fn_locals) {
                 defs.entry(l).or_default().push((bi, ii, k));

@@ -10707,3 +10707,53 @@ RESIDUAL (not covered, not claimed)
 - The wasm backend has its own host-side json handles; unchanged and not executed beyond wasm_differential 66/66.
 - A garbage integer passed to a `json_*` call reads as "no such node"; retain / release of a non-node address is guarded only for 0 and -1.
 - A13-A19 are different shapes and untouched.
+
+## A12 (round 2): `json_*` handles through array-literal children, returning helpers and lending helpers (2026-11-26, branch closeout/lane-mem)
+
+The verifier refuted round 1 as too narrow: the normal builder API still leaked. Reproduced on the round-1 binary (JIT and AOT):
+`json_object(["a","b"],[json_string(..), json_array([json_number(i), json_bool(true)])])` n=30 arc allocs=150 frees=30 live=120;
+`fn mk(i) -> i64 { return json_string(..) }` live=30. Same rule, three more shapes proven instead of escaping (all in
+compiler/crates/kryos-mir/src/shared_own.rs; no runtime change):
+
+1. Child lists. An array literal whose ONLY use is as the child list of a `json_array` (arg 0) / `json_object` (arg 1) call of the
+   same block (`json_child_arrays`) no longer makes its element locals escape: each element is LENT to that call (the container takes
+   its own reference), and a temp element is released after the call, not after the literal. Elements redefined between the literal and
+   the call, or a literal with any other use, keep the old (escape) behaviour.
+2. Helpers that return a node. A function returns an owned handle when every `return` is a tracked local or 0 / -1 (and one is a
+   tracked local); a call to it is then a producer (`Sig.json_ret`), so `let h = mk(i)` is released like `json_string`. A tracked local
+   may now be `return`ed (the reference moves to the caller; a caller that does not track the result leaks it, as before). `-1`
+   (`neg(1)`) counts as the empty handle.
+3. Helpers that only lend. An `i64` parameter that is never defined, kept, copied, returned or stored, and whose child reads are all
+   tracked, is lent (`Sig.json_borrow`); passing a tracked local to it no longer makes the local escape. Both facts come from a
+   module-wide greatest fixpoint (`json_sig_fixpoint`, shrink-only, falls back to "no" everywhere if it does not converge).
+
+Both-ways evidence:
+- Probes (JIT == AOT, same stdout as master): lm_vbuild live=120 -> 0, lm_vfn live=30 -> 0; mixed probe (helper chains, `-1` path,
+  child alias of a parameter, recursion, throw inside a helper, child outliving a reassigned parent, nonsense / truncated parse)
+  prints master's exact sums and ends live=0 apart from the pass-through shape below.
+- tests/mem_json_handle_gate.sh (36 rows, JIT + AOT): new modes build_inline, helper_ret, helper_borrow, child_via_fn (G = arc live 0
+  AND release-exe peak working set grows < 10MB from 20000 to 80000 iterations, psutil) and pass_through (E). shared_child, build,
+  escape_fn, escape_ret are promoted from E to T (live 0). THIS TREE: PASS 36 rows (growth 0.0 / -0.0 / 0.5 / -0.3MB). MASTER BINARY
+  (KRYOS_BIN, master stdlib): FAIL, and the G rows fail on MEASURED growth, not only the missing report: build_inline +34.3MB,
+  helper_ret +67.0MB, helper_borrow +45.3MB, child_via_fn +47.8MB per 60000 iterations.
+- Finish line: `--only '^(A12|A12\.ctl)$'` PASS PASS. `--only '^(A1[0-9]|A1[0-9]\.ctl|137.*|138.*|139.*)$'` 24 PASS / 7 FAIL, the seven
+  being A13-A19 exactly as before (137-perf included in the passes). `--only '^mem:'` 379 PASS / 10 FAIL, the same ten documented
+  failures. Gates PASS: mem_balance, mem_shared_rule, no_double_free, backend_divergence_pins, builtin_borrow_mir, jit_symbols,
+  mem_pop_stmt, mem_tuple, mem_struct_array_overwrite, mem_enum_array_push, mem_loop, mem_throw_closure, mem_copy_assign,
+  mem_string_interp, type_soundness, run_examples, stdlib_compile 66/66, minilisp 22/22, selfhost_wholeprogram, wasm_differential
+  66/66, concurrency_smoke, ecosystem_check 259/259; tests/conformance 120/120 on the JIT. json_roundtrip, json_nested_bug,
+  test_tracked_generic output identical to master; `kryos test` of ecosystem/kryos-schema, kryos-audit-trail, kryos-agent-loop prints
+  the same failure-line counts as master (1 / 17 / 12).
+
+RESIDUAL (not covered, not claimed)
+- A handle stored in a struct field, an array element (`arr[1] = t`, `[n, n]`), a tuple, a map, or captured by a closure still
+  leaks (vuaf: arc live=120 at n=30, JIT and AOT; mem/json_handles.kry escape_field / escape_array live=3). A handle passed to a
+  user function that keeps or returns its own parameter (`fn same(h) -> i64 { return h }`, pass_through) is not tracked: the node
+  leaks, never frees early.
+- A child list built any other way (`push` into an array, a named array used twice, a list spread over blocks) still escapes its
+  elements. Handles from `http_request` / `https_get`, handles received as parameters that the callee keeps, and `async` functions
+  are untracked.
+- A returning helper reached through a closure / function value / trait object is not a producer for its caller (the result leaks).
+- The pin's growth leg needs python3 + psutil (it prints a `note ... skipped` otherwise); the arc balance leg needs a compiler that
+  prints `[alloc-stats]`.
+- A13-A19 are different shapes and untouched.

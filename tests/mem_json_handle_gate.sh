@@ -10,9 +10,12 @@
 #   - exit code 0 and the exact result line (a use-after-free prints garbage or
 #     aborts; the lines are the master compiler's, which never freed a node),
 #   - TRACKED modes: arc live = 0 (every node released),
-#   - ESCAPE modes (a handle given to a user fn, a struct field, an array, a
-#     return value, or stored as a child in an array literal): live >= 0 only.
-#     They leak by design today; an over-release (negative live) still fails.
+#   - G modes: tracked, and the release exe's peak memory must not grow with the
+#     iteration count (psutil), so a leak is caught even by a compiler that
+#     cannot print the [alloc-stats] report,
+#   - ESCAPE modes (a handle stored in a struct field or an array, or returned
+#     by a helper that passes its parameter through): live >= 0 only. They leak
+#     by design today; an over-release (negative live) still fails.
 # A compiler that cannot print the [alloc-stats] report FAILS (it cannot prove
 # the balance). Honors KRYOS_BIN and KRYOS_STDLIB_DIR like the other mem gates.
 set -uo pipefail
@@ -35,7 +38,7 @@ fi
 PROBE="$ROOT/tests/mem/json_handles.kry"
 ITERS=3
 
-# kind(T = tracked, E = escape)  mode  result-line-at-ITERS=3
+# kind(T = tracked, G = tracked + peak-memory growth check, E = escape)  mode  result-line-at-ITERS=3
 EXPECTED='
 T unused         mode unused sum 3
 T read_chain     mode read_chain sum 96
@@ -44,12 +47,17 @@ T child_outlives mode child_outlives sum 24
 T error_handle   mode error_handle sum 9
 T reassign       mode reassign sum 9
 T cond_def       mode cond_def sum 5
-E shared_child   mode shared_child sum 96
-E build          mode build sum 51
-E escape_fn      mode escape_fn sum 12
-E escape_ret     mode escape_ret sum 3
+T shared_child   mode shared_child sum 96
+T build          mode build sum 51
+T escape_fn      mode escape_fn sum 12
+T escape_ret     mode escape_ret sum 3
+G build_inline   mode build_inline sum 69
+G helper_ret     mode helper_ret sum 111
+G helper_borrow  mode helper_borrow sum 27
+G child_via_fn   mode child_via_fn sum 12
 E escape_field   mode escape_field sum 18
 E escape_array   mode escape_array sum 18
+E pass_through   mode pass_through sum 24
 '
 
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
@@ -69,6 +77,45 @@ build_leg cl || exit 1
 
 stat_of() {
   sed -n "s/^\[alloc-stats\] $1\(.*[ ]\)$2=\(-\{0,1\}[0-9][0-9]*\)\(\$\|[ ].*\)/\2/p" "$3" | tr -d '\r' | head -1
+}
+
+# Peak working-set growth (MB) of the release exe between 20000 and 80000
+# iterations: a per-iteration leak shows up here on ANY compiler, including one
+# that cannot print the [alloc-stats] report. Prints "skip" without psutil.
+growth_mb() {
+  local exe="$1" mode="$2"
+  command -v python3 >/dev/null 2>&1 || { echo skip; return; }
+  python3 -c '
+import os, subprocess, sys, time
+try:
+    import psutil
+except ImportError:
+    print("skip"); sys.exit(0)
+exe, mode = sys.argv[1], sys.argv[2]
+def peak(iters):
+    env = dict(os.environ, LEAK_MODE=mode, LEAK_ITERS=str(iters))
+    env.pop("KRYOS_ALLOC_STATS", None)
+    p = subprocess.Popen([exe], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    pp = psutil.Process(p.pid)
+    best = 0
+    t0 = time.time()
+    while p.poll() is None:
+        if time.time() - t0 > 100:
+            p.kill(); raise SystemExit("ERR timeout")
+        try:
+            best = max(best, pp.memory_info().peak_wset)
+        except Exception:
+            pass
+        time.sleep(0.002)
+    if p.returncode != 0:
+        raise SystemExit("ERR rc=%d" % p.returncode)
+    return best / 1048576.0
+try:
+    a = peak(20000); b = peak(80000)
+    print("%.1f" % (b - a))
+except SystemExit as e:
+    print(e)
+' "$exe" "$mode" 2>&1
 }
 
 probe_modes="$(grep -o 'mode == "[a-z_]*"' "$PROBE" | sed 's/mode == "\(.*\)"/\1/' | sort -u)"
@@ -95,6 +142,21 @@ while read -r kind mode result; do
       echo "mem-json-handle: FAIL $mode/$leg -- rc=$rc result='$line' (want '$result')"
       fail=1; continue
     fi
+    gfail=0
+    if [ "$kind" = G ] && [ "$leg" = llvm ]; then
+      grow="$(growth_mb "$exe" "$mode")"
+      case "$grow" in
+        skip) echo "mem-json-handle: note $mode/$leg growth check skipped (python3 + psutil not available)" ;;
+        ERR*) echo "mem-json-handle: FAIL $mode/$leg growth check could not run: $grow"; fail=1; gfail=1 ;;
+        *)
+          if awk -v g="$grow" 'BEGIN{exit !(g > 10.0)}'; then
+            echo "mem-json-handle: FAIL $mode/$leg LEAK -- peak memory grew ${grow}MB from 20000 to 80000 iterations (limit 10MB)"
+            fail=1; gfail=1
+          else
+            echo "mem-json-handle: ok   $mode/$leg growth ${grow}MB over 60000 iterations"
+          fi ;;
+      esac
+    fi
     if [ -z "$arc" ]; then
       echo "mem-json-handle: FAIL $mode/$leg -- no [alloc-stats] report on stderr: this compiler cannot prove the balance"
       fail=1; continue
@@ -103,10 +165,11 @@ while read -r kind mode result; do
       echo "mem-json-handle: FAIL $mode/$leg NEGATIVE LIVE (arc live=$arc): more frees than allocs, an over-release"
       fail=1; continue
     fi
-    if [ "$kind" = T ] && [ "$arc" -ne 0 ]; then
+    if [ "$kind" != E ] && [ "$arc" -ne 0 ]; then
       echo "mem-json-handle: FAIL $mode/$leg LEAK -- arc live=$arc"
       fail=1; continue
     fi
+    [ "$gfail" -eq 0 ] || continue
     echo "mem-json-handle: ok   $mode/$leg ($kind, arc live=$arc)"
   done
 done <<EOF
