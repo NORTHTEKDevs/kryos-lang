@@ -10384,3 +10384,11 @@ Residual / NOT covered: the item's second alternative (each line its own stateme
   import-shadows-builtin, import-struct-reachability, turbofish-struct) were
   failing before this change and are untouched; `tests/docs_status_gate.sh`
   also fails (README conformance count 118 vs 120), unrelated to this edit.
+
+## 2c-hardrule6 (round 2): rule #6 rewording overclaimed "the compiler infers both"
+
+- **Root cause:** the first rewording (581cf970) replaced "annotations required" with "the compiler infers both", which is false for fn params whose type cannot be pinned by the body: `fn getx(p) -> i64 { return p.x }` is E0110 `cannot access field x on type ?T5` (identical on master and this tree; doc-only change, no compiler code touched).
+- **Files:** `CLAUDE.md`, `docs/claude/FULL-REFERENCE.md` (rule #6 now: optional on top-level `let`, and on params whose type the body pins down by use, e.g. arithmetic, `len(s)`, indexing, conditions; field access on a param needs the annotation; a top-level `let` with a struct literal must follow the `struct` declaration, annotated or not). Pin `tests/hardrule6_doc_pin.sh` extended: rejects the "compiler infers both" text, requires the caveat, and executes the E0110 program (unannotated) and its annotated twin (prints 7).
+- **Evidence both ways:** `KRYOS_DOC_ROOT=<master tree> tests/hardrule6_doc_pin.sh` -> FAIL x4 (stale claim + missing caveat, both files), rc=1; this tree -> `PASS hardrule6_doc_pin`. `run.sh --only '^(2c\-hardrule6)'` -> PASS 2c-hardrule6, PASS 2c-hardrule6.ctl.
+- **Executed shapes:** `lm_a` unannotated field access E0110; annotated `p: P` prints 7 (incl. struct declared after the fn); top-level `let origin = P{..}` before `struct P` E0110, still E0110 with `let origin: P`; `.len()` is not a method on str at all (E0107 even with `s: str`), `len(s)` on an unannotated param prints 3.
+- **NOT covered:** method calls on user-struct params without annotation (only `.len()` on a string was tried); closure params, struct fields, and AOT path for the new probes were not examined; the inference rule is stated by examples, not derived from the typechecker, so other un-pinnable uses (e.g. passing the param to a generic fn) are unverified.
