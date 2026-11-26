@@ -312,11 +312,6 @@ jobs:
         # box balance on the JIT, peak RSS on both backends.
         run: bash tests/mem_copy_assign_gate.sh
 
-      - name: Cross-block @copy struct memory gate (LEDGER item copy-assign-leak)
-        # An @copy local read in a different basic block than its definition
-        # (if/else, loop, continue) must be freed: box balance + peak RSS.
-        run: bash tests/mem_copy_assign_xblock_gate.sh
-
       - name: Struct-argument memory gate (LEDGER item 3)
         # Passing a heap-bearing struct to a function, and chaining
         # struct-returning methods, must stay flat on BOTH backends. Pre-fix

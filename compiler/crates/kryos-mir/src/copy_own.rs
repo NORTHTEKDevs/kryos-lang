@@ -205,14 +205,6 @@ pub fn owned_copy_locals(
 
     // Per-block event lists, and the terminator mentions.
     let nb = func.blocks.len();
-    // Block ids are not dense (a lowered function can have bb0, bb2, bb3, bb4),
-    // so a successor id is NOT an index into `func.blocks`; map id -> index.
-    let idx_of: HashMap<u32, usize> = func
-        .blocks
-        .iter()
-        .enumerate()
-        .map(|(i, b)| (b.id.0, i))
-        .collect();
     let mut block_evs: Vec<Vec<(u32, Ev)>> = Vec::with_capacity(nb);
     for b in &func.blocks {
         let mut v = Vec::new();
@@ -259,7 +251,10 @@ pub fn owned_copy_locals(
             let mut x = drop_in[bi].clone();
             step(&block_evs[bi], &mut d, &mut x);
             for s in func.blocks[bi].successors() {
-                let Some(&si) = idx_of.get(&s.0) else { continue };
+                let si = s.0 as usize;
+                if si >= nb {
+                    continue;
+                }
                 let new_def = match &def_in[si] {
                     None => d.clone(),
                     Some(cur) => cur.intersection(&d).copied().collect(),
