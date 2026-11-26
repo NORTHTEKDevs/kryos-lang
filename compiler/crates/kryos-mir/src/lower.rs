@@ -4772,6 +4772,9 @@ fn drop_unescaped_str_temps(
                             // items: push(self.items, s), .. }` -- which dups
                             // the array -- leaked a reference per call.
                             || (func == "push" && matches!(cand_ty, MirType::Array(_, _)))
+                            // A discarded `pop(xs)` statement: the popped element
+                            // left the array, so this temp is its only owner.
+                            || (func == "pop" && !ctx.user_fn_names.contains(func))
                             // `id` IS the map-get destination itself (the
                             // Borrow-to-own temp from `lower_expr_to_rvalue`'s
                             // Map IndexAccess arm), immediately followed in
@@ -9040,6 +9043,18 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             matches!(t, MirType::Str | MirType::Array(_, _) | MirType::Map { .. })
                                 || is_owned_struct_ty(ctx, t)
                         })
+                    } else if func == "pop" && args.len() == 1 {
+                        // `pop(xs)` as a statement: the element leaves the
+                        // array (its length drops by one), so the discarded
+                        // result is the element's only owner. A Void temp
+                        // left every popped struct / tuple / str / array
+                        // behind (A11). `push` keeps Void: its result is the
+                        // receiver itself.
+                        match infer_expr_type(ctx, expr) {
+                            t @ (MirType::Str | MirType::Array(_, _) | MirType::Map { .. }) => Some(t),
+                            t if is_owned_value_ty(ctx, &t) => Some(t),
+                            _ => None,
+                        }
                     } else {
                         None
                     };

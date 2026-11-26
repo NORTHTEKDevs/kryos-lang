@@ -1,0 +1,40 @@
+// A11: `pop(xs)` as a statement discarded the popped element without owning it.
+// LEAK_MODE picks the element type; each iteration pushes one element and pops it.
+struct P { name: str, n: i64 }
+struct Q { tag: str, rows: [str], k: i64 }
+fn mkp(i: i64) -> P { return P { name: "p{i}", n: i } }
+@capabilities(process)
+fn main() {
+    let iters = parse_int(env_get("LEAK_ITERS"))
+    let mode = env_get("LEAK_MODE")
+    let mut ps: [P] = []
+    let mut qs: [Q] = []
+    let mut ts: [(str, i64)] = []
+    let mut ss: [str] = []
+    let mut aa: [[i64]] = []
+    let mut i = 0
+    while i < iters {
+        if mode == "struct" {
+            ps = push(ps, mkp(i))
+            pop(ps)
+        } elif mode == "struct_nested" {
+            qs = push(qs, Q { tag: "q{i}", rows: ["a{i}", "b{i}"], k: i })
+            pop(qs)
+        } elif mode == "tuple" {
+            ts = push(ts, ("t{i}", i))
+            pop(ts)
+        } elif mode == "str" {
+            ss = push(ss, "s{i}")
+            pop(ss)
+        } elif mode == "array" {
+            aa = push(aa, [i, i + 1, i + 2])
+            pop(aa)
+        } elif mode == "struct_bound" {
+            ps = push(ps, mkp(i))
+            let x = pop(ps)
+            if x.n < 0 { println("neg") }
+        }
+        i = i + 1
+    }
+    println("done {len(ps)} {len(qs)} {len(ts)} {len(ss)} {len(aa)}")
+}

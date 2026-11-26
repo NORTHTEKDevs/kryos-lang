@@ -6617,6 +6617,26 @@ impl LlvmCodegen {
                                         self.emit_line(&format!("  br label %{tjoin}"));
                                         self.emit_line(&format!("{tjoin}:"));
                                     }
+                                } else if let Some(MirType::Struct(sn)) = &dest_mir {
+                                    // A struct element is a counted box too (an
+                                    // array dup retains it, kind 4). The pop moved
+                                    // the array's share of it out: the destination
+                                    // holds the struct BY VALUE, so give it its own
+                                    // reference to every heap leaf, then release
+                                    // the array's share through the type's drop
+                                    // helper (shared box: just the count; last
+                                    // owner: drop the fields, free the box). Without
+                                    // it every popped box leaked (A11), and a shared
+                                    // box's fields were freed under the other array.
+                                    if self.struct_defs.contains_key(sn)
+                                        && !self.copy_structs.contains(sn)
+                                    {
+                                        let sn = sn.clone();
+                                        self.emit_struct_share(&p, &sn);
+                                        self.emit_line(&format!(
+                                            "  call void @__kryos_drop_{sn}(ptr {p})"
+                                        ));
+                                    }
                                 }
                             } else if dest_ty == "double" || dest_ty == "ptr" {
                                 // Scalar non-i64 element: the slot carries raw

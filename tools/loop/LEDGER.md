@@ -10581,3 +10581,41 @@ RESIDUAL (not covered, not claimed)
   release (not executed). Struct fields that hold `[Struct]` were measured flat (`w.items = []`) but only for
   the push-and-reset shape.
 - The wider shared-ownership wall above (items 137 / 139) is not addressed by this entry.
+
+## A11: `pop(xs)` as a statement leaked the popped element (2026-11-26, branch closeout/lane-mem)
+
+Finish line: `run.sh <tree> -j 2 --only '^(A11)'` master/prior tree `FAIL A11 [jit leaks.kry pop_stmt_struct n=250000]
+jit +72.5MB` (AOT +72.5MB); this tree `PASS A11`.
+
+Root cause (two independent holes, same statement):
+1. lower.rs, `Stmt::Expr` call arm: the discarded result of a BUILTIN call got a `Void` temp ("a discarded `push` relies on
+   it": push returns the receiver itself). `pop` returns the element that just LEFT the array, so the element's only owner
+   was a temp nobody typed, and `drop_unescaped_str_temps` never saw it. Every popped struct / tuple / str / array leaked on
+   both backends. Fix: a discarded `pop(xs)` temp takes the element type (str / array / map / owned struct, enum or tuple)
+   and `pop` is listed as an owning definition in the temp-drop walk.
+2. LLVM `pop` lowering (kryos-codegen-llvm codegen.rs): the array slot is a COUNTED box (kind-4 dup retains it). The pop
+   loads the struct by value, but only the tuple case released the array's share of the box (retain leaves, release
+   share, drop on last owner). A struct element's box was orphaned (32 bytes per pop, AOT +23MB after hole 1 alone), and
+   with a dup'd array the by-value copy's own drop freed fields the other array still held. Fix: same recipe for a
+   non-`@copy` struct element: `emit_struct_share` on the box, then `__kryos_drop_<S>` (shared box: count only; last
+   owner: fields + box).
+
+Files: compiler/crates/kryos-mir/src/lower.rs, compiler/crates/kryos-codegen-llvm/src/codegen.rs, tests/mem/pop_stmt_leak.kry,
+tests/mem/pop_shared_box.kry, tests/mem_pop_stmt_gate.sh.
+
+Both-ways evidence:
+- `tests/mem_pop_stmt_gate.sh` (6 element modes x JIT/AOT at 1M iters, ceiling 12MB, plus exact answers of
+  pop_shared_box.kry on both backends): this tree PASS, every leg 4MB. Master binary: struct 87MB JIT, struct_nested 342MB,
+  tuple 97/157MB, str 60/65MB, array JIT 91MB, struct_bound AOT 34MB, FAIL.
+- Finish line `--only '^(A1[0-9]|A1[0-9]\.ctl|137.*|138.*|139.*)$'`: A10, A11, 137 (all sub-entries), 138, 139, all `.ctl`
+  and 137-perf (x0.608 of master) PASS; A12-A19 unchanged from master (same growth numbers). `--only '^mem:'`: 379 PASS,
+  10 FAIL, the same count and the same documented failures as before the change.
+- Gates: mem_balance, mem_shared_rule, no_double_free, backend_divergence_pins, mem_tuple, mem_struct_array_overwrite,
+  mem_enum_array_push, type_soundness, builtin_borrow_mir, run_examples, stdlib_compile 66/66, minilisp 22/22,
+  selfhost_wholeprogram, conformance 120/120: all PASS.
+
+RESIDUAL (not covered, not claimed)
+- A popped ENUM element on LLVM: the box is still orphaned (the enum drop helper arc-releases for payload-less enums, so
+  the struct recipe was not copied); `pop` of `[shared T]` / `[fn]` elements as a statement keeps the Void temp.
+  Not executed.
+- A12-A19 are different shapes and untouched.
