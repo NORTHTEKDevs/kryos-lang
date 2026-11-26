@@ -1579,6 +1579,14 @@ pub fn lower_module_with_lambda_params(
                     }
                 };
                 ctx.user_fn_names.insert(name.clone());
+                // A free function the program defines SHADOWS a builtin of the
+                // same name (both backends dispatch to the user definition
+                // when `user_func_names` holds the name), so every call to it
+                // gets user-function argument ownership. Left in
+                // `builtin_fn_names`, `read_file(P { .. }, 1)` was classed as a
+                // builtin call: the struct temp it borrowed was never
+                // released (a box leaked per call).
+                ctx.builtin_fn_names.remove(name.as_str());
                         ctx.func_ret_types.insert(name.clone(), mir_ret);
                 // If the return type names an actor, `resolve_type` just
                 // erased it to a bare `I64` handle. Record the logical actor

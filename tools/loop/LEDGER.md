@@ -10757,3 +10757,42 @@ RESIDUAL (not covered, not claimed)
 - The pin's growth leg needs python3 + psutil (it prints a `note ... skipped` otherwise); the arc balance leg needs a compiler that
   prints `[alloc-stats]`.
 - A13-A19 are different shapes and untouched.
+
+## A13: a free function that shadows a builtin name leaked its struct-temp arguments (2026-11-26, branch closeout/lane-mem)
+
+Item: `jit|aot leaks.kry shadow_builtin_temp` (`read_file(P { name: "t{i}", n: i }, 1)` with a user `fn read_file(p: P, k: i64)`), peak commit +72.5MB
+JIT / +49.5MB AOT at n 250000 -> 1000000; the control (same call under the name `readp`) was flat.
+
+Root cause (lower.rs): the builtin table seeds `builtin_fn_names` (read_file, index_of, split, join, ...). A program-defined free function of
+the same name lands in `user_fn_names` too, and every "is this a user function" test is `user_fn_names.contains(f) && !builtin_fn_names.contains(f)`,
+so the shadowing definition was classed as the BUILTIN. Both backends dispatch such a call to the user function (cranelift `user_shadows_builtin`),
+so the callee borrows its arguments, but the temp-drop pass took the builtin path for a struct argument (`continue 'cand`: "unknown callee may
+take ownership") and the struct box (and its `str` field) fed to the shadowing function was never released. One rule, not a per-name patch: when the
+program defines a free function, that name leaves `builtin_fn_names` (Decl::Function pre-pass, one line), so every call to it gets user-function
+argument ownership. Other lowering uses of `builtin_fn_names` (e.g. the `push` field-assign check, which was `!user || builtin` and so always
+true) now see the shadow too.
+
+Files: compiler/crates/kryos-mir/src/lower.rs; tests/mem/shadow_builtin_leak.kry, tests/mem_shadow_builtin_gate.sh.
+
+Both-ways evidence:
+- Finish line `--only '^(A13|A13\.ctl)$'`: master binary FAIL `jit leaks: peak commit 25.2MB@250000 -> 97.6MB@1000000 (+72.5MB > 8MB slack)`
+  (and the pre-fix lane binary, same numbers); this tree PASS PASS.
+- tests/mem_shadow_builtin_gate.sh (modes read_file, index_of, split shadowing + a control; peak RSS at 1M iters, JIT and AOT, plus the answer
+  == iters): MASTER binary (co-nov) FAIL, 6 of 6 shadow rows leak (AOT 62 / 60 / 54MB, JIT 90 / 96 / 88MB vs ceiling 24MB; control 3-4MB);
+  this tree PASS, all 8 rows 3-4MB with the right answer.
+- Adversarial probe (shadowing read_file / index_of / split / join with struct and str args, fresh temps and named locals, results chained through
+  `.name`): identical stdout on master and this tree, JIT and AOT; KRYOS_ALLOC_STATS JIT box allocs=35 frees=35 live=0 (master leaks them).
+- Regression scan: `--only '^(A1[0-9]|A1[0-9]\.ctl|137.*|138.*|139.*)$'` 25 PASS / 6 FAIL, the six being A14-A19 exactly as before (A13 now PASS;
+  137-perf x0.631 of master); `--only '^mem:'` 379 PASS / 10 FAIL, the same ten documented failures. Gates PASS: mem_balance (16 rows),
+  mem_shared_rule (28), no_double_free, backend_divergence_pins, builtin_borrow_mir (57 builtins), type_soundness, jit_symbols, mem_struct_arg,
+  mem_json_handle (36), mem_loop, mem_tuple, mem_throw_closure, mem_string_interp, assert_shadow, stdlib_compile 66/66, minilisp 22/22,
+  selfhost_wholeprogram, run_examples, ecosystem_check 259/259, wasm_differential 66/66, tests/conformance 120/120.
+
+RESIDUAL (not covered, not claimed)
+- Only a free function is un-builtin'd. A shadowing definition that arrives another way (extern declaration, an impl method whose bare name
+  collides with a builtin) keeps the old classification; not executed.
+- A user function that shadows a builtin with a different ARITY or a heap-typed non-struct argument was not re-measured beyond the str / struct
+  shapes in the gate and probe.
+- A14-A19 and the shared-handle items (137, 139 residuals listed above) are different shapes and untouched; the shared-ownership rewrite
+  (one ownership rule for shared handles in the MIR) was not needed for A13 and was not attempted here. The unverified mem.patch from the
+  powered-off run was not applied.
