@@ -329,6 +329,11 @@ pub struct Token {
     /// Always `false` for a token built via `Token::new`/`Token::dummy` --
     /// only `kryos-lexer`'s own `emit` computes a real value.
     pub newline_before: bool,
+    /// Count of leading space/tab bytes on the source line this token starts
+    /// on. Lets the parser tell a fresh statement written at the same
+    /// indentation as the previous one (`let a = 5` / `+ 1`) from an indented
+    /// continuation line. Always `0` for `Token::new`/`Token::dummy`.
+    pub line_indent: u32,
 }
 
 impl Token {
@@ -338,6 +343,7 @@ impl Token {
             span,
             text: text.into(),
             newline_before: false,
+            line_indent: 0,
         }
     }
 
@@ -347,6 +353,7 @@ impl Token {
             span: Span::DUMMY,
             text: String::new(),
             newline_before: false,
+            line_indent: 0,
         }
     }
 }

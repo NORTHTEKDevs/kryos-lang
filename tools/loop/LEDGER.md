@@ -10345,3 +10345,15 @@ No source change, no pin test (a pin would pass on master only for the link half
 60071762 already pins). Residual: once the oracle expects 4 lines the item should PASS
 (link + run verified by hand above); not executed through run.sh because that expectation
 cannot be edited from this lane.
+
+## ASI-nonW0001-tokens: newline-led `+` / `*` / `|` silently continued the previous statement with no W0001
+
+Root cause: the Pratt loop in kryos-parser consumes any token with infix binding power across a newline. W0001 covered only `||`, `-`, `[`, `(`; `+`, `*` and single `|` merged silently (`let a: i64 = 5` / `+ 1` -> 6, `| 1` -> 7, `* 2` -> 14, no diagnostic). Single `|` had been excluded because indented bit-packing chains are common and legitimate, and the parser had no way to tell an indented continuation from a fresh same-indent line.
+
+Fix: the lexer records `Token::line_indent` (leading space/tab count of the token's line); the parser tracks `stmt_indent` (indent of the innermost statement's first token). A newline-led `+`/`*`/`|` whose line indent is <= stmt_indent, inside a statement, warns W0001 once per expression per token. Indented chains and non-statement expressions (e.g. a top-level const initializer) stay silent. Merge semantics are unchanged (warning only). Based on the previous run's unverified misc.patch, re-verified and with one added guard (stmt_indent != u32::MAX so expressions outside any statement never warn).
+
+Files: kryos-lexer/src/{lexer,token}.rs, kryos-parser/src/parser.rs, kryos-errors/{codes,explain}.rs, CLAUDE.md (rule 1 text), tests/asi_nonw0001_pin.sh.
+
+Evidence: run.sh --only '^(ASI-nonW0001-tokens)$': master/pre-fix FAIL (stdout=6 7 14), now PASS (3 x W0001). tests/asi_nonw0001_pin.sh: master FAIL (want 3 W0001, got 0), here PASS. tests/diagnostics_gate.sh PASS (existing || - [ ( warn cases, bit-packing and chain no-false-positive cases). `kryos check` over all 1874 tracked .kry files: W0001 count identical to master on every file (no new warnings in the corpus).
+
+Residual / NOT covered: the item's second alternative (each line its own statement) was not implemented -- the merge still happens, only warned. `&` and unary-`-`-style same-indent lines were not changed. A newline-led `+`/`*`/`|` that is indented deeper than its statement is deliberately silent even if the author meant a fresh statement. Same-indent heuristic is by leading space/tab byte count (a tab counts as 1). `kryos fmt` refuses files carrying the new warnings (existing W0001 behavior); not exercised on the new shapes. The LSP/REPL W0001 delivery (A21) is a separate item and still FAILs.

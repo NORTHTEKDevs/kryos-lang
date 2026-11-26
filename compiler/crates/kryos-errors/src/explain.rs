@@ -936,8 +936,11 @@ cannot distinguish from the real trap:
         | d
 
 This warning is a partial net, not a complete one -- see CLAUDE.md hard
-rule 1. `*` and `&` share the identical grammar collision (unary
-deref/borrow vs. infix multiply/bitwise-and) and are not yet covered.
+rule 1. Newline-led `+`, `*` and single `|` also warn, but ONLY when the
+line is not indented past the first line of the statement it would
+continue (a same-indent `+ 1` after `let a = 5` is almost surely a new
+statement; an indented `+`/`|` chain is a normal continuation and stays
+silent). `&` shares the same collision and is not yet covered.
 
 Fixes:
   - If you meant a NEW statement, restructure it so its first token isn't

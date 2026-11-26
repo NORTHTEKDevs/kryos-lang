@@ -104,6 +104,10 @@ pub struct Parser {
     /// Set once the nesting limit fired. Suppresses the cascade of follow-on
     /// syntax errors from the abandoned parse so the user sees ONE E0010.
     nesting_poisoned: bool,
+    /// `line_indent` of the first token of the innermost statement being
+    /// parsed (`u32::MAX` outside any statement). A newline-led `+`/`*`/`|`
+    /// at or left of this indent is a fresh statement, not a continuation.
+    stmt_indent: u32,
 }
 
 /// Maximum live AST-path depth (nesting levels + chained-operation spine).
@@ -127,6 +131,7 @@ impl Parser {
             nest_depth: 0,
             rec_depth: 0,
             nesting_poisoned: false,
+            stmt_indent: u32::MAX,
         }
     }
 
@@ -1386,6 +1391,14 @@ impl Parser {
     }
 
     fn parse_statement(&mut self) -> Option<Stmt> {
+        let outer_indent = self.stmt_indent;
+        self.stmt_indent = self.peek().line_indent;
+        let stmt = self.parse_statement_inner();
+        self.stmt_indent = outer_indent;
+        stmt
+    }
+
+    fn parse_statement_inner(&mut self) -> Option<Stmt> {
         match self.peek_kind() {
             TokenKind::Let => Some(self.parse_let()),
             TokenKind::Return => Some(self.parse_return()),
@@ -2210,6 +2223,13 @@ impl Parser {
         let mut seen_minus_chain = false;
         let mut seen_lbracket_chain = false;
         let mut seen_lparen_chain = false;
+        // `+`, `*` and single `|` are only ambiguous when the line is NOT
+        // indented past the statement it would continue (a multi-line string
+        // concat or bit-packing chain is always indented), so the warning is
+        // gated on indentation and never fires on those.
+        let mut seen_plus_chain = false;
+        let mut seen_star_chain = false;
+        let mut seen_pipe_chain = false;
 
         loop {
             if self.at_end() {
@@ -2614,6 +2634,22 @@ impl Parser {
                 }
                 if is_minus {
                     seen_minus_chain = true;
+                }
+
+                if self.peek().newline_before
+                    && self.stmt_indent != u32::MAX
+                    && self.peek().line_indent <= self.stmt_indent
+                {
+                    let (seen, desc, as_desc, instead) = match kind {
+                        TokenKind::Plus => (&mut seen_plus_chain, "+", "addition", "an expression statement of its own"),
+                        TokenKind::Star => (&mut seen_star_chain, "*", "multiplication", "a dereference"),
+                        TokenKind::Pipe => (&mut seen_pipe_chain, "|", "a bitwise-or", "a closure literal"),
+                        _ => (&mut seen_pipe_chain, "", "", ""),
+                    };
+                    if !desc.is_empty() && !*seen {
+                        *seen = true;
+                        self.warn_asi_trap(self.peek().span, desc, as_desc, instead);
+                    }
                 }
 
                 self.advance();
