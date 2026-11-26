@@ -106,30 +106,33 @@ repo's own fixtures, not an estimate. They ship knowingly because closing them
 correctly needs alias analysis the compiler does not yet have, and the history
 of patching them shape-by-shape is a matter of record: ten investigations, each
 surfacing a further aliasing shape, several producing double-frees worse than
-the leak they replaced. Ranked live entries:
-[tools/loop/LEDGER.md](tools/loop/LEDGER.md) items 3, 51, 41.
+the leak they replaced. Items 3 (struct-argument leak) and 51 (struct
+enum-field overwrite leak) are CLOSED: struct and enum parameters are owned by
+the callee, and field/container stores take their own owner. Ranked live
+entries: [tools/loop/LEDGER.md](tools/loop/LEDGER.md) items 137, 138, 139
+(all OPEN; a fix wave for 137 and 139 was reverted after independent
+verification refuted it, 2026-11-24) and 41.
 
-| Shape | Measured cost | Item |
+| Shape | Effect | Item |
 |---|---|---|
-| A struct with HEAP FIELDS passed across any call boundary (free function or method) leaks its body | ~86MB per 1M calls | 3 |
-| A struct FIELD holding a Struct/Enum overwritten in a loop, while the SAME field is also read in that loop | ~92MB per 1M iterations | 51 |
+| Values linked through `shared` pointers (e.g. a linked list built with `cur = shared L { next: Some(cur) }` in a loop) are not freed | leaks most nodes | 137 |
+| Heap ownership edge case adjacent to 137/139, still open | see LEDGER | 138 |
+| A struct whose `Option` field is matched in a callee, with a tuple, closure or trait-object payload, leaks the payload box | leak proportional to iterations | 139 |
 
-**What this means in practice.** Both need a hot loop to matter: a program that
-passes heap-owning structs a few thousand times will not notice. A long-running
-server doing it per request will grow. If that is your shape, pass the heap
-field itself (`fn f(xs: [i64])`) rather than the struct that owns it, or keep
-the struct in one place and pass an index -- either avoids the call-boundary
-case entirely.
+**What this means in practice.** These need a hot loop to matter: a program
+that builds a few thousand `shared` nodes will not notice. A long-running
+server doing it per request will grow. Workaround: for 137, avoid `shared`
+chains in long-lived loops (use an array of indices or an owned tree instead);
+for 139, extract the payload once outside the hot loop rather than matching
+a struct's `Option` field in a callee per iteration; for 138, see the LEDGER
+entry for the specific shape.
 
-**Why they are documented rather than patched.** Items 3 and 51 share one root
-cause: struct/enum value ownership is not modelled uniformly across the two
-backends (Cranelift boxes a struct/enum and represents it as a pointer; LLVM
-stores one inline in the parent's layout), and a field READ of a
-mutable-container field is deliberately NOT dropped, because dropping it
-releases a buffer the struct still points at -- that choice is exactly what
-leaves an unbalanced reference behind. Closing it means telling a genuine
-borrow apart from an owning read whose slot is about to be replaced. That is
-alias analysis, planned as one unified ownership pass, not another patch.
+**Why 137 and 139 are documented rather than patched.** Two revision rounds
+of a fix each failed independent verification (new leaks for canonical shapes
+and a measured slowdown), and the history of shape-by-shape patching includes
+double-frees worse than the leak. Closing them needs one unified ownership
+model across both backends (Cranelift boxes a struct/enum as a pointer; LLVM
+stores it inline), not another patch.
 
 **A third, non-memory limit:** capability inference is fail-closed on closure
 values whose provenance it cannot resolve, so 41 of 75 enumerated LEGITIMATE
@@ -174,13 +177,9 @@ Honest, non-blocking residuals:
   compiler with a stack overflow instead of a diagnostic.
 - **AOT (`kryos build --release`) needs a host C toolchain** (MSVC/clang) for
   linking; the JIT (`kryos run`) needs nothing.
-- **`kryos fmt` does not preserve non-doc comments.** The formatter is
-  AST-based and the lexer discards `//` line and `/* */` block comments
-  (only `///` doc comments are retained and re-emitted). Formatting a file
-  drops its ordinary comments. `fmt` IS semantics-preserving otherwise - 
-  string interpolation and literal braces round-trip correctly. Comment
-  preservation needs a trivia-carrying parse and is tracked as follow-up;
-  until then, avoid `kryos fmt` on comment-heavy files you care about.
+- **`kryos fmt` never destroys a comment.** Comments are re-anchored; when a
+  comment cannot be re-anchored unambiguously, `fmt` skips that file and
+  leaves it untouched with a message rather than dropping the comment.
 
 `unsafe { }` is now ENFORCED: a raw-pointer dereference outside any `unsafe`
 block is rejected with E0500.

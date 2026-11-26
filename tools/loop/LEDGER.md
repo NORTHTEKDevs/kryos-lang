@@ -10287,3 +10287,17 @@ waves stayed on the branch: 4abc3237, 93eb2775, edaefeca, 2adcb631, 9a451e31,
 225e8175, ae044fb8. This commit restores every file except this ledger to
 25af4db3, the last head that passed all three verifiers. The refuted-wave
 entries above stay as history; their items remain open.
+
+## Item docs-stability-stale: STABILITY.md and LAUNCH-READINESS.md stale claims removed (2026-11-25)
+
+Root cause: STABILITY.md section 5.0 still listed items 3 and 51 as live leaks (both closed),
+said `kryos fmt` drops non-doc comments (master's fmt now skips a file it cannot re-anchor rather
+than drop a comment; executed: lane_docs_fmt probe printed "skipped ... file left untouched"), and
+did not name the open items 137, 138, 139. docs/LAUNCH-READINESS.md carried three matching stale
+lines (item 3 "still open", item 3 "~86MB per 1M calls", "`kryos fmt` drops").
+Files: STABILITY.md, docs/LAUNCH-READINESS.md, tests/docs_stability_stale_gate.sh (pin).
+Evidence: the pin prints PASS on this tree and 9 FAIL lines on the master tree (kryos-co-nov);
+finish/run.sh --only docs-stability-stale result in the commit message.
+Not covered: the 138 row says only "see LEDGER" because the ledger holds no characterised shape for
+138; other stale snapshots in LAUNCH-READINESS.md (dated history) were left as history. The
+B5/B6/B7/B9/41/B-latent-intrinsics Workaround lines are separate items, not touched here.
