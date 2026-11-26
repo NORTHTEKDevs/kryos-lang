@@ -231,6 +231,31 @@ impl Parser {
         false
     }
 
+    /// At a `(`: is its balanced group immediately followed by `:`? Only a
+    /// map-literal key can have that shape at the start of a `{ ... }` body.
+    fn paren_group_followed_by_colon(&self) -> bool {
+        let mut depth = 0usize;
+        let mut i = self.pos;
+        while i < self.tokens.len() {
+            match self.tokens[i].kind {
+                TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace => depth += 1,
+                TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        return matches!(
+                            self.tokens.get(i + 1).map(|t| t.kind),
+                            Some(TokenKind::Colon)
+                        );
+                    }
+                }
+                TokenKind::Eof => return false,
+                _ => {}
+            }
+            i += 1;
+        }
+        false
+    }
+
     fn at_end(&self) -> bool {
         self.peek_kind() == TokenKind::Eof
     }
@@ -3566,6 +3591,16 @@ impl Parser {
             || self.check(TokenKind::String)
             || self.check(TokenKind::Integer))
             && self.peek_nth(1) == TokenKind::Colon
+        {
+            return self.parse_map_literal_body(start);
+        }
+        // A negative integer key (`{-3: 1}`) or a parenthesised key
+        // (`{(0-3): 1}`) is also a map; neither can start a block statement
+        // that is followed by `:`.
+        if (self.check(TokenKind::Minus)
+            && self.peek_nth(1) == TokenKind::Integer
+            && self.peek_nth(2) == TokenKind::Colon)
+            || (self.check(TokenKind::LParen) && self.paren_group_followed_by_colon())
         {
             return self.parse_map_literal_body(start);
         }
