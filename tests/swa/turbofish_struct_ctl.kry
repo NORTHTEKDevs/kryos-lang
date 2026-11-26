@@ -1,0 +1,11 @@
+struct Box<T> { v: T }
+fn main() {
+    let b = Box{ v: 1 }
+    let lo = 1
+    let hi = 2
+    let hi2 = 3
+    let c = lo < hi
+    let d = lo < hi && hi > lo
+    if lo < hi2 { println("lt") }
+    println("{b.v} {c} {d}")
+}
