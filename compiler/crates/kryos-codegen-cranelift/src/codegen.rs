@@ -2063,15 +2063,6 @@ pub fn compile_module_with_options(
             let id = object_module.declare_function("kryos_array_free_tuples", Linkage::Import, &sig)?;
             func_ids.insert("kryos_array_free_tuples".to_string(), id);
         }
-        // A nested array / tuple capture or struct field releases through this.
-        if !func_ids.contains_key("kryos_release_desc") {
-            let mut sig = Signature::new(call_conv);
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(AbiParam::new(types::I64));
-            let id = object_module.declare_function("kryos_release_desc", Linkage::Import, &sig)?;
-            func_ids.insert("kryos_release_desc".to_string(), id);
-        }
         // A captured `[[T]]` releases its rows' elements through this.
         if !func_ids.contains_key("kryos_array_free_chain") {
             let mut sig = Signature::new(call_conv);
@@ -2114,15 +2105,6 @@ pub fn compile_module_with_options(
                 // Free each heap-typed capture at offset (i+1)*8.
                 for (i, cap_ty) in cap_types.iter().enumerate() {
                     let offset = ((i + 1) * 8) as i32;
-                    // A nested array / tuple capture is released down its whole
-                    // type tree, not one level (see `release_desc_of`).
-                    if let Some(ty @ (MirType::Tuple(_) | MirType::Array(_, _))) = cap_ty {
-                        if let Some((desc, leaf)) = release_desc_of(ty, &func_ids) {
-                            let val = builder.ins().load(types::I64, MemFlags::new(), env_ptr, offset);
-                            emit_release_desc_call(&mut builder, &mut object_module, &func_ids, val, desc, leaf);
-                            continue;
-                        }
-                    }
                     // A tuple capture is the fresh copy MIR made for the env:
                     // release its str/array/map elements and the tuple.
                     if let Some(MirType::Tuple(tes)) = cap_ty {
@@ -2274,14 +2256,6 @@ pub fn compile_module_with_options(
                             .find(|(n, _, _)| n == field_name)
                             .map(|(_, off, _)| *off as i32);
                         if let Some(offset) = field_offset {
-                            if let MirType::Tuple(_) | MirType::Array(_, _) = field_ty {
-                                if let Some((desc, leaf)) = release_desc_of(field_ty, &func_ids) {
-                                    let field_val =
-                                        builder.ins().load(types::I64, MemFlags::new(), ptr, offset);
-                                    emit_release_desc_call(&mut builder, &mut object_module, &func_ids, field_val, desc, leaf);
-                                    continue;
-                                }
-                            }
                             if let MirType::Tuple(tes) = field_ty {
                                 let kinds = tes.iter().take(16).enumerate().fold(0i64, |acc, (i, t)| {
                                     let k = match t {
@@ -9183,106 +9157,6 @@ fn array_free_chain(
         }
     }
     Some((chain, leaf, tuple_kinds))
-}
-
-/// A nested array / tuple type as `kryos_release_desc`'s prefix tree (4 bits a
-/// node, root lowest: 0 scalar, 1 str, 2 array + element, 3 map, 4 struct /
-/// enum through the one leaf drop function, 5 arc box, 6 tuple + count +
-/// elements) with the leaf drop function's name, when the whole tree is one the
-/// runtime releases soundly: a tuple holds only scalars, str, array, map and
-/// such tuples (`tuple_array_elem_releasable`: the only ones an array copy
-/// retains), a struct / enum / closure only as an array element, one leaf
-/// function in all, 16 nodes at most. None keeps the caller's one-level release.
-/// Only an array or a tuple at the root: a plain `[str]` has simpler paths.
-fn release_desc_of(
-    ty: &MirType,
-    func_ids: &HashMap<String, FuncId>,
-) -> Option<(i64, Option<String>)> {
-    fn enc(
-        t: &MirType,
-        leaf_ok: bool,
-        nibs: &mut Vec<u8>,
-        leaf: &mut Option<String>,
-        func_ids: &HashMap<String, FuncId>,
-    ) -> bool {
-        match t {
-            MirType::Str => nibs.push(1),
-            MirType::Map { .. } => nibs.push(3),
-            MirType::Array(e, _) => {
-                nibs.push(2);
-                if !enc(e.as_ref(), true, nibs, leaf, func_ids) {
-                    return false;
-                }
-            }
-            MirType::Tuple(es) => {
-                if !kryos_mir::ir::tuple_array_elem_releasable(t) || es.len() > 15 {
-                    return false;
-                }
-                nibs.push(6);
-                nibs.push(es.len() as u8);
-                for e in es {
-                    if !enc(e, false, nibs, leaf, func_ids) {
-                        return false;
-                    }
-                }
-            }
-            MirType::Struct(n) | MirType::Enum(n) if leaf_ok => {
-                let dn = format!("__kryos_drop_{n}");
-                let f = if func_ids.contains_key(&dn) { dn } else { "kryos_free".to_string() };
-                if leaf.as_ref().is_some_and(|l| *l != f) {
-                    return false;
-                }
-                *leaf = Some(f);
-                nibs.push(4);
-            }
-            MirType::Function { .. } | MirType::Shared(_) if leaf_ok => nibs.push(5),
-            MirType::I8
-            | MirType::I16
-            | MirType::I32
-            | MirType::I64
-            | MirType::U8
-            | MirType::U16
-            | MirType::U32
-            | MirType::U64
-            | MirType::F32
-            | MirType::F64
-            | MirType::Bool
-            | MirType::Char => nibs.push(0),
-            _ => return false,
-        }
-        nibs.len() <= 16
-    }
-    if !matches!(ty, MirType::Array(_, _) | MirType::Tuple(_)) {
-        return None;
-    }
-    let mut nibs = Vec::new();
-    let mut leaf = None;
-    if !enc(ty, false, &mut nibs, &mut leaf, func_ids) {
-        return None;
-    }
-    let desc = nibs.iter().enumerate().fold(0i64, |a, (i, n)| a | ((*n as i64) << (i * 4)));
-    Some((desc, leaf))
-}
-
-fn emit_release_desc_call<M: Module>(
-    builder: &mut FunctionBuilder,
-    object_module: &mut M,
-    func_ids: &HashMap<String, FuncId>,
-    val: cranelift_codegen::ir::Value,
-    desc: i64,
-    leaf: Option<String>,
-) {
-    let leaf_addr = match leaf.and_then(|n| func_ids.get(&n).copied()) {
-        Some(lid) => {
-            let lref = object_module.declare_func_in_func(lid, builder.func);
-            builder.ins().func_addr(types::I64, lref)
-        }
-        None => builder.ins().iconst(types::I64, 0),
-    };
-    let dv = builder.ins().iconst(types::I64, desc);
-    let fid = func_ids["kryos_release_desc"];
-    let fref = object_module.declare_func_in_func(fid, builder.func);
-    builder.ins().call(fref, &[val, dv, leaf_addr]);
 }
 
 fn emit_helper_array_field_free<M: Module>(
