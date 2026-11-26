@@ -4511,28 +4511,7 @@ fn is_read_then_slot_drop(instructions: &[Instruction], src: LocalId) -> bool {
     let Instruction::Assign { value: RValue::Field { object: Operand::Local(obj), .. }, .. } = &instructions[pos] else {
         return false;
     };
-    let Some(Instruction::Drop { local: dropped }) = instructions.get(pos + 1) else {
-        return false;
-    };
-    // The dropped slot is the read's object, or the root of the alias chain
-    // (`.q.name`: each step reads a struct / tuple field of the step before).
-    let mut cur = *obj;
-    for _ in 0..8 {
-        if cur == *dropped {
-            return true;
-        }
-        let def = instructions.iter().find_map(|i| match i {
-            Instruction::Assign { dest, value: RValue::Field { object: Operand::Local(p), .. } } if *dest == cur => {
-                Some(*p)
-            }
-            _ => None,
-        });
-        match def {
-            Some(p) => cur = p,
-            None => return false,
-        }
-    }
-    false
+    matches!(instructions.get(pos + 1), Some(Instruction::Drop { local }) if local == obj)
 }
 
 /// Does `src`'s definition, within this instruction window, match the
@@ -4629,27 +4608,6 @@ fn is_map_get_fn(func: &str) -> bool {
 /// field, not just the one read) forever after the first field read
 /// anywhere in the function. See `consume_call_args` for the analogous fix
 /// on the "passed as a call argument" side of the same over-eager-move bug.
-
-/// `drop_unescaped_str_temps` for an expression that CREATED blocks (an if /
-/// match value inside a condition or a `return`): the whole-expression pass
-/// bails, but the LAST block follows all of its branching and is never
-/// re-entered, so the temps DEFINED there are cleaned up as their own window
-/// -- the statement-end path (`lower_stmt`) already does this for a statement;
-/// the condition and `return` routes ran only the whole-window pass, so
-/// `len(match .. { .. }.name) > 1` / `return len(if .. { .. }.name)` leaked
-/// the str the field read retained.
-fn drop_tail_block_temps(
-    ctx: &mut LoweringContext,
-    block_mark: u32,
-    locals_mark: usize,
-    partial_moved_before: &std::collections::HashSet<u32>,
-    escaping: Option<u32>,
-) {
-    if ctx.next_block != block_mark {
-        let tail_block_mark = ctx.next_block;
-        drop_unescaped_str_temps(ctx, 0, tail_block_mark, locals_mark, partial_moved_before, escaping);
-    }
-}
 
 fn drop_unescaped_str_temps(
     ctx: &mut LoweringContext,
@@ -5803,25 +5761,6 @@ fn pattern_binds(p: &ast::Pattern, name: &str) -> bool {
     }
 }
 
-/// `{ let t = mk(i)  t }`: a block of exactly a `let` of a fresh struct and a
-/// tail naming it. The tail MOVES `t` out (take_tail_identifier suppresses its
-/// scope-end drop), so whoever takes the block's value owns that struct.
-fn block_moves_own_let(b: &ast::Block) -> bool {
-    if let [ast::Stmt::Let { name: n, pattern: None, value: Some(init), .. }, ast::Stmt::Expr { expr: ast::Expr::Identifier { name, .. }, .. }] =
-        b.stmts.as_slice()
-    {
-        return n == name
-            && matches!(
-                init,
-                ast::Expr::StructLiteral { .. }
-                    | ast::Expr::FnCall { .. }
-                    | ast::Expr::MethodCall { .. }
-                    | ast::Expr::StaticMethodCall { .. }
-            );
-    }
-    false
-}
-
 /// Does every value-producing branch of struct-valued `e` hand the if/match
 /// result slot a FRESH, independent value -- a struct literal, or a closure's
 /// env-owned capture, which the branch copies (env_owned_copy)? Only then may
@@ -5857,13 +5796,6 @@ fn struct_value_owned(ctx: &LoweringContext, e: &ast::Expr) -> bool {
         match b.stmts.last() {
             Some(ast::Stmt::Expr { expr: ast::Expr::Identifier { name, .. }, .. }) => {
                 // A name the block binds itself shadows the one it resolves to.
-                // `{ let t = mk(i)  t }`: the tail MOVES the block's own fresh
-                // struct into the slot (take_tail_identifier drops no copy of
-                // it), so the slot owns it -- only that exact two-statement
-                // shape, where nothing else can alias `t`.
-                if matches!(b.stmts.first(), Some(ast::Stmt::Let { name: n, .. }) if n == name) {
-                    return block_moves_own_let(b);
-                }
                 !b.stmts.iter().any(|s| matches!(s, ast::Stmt::Let { name: n, pattern, .. }
                     if n == name || pattern.as_ref().is_some_and(|p| pattern_binds(p, name))))
                     && tail_ident_owned(ctx, name)
@@ -6859,18 +6791,6 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                             matches!(v, ast::Expr::IfExpr { .. } | ast::Expr::MatchExpr { .. })
                                                 && struct_value_owned(ctx, v)
                                         }) =>
-                                {
-                                    aggregate_clone = Some("__kryos_struct_index_clone");
-                                    drop_fresh_src = Some(*src);
-                                }
-                                // `let x = { let t = mk(i)  t }`: the tail moved `t` out
-                                // of the block, `x` takes a copy and the original is
-                                // released right after (nothing released it).
-                                MirType::Struct(_)
-                                    if is_owned_struct_ty(ctx, &src_ty)
-                                        && value.as_ref().is_some_and(|v| matches!(v,
-                                            ast::Expr::Block { block, .. } if block_moves_own_let(block)))
-                                        && ctx.dropped_locals.contains(&src.0) =>
                                 {
                                     aggregate_clone = Some("__kryos_struct_index_clone");
                                     drop_fresh_src = Some(*src);
@@ -9091,7 +9011,6 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                 &ret_partial_moved_before,
                 returned_local_id,
             );
-            drop_tail_block_temps(ctx, ret_block_mark, ret_locals_mark, &ret_partial_moved_before, returned_local_id);
             // A field read (`return s.field`) hands back a value aliasing the
             // source struct's buffer; excluding the source struct from drops
             // prevents freeing the buffer we just returned (use-after-free),
@@ -9800,7 +9719,6 @@ fn lower_if(
         &cond_partial_moved,
         cond_escaping,
     );
-    drop_tail_block_temps(ctx, cond_block_mark, cond_locals_mark, &cond_partial_moved, cond_escaping);
     let then_bb = ctx.alloc_block();
     let else_bb = ctx.alloc_block();
     let merge_bb = ctx.alloc_block();
@@ -9822,24 +9740,7 @@ fn lower_if(
     if !elif_clauses.is_empty() {
         // First elif becomes the else-block, further elifs chain.
         for (i, (elif_cond, elif_body)) in elif_clauses.iter().enumerate() {
-            let elif_inst_mark = ctx.current_instructions.len();
-            let elif_block_mark = ctx.next_block;
-            let elif_locals_mark = ctx.locals.len();
-            let elif_partial_moved = ctx.partial_moved_locals.clone();
             let elif_cond_op = lower_expr_to_operand(ctx, elif_cond);
-            let elif_escaping = match &elif_cond_op {
-                Operand::Local(id) => Some(id.0),
-                _ => None,
-            };
-            drop_unescaped_str_temps(
-                ctx,
-                elif_inst_mark,
-                elif_block_mark,
-                elif_locals_mark,
-                &elif_partial_moved,
-                elif_escaping,
-            );
-            drop_tail_block_temps(ctx, elif_block_mark, elif_locals_mark, &elif_partial_moved, elif_escaping);
             let elif_then_bb = ctx.alloc_block();
             let elif_else_bb = if i + 1 < elif_clauses.len() || else_block.is_some() {
                 ctx.alloc_block()
@@ -9911,7 +9812,6 @@ fn lower_while(ctx: &mut LoweringContext, condition: &ast::Expr, body: &ast::Blo
         &cond_partial_moved,
         cond_escaping,
     );
-    drop_tail_block_temps(ctx, cond_block_mark, cond_locals_mark, &cond_partial_moved, cond_escaping);
     ctx.finish_block(
         Terminator::Branch {
             cond: cond_op,
@@ -13977,114 +13877,36 @@ fn consume_call_args(ctx: &mut LoweringContext, dest: LocalId, func: &str, args:
 /// Returns true when `ty` is a copy type (no heap ownership).
 /// Primitives and @copy structs are copy; everything else (str, enum,
 /// non-@copy struct, array, shared, ptr) is non-copy and owns heap memory.
-/// Is a read of a value of type `ty` independent of the aggregate it came
-/// out of: a scalar copy, or a str / array / map the read retains?
-fn read_is_independent(ty: &MirType) -> bool {
+/// Is a read of `field` off struct type `obj_ty` independent of the struct
+/// afterwards: a scalar copy, or a str / array / map the read retains?
+fn field_read_borrows_slot(ctx: &LoweringContext, obj_ty: &MirType, field: &str) -> bool {
+    let MirType::Struct(sn) = obj_ty else { return false };
+    let fty = ctx
+        .struct_defs
+        .get(sn.as_str())
+        .and_then(|fs| fs.iter().find(|(n, _)| n == field).map(|(_, t)| t.clone()));
     matches!(
-        ty,
-        MirType::I8
-            | MirType::I16
-            | MirType::I32
-            | MirType::I64
-            | MirType::I128
-            | MirType::U8
-            | MirType::U16
-            | MirType::U32
-            | MirType::U64
-            | MirType::U128
-            | MirType::F32
-            | MirType::F64
-            | MirType::Bool
-            | MirType::Char
-            | MirType::Str
-            | MirType::Array(_, _)
-            | MirType::Map { .. }
+        fty,
+        Some(
+            MirType::I8
+                | MirType::I16
+                | MirType::I32
+                | MirType::I64
+                | MirType::I128
+                | MirType::U8
+                | MirType::U16
+                | MirType::U32
+                | MirType::U64
+                | MirType::U128
+                | MirType::F32
+                | MirType::F64
+                | MirType::Bool
+                | MirType::Char
+                | MirType::Str
+                | MirType::Array(_, _)
+                | MirType::Map { .. }
+        )
     )
-}
-
-/// A field read (or a chain of them: `.q.name`, `.t.0`) off an if / match
-/// VALUE whose every branch hands the hidden result slot a fresh struct
-/// (`len(match k { 0 => mk(i), _ => mk(i + 1) }.name)`). Nobody owns the slot
-/// after the read, and no temp pass reaches a slot defined in the arms. Every
-/// step but the last reads a struct / tuple field (an unretained alias into
-/// the slot); the last reads a scalar or a retained str / array / map, which
-/// is independent of the slot -- so the slot is released right after it.
-/// Returns None (nothing lowered) for any other shape.
-fn lower_field_chain_off_slot(ctx: &mut LoweringContext, expr: &ast::Expr) -> Option<RValue> {
-    let mut fields: Vec<&String> = Vec::new();
-    let mut exprs: Vec<&ast::Expr> = Vec::new();
-    let mut root = expr;
-    while let ast::Expr::FieldAccess { object, field, .. } = root {
-        fields.push(field);
-        exprs.push(root);
-        root = object.as_ref();
-    }
-    if !matches!(root, ast::Expr::IfExpr { .. } | ast::Expr::MatchExpr { .. }) {
-        return None;
-    }
-    fields.reverse();
-    exprs.reverse();
-    let root_ty = infer_expr_type(ctx, root);
-    if !is_owned_struct_ty(ctx, &root_ty) || !struct_value_owned(ctx, root) {
-        return None;
-    }
-    let n = fields.len();
-    let mut tys = vec![root_ty.clone()];
-    for e in &exprs {
-        tys.push(infer_expr_type(ctx, e));
-    }
-    for i in 0..n {
-        let src_ok = match &tys[i] {
-            MirType::Struct(_) => is_owned_struct_ty(ctx, &tys[i]),
-            MirType::Tuple(es) => fields[i].parse::<usize>().ok().is_some_and(|k| k < es.len()),
-            _ => false,
-        };
-        let dst_ok = if i + 1 == n {
-            read_is_independent(&tys[i + 1])
-        } else {
-            matches!(tys[i + 1], MirType::Struct(_)) && is_owned_struct_ty(ctx, &tys[i + 1])
-                || matches!(tys[i + 1], MirType::Tuple(_))
-        };
-        if !src_ok || !dst_ok {
-            return None;
-        }
-    }
-    let (slot, release) = match lower_expr_to_rvalue(ctx, root) {
-        RValue::Use(Operand::Local(t))
-            if ctx.locals.iter().any(|l| l.id == t && l.name.is_none() && l.ty == root_ty) =>
-        {
-            (t, true)
-        }
-        rvalue => {
-            let temp = ctx.alloc_temp(root_ty.clone());
-            ctx.emit(Instruction::Assign { dest: temp, value: rvalue });
-            (temp, false)
-        }
-    };
-    let mut cur = slot;
-    for i in 0..n {
-        let t = ctx.alloc_temp(tys[i + 1].clone());
-        ctx.emit(Instruction::Assign {
-            dest: t,
-            value: RValue::Field { object: Operand::Local(cur), field: fields[i].clone() },
-        });
-        // A tuple element read is retained explicitly (a struct field read is
-        // retained by the backends themselves).
-        if i + 1 == n && matches!(tys[i], MirType::Tuple(_)) {
-            if let Some(rf) = retain_for_ty(&tys[i + 1]) {
-                let sink = ctx.alloc_temp(MirType::I64);
-                ctx.emit(Instruction::Assign {
-                    dest: sink,
-                    value: RValue::Call { func: rf.to_string(), args: vec![Operand::Local(t)] },
-                });
-            }
-        }
-        cur = t;
-    }
-    if release {
-        ctx.emit(Instruction::Drop { local: slot });
-    }
-    Some(RValue::Use(Operand::Local(cur)))
 }
 
 fn is_copy_type(ctx: &LoweringContext, ty: &MirType) -> bool {
@@ -17074,12 +16896,37 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 }
             }
 
-            if let Some(rvalue) = lower_field_chain_off_slot(ctx, expr) {
-                return rvalue;
-            }
-
             let obj_ty = infer_expr_type(ctx, object);
-            let obj = lower_expr_to_operand(ctx, object);
+            // A field read off an if / match VALUE whose every branch hands the
+            // hidden result slot a fresh struct (`len(match k { 0 => mk(i), _ =>
+            // mk(i + 1) }.name)`): nobody owns the slot after the read, and the
+            // statement-end temp pass bails on a statement that made blocks. A
+            // str / array / map field read is retained (the reader owns its own
+            // reference) and a scalar is a copy, so the slot is released right
+            // after the read. A struct / enum / tuple / closure field read is an
+            // alias into the slot and keeps it (no release here).
+            let mut slot_to_release: Option<LocalId> = None;
+            let obj = if matches!(object.as_ref(), ast::Expr::IfExpr { .. } | ast::Expr::MatchExpr { .. })
+                && is_owned_struct_ty(ctx, &obj_ty)
+                && struct_value_owned(ctx, object)
+                && field_read_borrows_slot(ctx, &obj_ty, field)
+            {
+                match lower_expr_to_rvalue(ctx, object) {
+                    RValue::Use(Operand::Local(t))
+                        if ctx.locals.iter().any(|l| l.id == t && l.name.is_none() && l.ty == obj_ty) =>
+                    {
+                        slot_to_release = Some(t);
+                        Operand::Local(t)
+                    }
+                    rvalue => {
+                        let temp = ctx.alloc_temp(obj_ty.clone());
+                        ctx.emit(Instruction::Assign { dest: temp, value: rvalue });
+                        Operand::Local(temp)
+                    }
+                }
+            } else {
+                lower_expr_to_operand(ctx, object)
+            };
 
             // Partial-move tracking: if a non-copy field is moved out of a
             // non-@copy struct local, mark the source local so scope cleanup
@@ -17171,6 +17018,17 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                     });
                     return RValue::Use(Operand::Local(tmp));
                 }
+            }
+
+            if let Some(slot) = slot_to_release {
+                let fty = infer_expr_type(ctx, expr);
+                let read = ctx.alloc_temp(fty);
+                ctx.emit(Instruction::Assign {
+                    dest: read,
+                    value: RValue::Field { object: obj, field: field.clone() },
+                });
+                ctx.emit(Instruction::Drop { local: slot });
+                return RValue::Use(Operand::Local(read));
             }
 
             RValue::Field {
