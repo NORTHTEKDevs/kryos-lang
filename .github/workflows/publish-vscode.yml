@@ -7,11 +7,11 @@ name: Publish VS Code extension
 #      Scopes: Marketplace -> Manage. Copy it.
 #   3. gh secret set VSCE_PAT -R NORTHTEKDevs/kryos-lang
 # Then run this workflow by hand (Actions tab -> Publish VS Code extension -> Run).
-# The `release: published` trigger below does NOT fire for releases cut by
-# release.yml: that release is created with the default GITHUB_TOKEN, and
-# GitHub starts no workflow from an event raised by that token (open item A23,
-# tools/loop/LEDGER.md). Until a workflow_call from release.yml is proven on a
-# real tag, publishing is manual.
+# This workflow has no release trigger on purpose: releases are cut by
+# release.yml with the default GITHUB_TOKEN, and GitHub starts no workflow from
+# an event raised by that token, so a `release: published` trigger could never
+# fire (A23, tools/loop/LEDGER.md). Publishing is manual (workflow_dispatch)
+# until a workflow_call from release.yml is proven on a real tag.
 on:
   workflow_dispatch:
     inputs:
@@ -22,8 +22,6 @@ on:
         description: "Only verify the stored VSCE_PAT (no publish) -- use after rotating the token"
         default: "false"
         required: false
-  release:
-    types: [published]
 
 jobs:
   publish:
@@ -39,7 +37,7 @@ jobs:
       - name: Resolve tag
         if: ${{ github.event.inputs.verify_only != 'true' }}
         id: tag
-        run: echo "tag=${{ github.event.inputs.tag || github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+        run: echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
       - name: Download .vsix from the release
         if: ${{ github.event.inputs.verify_only != 'true' }}
         env:

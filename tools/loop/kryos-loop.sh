@@ -191,6 +191,7 @@ cmd_gates() {
     run "dap_jit_owner"       bash tests/dap_jit_owner_gate.sh
     run "lsp_repl_w0001"      bash tests/lsp_repl_w0001_gate.sh
     run "abort_builtin"       bash tests/abort_builtin_gate.sh
+    run "publish_vscode_trigger" bash tests/publish_vscode_trigger_gate.sh
     run "parser_nesting"      bash tests/parser_nesting_gate.sh
     run "fixtures_tracked"   bash tests/fixtures_tracked_gate.sh
     run "stdlib_compile"      bash tests/stdlib_compile_gate.sh
