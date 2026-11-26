@@ -476,14 +476,17 @@ reference's argument: `outer(reader)` is rejected at the `deny!` inside `outer` 
 on (a relay, a recursion, a method chain) passes the obligation on. Three costs,
 all deliberate: the verdict does not depend on the order of the declarations (a
 privileged `Plugin { run: .. }` literal below a `deny!` that reads another registry
-of `Plugin`s now counts, exactly as it did when it sat above); a block inside a
+of `Plugin`s now counts, exactly as it did when it sat above); a block directly in a
 method of a trait impl that depends on one of its parameters is judged on `all`,
-because a generic bound or a `dyn` reaches the method through the trait; and a
-function nothing references is not judged on its parameters (it cannot run). Still
-open: the body of a trait default method is never checked (LEDGER item 122), and a
-helper that stores a closure into a container it was handed is not followed through
-a factory result, a generic trait bound or a `dyn` (item 123), or when the container
-sits inside a tuple, an `Option`, a `Result` or an enum (item 119); `deny!(fs)`,
+because a call through the trait does not name the impl; and a
+function nothing references is not judged on its parameters (it cannot run). The
+body of a trait default method is checked (LEDGER item 122); a call through a trait
+signature (a generic bound, a `dyn`, `self` in a default body) references the default
+body and every impl method with its arguments (item 123, rows 123b and 123c); and the
+verdict does not depend on the order the declarations are written in (items 124 and
+125). Still open: a helper that stores a closure into a container it was handed is not
+followed through a factory result (item 123a), or when the container sits inside a
+tuple, an `Option`, a `Result` or an enum (item 119); `deny!(fs)`,
 `deny!(io)` and `deny!(all)` are not matched against a used `fs:read` by this layer
 (item 121). Rejected: the `tests/security/attack_deny_*.kry` programs (E0110).
 Accepted: the `tests/security/ctl_deny_*.kry` controls.

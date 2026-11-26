@@ -236,6 +236,22 @@ pub struct TypeChecker {
     /// verdict taken when the module is done (`settle_denies`) does not repeat
     /// one the block reported when it was checked.
     denies_reported: std::collections::HashSet<(Span, String)>,
+    /// The trait whose default method body is being checked right now. Inside it
+    /// `self` is typed as the trait (the body is checked once for every
+    /// implementer), but it is not a `dyn` value: see `reference_trait_dispatch`.
+    trait_default_self: Option<String>,
+}
+
+/// How much of every per-pass record a checking pass of `check_module` had filed
+/// when it started, so a pass whose output is thrown away (the call-graph-order
+/// pass) can be rolled back. See `TypeChecker::pass_marks`.
+struct PassMarks {
+    diagnostics: usize,
+    denies: (usize, usize),
+    log: usize,
+    exported: usize,
+    unbindable: usize,
+    bridge: usize,
 }
 
 impl Default for TypeChecker {
@@ -287,6 +303,7 @@ impl TypeChecker {
             cap_effects_log: Vec::new(),
             builtin_cap_var,
             denies_reported: std::collections::HashSet::new(),
+            trait_default_self: None,
         }
     }
 
@@ -1151,6 +1168,37 @@ impl TypeChecker {
 
     // ── Declaration checking ─────────────────────────────────────────
 
+    /// Remember how much every per-pass record holds right now, to roll a pass
+    /// back with `discard_pass`. The records are the diagnostics, the `deny!`
+    /// blocks and references the engine filed, the effect log and the three
+    /// vectors the end-of-check export reads (`exported_expr_types`,
+    /// `unbindable_calls`, `bridge_open_vars`): a pass that is repeated must not
+    /// leave a second record of the same span behind (two records of one span
+    /// that resolve to different type vars are exported as neither).
+    fn pass_marks(&self) -> PassMarks {
+        PassMarks {
+            diagnostics: self.diagnostics.len(),
+            denies: self.engine.deny_marks(),
+            log: self.cap_effects_log.len(),
+            exported: self.exported_expr_types.len(),
+            unbindable: self.unbindable_calls.len(),
+            bridge: self.bridge_open_vars.len(),
+        }
+    }
+
+    /// Drop everything a pass filed since `marks`. What stays is what the pass
+    /// was run for: the substitution (rows only widen), the declarations' own
+    /// rows and the store effects they recorded.
+    fn discard_pass(&mut self, marks: &PassMarks) {
+        self.diagnostics.truncate(marks.diagnostics);
+        self.engine.truncate_denies(marks.denies);
+        self.cap_effects_log.truncate(marks.log);
+        self.denies_reported.clear();
+        self.exported_expr_types.truncate(marks.exported);
+        self.unbindable_calls.truncate(marks.unbindable);
+        self.bridge_open_vars.truncate(marks.bridge);
+    }
+
     /// Type-check an entire module.
     pub fn check_module(&mut self, module: &Module) {
         // An ACTOR name colliding with a struct/enum of the same name is a
@@ -1471,8 +1519,85 @@ impl TypeChecker {
         self.denies_reported.clear();
 
         // Second pass: check function bodies and expressions.
-        for decl in &module.declarations {
+        let marks2 = self.pass_marks();
+        for (i, decl) in module.declarations.iter().enumerate() {
+            self.engine.set_current_decl(Some(i));
             self.check_decl(decl);
+        }
+        self.engine.set_current_decl(None);
+        // A reference that precedes the declaration it names reads the callee's
+        // row, and the stores the callee's body makes, before the callee's body
+        // was checked: nothing of the callee reaches the caller's own parameters
+        // and a helper that only hands a parameter on (`reg1(f)` calling
+        // `reg2(f)`, which stores it) leaves no effect of its own for the code
+        // above it. So a `deny!` verdict depended on declaration order (LEDGER
+        // items 124 and 125, and every shape that only reorders them: a chain of
+        // forward helpers, a recursion that swaps its parameters, a long cycle).
+        //
+        // When the module holds a `deny!` whose row can still change, check every
+        // body once more in call-graph order (callee before caller, a cycle
+        // re-checked until a round settles nothing new) with the results thrown
+        // away, so the pass that reports sees every callee's summary built.
+        // Rows only widen (`bind_cap_var` unions), so the extra pass is safe in
+        // the same way the actor pre-pass above is, and it has no output of its
+        // own: it cannot accept anything the textual pass rejected.
+        let order = if self.engine.deny_marks().0 > marks2.denies.0 {
+            self.engine.callee_first_order(module.declarations.len())
+        } else {
+            None
+        };
+        if let Some(order) = order {
+            self.discard_pass(&marks2);
+            let watermark = self.engine.cap_var_watermark();
+            let mut unsettled: Option<Span> = None;
+            for group in &order {
+                let mut prev = if group.cyclic {
+                    Some(self.engine.convergence_stamp(&group.owners, watermark))
+                } else {
+                    None
+                };
+                let mut rounds = 0usize;
+                // The stamp is a finite lattice and rows only widen, so the loop
+                // always converges; the bound is a runaway stop sized by the
+                // number of cap vars that exist (a rotation of K parameters
+                // between two functions needs about K rounds). Hitting it is a
+                // program whose rows this pass could not settle: it is rejected
+                // below, never accepted unjudged.
+                let limit = 2 * (watermark as usize) + 64;
+                loop {
+                    for &i in &group.members {
+                        self.engine.set_current_decl(Some(i));
+                        self.check_decl(&module.declarations[i]);
+                    }
+                    if !group.cyclic {
+                        break;
+                    }
+                    let now = self.engine.convergence_stamp(&group.owners, watermark);
+                    rounds += 1;
+                    if prev.as_ref() == Some(&now) {
+                        break;
+                    }
+                    if rounds >= limit {
+                        unsettled.get_or_insert(module.declarations[group.members[0]].span());
+                        break;
+                    }
+                    prev = Some(now);
+                }
+            }
+            self.engine.set_current_decl(None);
+            self.discard_pass(&marks2);
+            for (i, decl) in module.declarations.iter().enumerate() {
+                self.engine.set_current_decl(Some(i));
+                self.check_decl(decl);
+            }
+            self.engine.set_current_decl(None);
+            if let Some(span) = unsettled {
+                self.error_with_code(
+                    "the capability rows of this group of mutually recursive functions did not settle, so no `deny!` verdict can be trusted here; split the cycle or reduce the number of function-typed parameters passed around it",
+                    span,
+                    kryos_errors::codes::E0110,
+                );
+            }
         }
 
         // Every `deny!` block is judged on the row its body was charged, and the
@@ -3106,6 +3231,104 @@ impl TypeChecker {
                 }
                 self.current_self_type = prev_self;
             }
+            Decl::Trait {
+                name,
+                generics,
+                methods,
+                ..
+            } => {
+                // The BODY of a trait default method. `register_decl` records only
+                // the signatures ("bodies live in each impl"), and this match had
+                // no arm for the trait, so a default body was never checked: a
+                // type error in one was accepted and a `deny!` block in one was
+                // never judged by the row layer (LEDGER item 122). Check each body
+                // like an impl method body, with `Self` bound to the trait itself
+                // (the same `Self` its signatures were resolved with).
+                let prev_self = self.current_self_type.take();
+                let self_ty = Type::DynTrait {
+                    trait_name: name.clone(),
+                };
+                self.current_self_type = Some(self_ty.clone());
+                let prev_default_self = self.trait_default_self.replace(name.clone());
+                let trait_def = self.env.lookup_trait(name).cloned();
+                self.env.push_scope();
+                for gp in generics {
+                    let tv = self.engine.fresh_var();
+                    self.env.define_var(gp.name.clone(), tv);
+                }
+                for method in methods {
+                    let Decl::Function {
+                        name: mname,
+                        body: Some(body),
+                        params: m_params,
+                        ret_ty: m_ret,
+                        generics: m_generics,
+                        ..
+                    } = method
+                    else {
+                        continue;
+                    };
+                    self.env.push_scope();
+                    self.env.define_var("self".to_string(), self_ty.clone());
+                    for gp in m_generics {
+                        let tv = self.engine.fresh_var();
+                        self.env.define_var(gp.name.clone(), tv);
+                    }
+                    let sig = trait_def
+                        .as_ref()
+                        .and_then(|d| d.methods.iter().find(|s| &s.name == mname))
+                        .cloned();
+                    let prev_ret = self.current_return_type.take();
+                    let prev_fn = self.current_function_name.take();
+                    self.current_function_name = Some(mname.clone());
+                    if let Some(sig) = &sig {
+                        for (pname, pty) in &sig.params {
+                            if pname != "self" {
+                                self.env.define_var(pname.clone(), pty.clone());
+                            }
+                        }
+                        self.current_return_type = Some(sig.ret.clone());
+                        self.seed_tail_lambda_expected(body);
+                        self.engine.mark_slot_rows(&sig.ret, false);
+                        self.engine.begin_store_effects(&sig.generic_cap_var_ids);
+                        self.engine.set_effect_owner(sig.own_cap_var);
+                        let param_tys: Vec<Type> =
+                            sig.params.iter().map(|(_, t)| t.clone()).collect();
+                        self.engine.mark_input_storage(&param_tys);
+                    } else {
+                        for param in m_params {
+                            if param.name == "self" {
+                                continue;
+                            }
+                            let ty = param
+                                .ty
+                                .as_ref()
+                                .map(|t| self.resolve_type_expr(t))
+                                .unwrap_or_else(|| self.engine.fresh_var());
+                            self.env.define_var(param.name.clone(), ty);
+                        }
+                        self.current_return_type =
+                            m_ret.as_ref().map(|t| self.resolve_type_expr(t));
+                        self.seed_tail_lambda_expected(body);
+                    }
+                    self.cap_accum_stack.push(crate::ty::CapRow::empty());
+                    self.check_block(body);
+                    let method_caps = self
+                        .cap_accum_stack
+                        .pop()
+                        .unwrap_or_else(crate::ty::CapRow::empty);
+                    if let Some(sig) = &sig {
+                        self.engine.bind_cap_var(sig.own_cap_var, method_caps);
+                        self.engine.end_store_effects(Some(sig.own_cap_var));
+                    }
+                    self.current_function_name = prev_fn;
+                    self.current_return_type = prev_ret;
+                    self.env.pop_scope();
+                }
+                self.env.pop_scope();
+                self.trait_default_self = prev_default_self;
+                self.current_self_type = prev_self;
+            }
             _ => {}
         }
     }
@@ -3116,6 +3339,40 @@ impl TypeChecker {
         for stmt in &block.stmts {
             self.check_stmt(stmt);
         }
+    }
+
+    /// A call `recv.method(args)` through a trait's own signature (a generic
+    /// bound, a `dyn`, or `self` inside a default body of that trait) reaches the
+    /// default body of the method, when it has one, or the method of any impl of
+    /// the trait, and names none of them. Reference every one of them with this
+    /// call's arguments: their stores are replayed, their `deny!` obligations are
+    /// judged on what this call passes, and what they return carries the rows of
+    /// what they return. `inst_params` / `inst_ret` / `cap_var_map` are the
+    /// trait signature as instantiated for this call, its arguments already
+    /// unified. Returns the row the call charges its caller.
+    fn reference_trait_dispatch(
+        &mut self,
+        trait_name: &str,
+        method: &str,
+        sig: &FunctionSig,
+        inst_params: &[Type],
+        inst_ret: &Type,
+        cap_var_map: &std::collections::HashMap<crate::ty::CapVarId, crate::ty::CapVarId>,
+        span: Span,
+    ) -> crate::ty::CapRow {
+        let (_own_row, mut charge) = self
+            .engine
+            .reference_row(sig.own_cap_var, cap_var_map, span);
+        for imp in self.env.impl_methods_of_trait(trait_name, method) {
+            if imp.own_cap_var == sig.own_cap_var {
+                continue;
+            }
+            let r = self
+                .engine
+                .reference_candidate(&imp, inst_params, inst_ret, span);
+            charge = charge.union(&r);
+        }
+        charge
     }
 
     /// The value type of a trailing `try { .. } catch e { .. }` used as a
@@ -5917,15 +6174,23 @@ impl TypeChecker {
                                 if let Some(sig) =
                                     trait_def.methods.iter().find(|m| m.name == *method)
                                 {
-                                    let expected_params: Vec<_> = if sig
-                                        .params
-                                        .first()
-                                        .map(|(n, _)| n.as_str())
-                                        == Some("self")
-                                    {
-                                        sig.params[1..].to_vec()
-                                    } else {
-                                        sig.params.clone()
+                                    // Freshen the trait signature's row vars for THIS call, as
+                                    // every other reference does: unifying the arguments with the
+                                    // signature's own params would bind the vars the default body
+                                    // (which owns them) is written in to this caller's.
+                                    let (inst_params, inst_ret, _vm, cap_var_map) =
+                                        self.engine.instantiate_sig(sig);
+                                    let expected_params: Vec<(String, Type)> = {
+                                        let skip = usize::from(
+                                            sig.params.first().map(|(n, _)| n.as_str())
+                                                == Some("self"),
+                                        );
+                                        sig.params
+                                            .iter()
+                                            .zip(inst_params.iter())
+                                            .skip(skip)
+                                            .map(|((n, _), t)| (n.clone(), t.clone()))
+                                            .collect()
                                     };
                                     if args.len() != expected_params.len() {
                                         self.error(
@@ -5950,32 +6215,29 @@ impl TypeChecker {
                                             }
                                         }
                                     }
-                                    // Row-propagation stage gap 1/3
-                                    // (docs/capability-effects-spec.md):
-                                    // `T`'s bound only tells us WHICH TRAIT
-                                    // a call site's concrete `T` implements
-                                    // -- it does not tell us WHICH impl.
-                                    // `sig` is the TRAIT's own declared
-                                    // signature, whose `own_cap_var` has no
-                                    // body to ever bind it (see
-                                    // `Decl::Trait`'s registration, a few
-                                    // hundred lines up: "no body here --
-                                    // bodies live in each impl"), so it can
-                                    // never be resolved to a real charge --
-                                    // and even if it somehow were, it would
-                                    // still only describe ONE arbitrary
-                                    // impl, not the one this call site
-                                    // actually reaches at runtime. Charge
-                                    // this call itself as `Unknown` (never
-                                    // silently free) and stamp every
-                                    // capability row reachable inside the
-                                    // trait's declared return type as
-                                    // `Unknown` too -- a returned closure
-                                    // could have come from ANY implementing
-                                    // type, so its row is exactly as
-                                    // unknowable as the call itself.
-                                    self.accumulate_caps(&crate::ty::CapRow::unknown());
-                                    return sig.ret.with_caps_erased_to_unknown();
+                                    // A generic bound only tells us WHICH TRAIT the
+                                    // call site's concrete `T` implements, not which
+                                    // impl: `sig` is the trait's own signature. The
+                                    // callee is the default body of the method, when the
+                                    // trait has one, or the method of one of the impls of
+                                    // the trait, so reference every one of them with this
+                                    // call's arguments (`reference_trait_dispatch`):
+                                    // charge what they charge and return what they
+                                    // return. The earlier rule charged `Unknown` and
+                                    // erased every row in the returned type, which made a
+                                    // `deny!` that iterates a closure container returned
+                                    // through a bound reject every program.
+                                    let bound_charge = self.reference_trait_dispatch(
+                                        trait_name,
+                                        method,
+                                        sig,
+                                        &inst_params,
+                                        &inst_ret,
+                                        &cap_var_map,
+                                        *span,
+                                    );
+                                    self.accumulate_caps(&bound_charge);
+                                    return inst_ret;
                                 }
                             }
                         }
@@ -5986,13 +6248,30 @@ impl TypeChecker {
                 if let Type::DynTrait { ref trait_name } = obj_ty {
                     if let Some(trait_def) = self.env.lookup_trait(trait_name).cloned() {
                         if let Some(sig) = trait_def.methods.iter().find(|m| m.name == *method) {
+                            // `self.m()` inside a default method body of THIS trait:
+                            // `self` is typed as the trait only because the body is
+                            // checked once for every implementer. It is not a `dyn`
+                            // value, so neither the by-value-aggregate ABI limit nor
+                            // an unknown callee applies (LEDGER item 122).
+                            let self_in_default = self.trait_default_self.as_deref()
+                                == Some(trait_name.as_str())
+                                && matches!(object.as_ref(), Expr::Identifier { name, .. } if name == "self");
+                            // Freshen the trait signature's row vars for THIS call (see
+                            // the generic-bound arm above).
+                            let (inst_params, inst_ret, _vm, cap_var_map) =
+                                self.engine.instantiate_sig(sig);
                             // Skip 'self' parameter (first param) if present.
-                            let expected_params: Vec<_> =
-                                if sig.params.first().map(|(n, _)| n.as_str()) == Some("self") {
-                                    sig.params[1..].to_vec()
-                                } else {
-                                    sig.params.clone()
-                                };
+                            let expected_params: Vec<(String, Type)> = {
+                                let skip = usize::from(
+                                    sig.params.first().map(|(n, _)| n.as_str()) == Some("self"),
+                                );
+                                sig.params
+                                    .iter()
+                                    .zip(inst_params.iter())
+                                    .skip(skip)
+                                    .map(|((n, _), t)| (n.clone(), t.clone()))
+                                    .collect()
+                            };
                             if args.len() != expected_params.len() {
                                 self.error(
                                     format!(
@@ -6016,6 +6295,15 @@ impl TypeChecker {
                                     self.check_int_literal_range(param_ty, arg, arg.span());
                                 }
                             }
+                            let dispatch_charge = self.reference_trait_dispatch(
+                                trait_name,
+                                method,
+                                sig,
+                                &inst_params,
+                                &inst_ret,
+                                &cap_var_map,
+                                *span,
+                            );
                             // A `dyn` method returning a by-value AGGREGATE
                             // (tuple, enum, Option, Result, or a multi-field
                             // struct) cannot be dispatched: the uniform i64
@@ -6038,7 +6326,7 @@ impl TypeChecker {
                                     .unwrap_or(false),
                                 _ => false,
                             };
-                            if ret_is_byval_agg {
+                            if ret_is_byval_agg && !self_in_default {
                                 self.error_with_code(
                                     format!(
                                         "`dyn {trait_name}` method `{method}` returns a by-value aggregate (`{}`), which trait-object dispatch cannot pass through its uniform handle ABI yet -- it truncates to the first field. Return a scalar or a heap handle (str/array/map), return the fields individually, or call the method via static dispatch (a concrete-typed receiver, not `dyn`).",
@@ -6055,14 +6343,25 @@ impl TypeChecker {
                             // implementer of `trait_name` at runtime (that
                             // is the entire point of a trait object) --
                             // `sig` is only the TRAIT's own declared
-                            // signature, whose `own_cap_var` has no body to
-                            // ever bind it. Charge this dispatch as
-                            // `Unknown` (never silently free) and stamp
-                            // every capability row reachable inside the
-                            // trait's declared return type as `Unknown` too
-                            // -- see the identical treatment (and full
-                            // rationale) for the generic trait-bound
-                            // MethodCall arm a few hundred lines up.
+                            // signature. Every candidate was referenced
+                            // above with this call's arguments (stores and
+                            // `deny!` obligations see them), and the call
+                            // itself is charged as `Unknown` (never silently
+                            // free) with every capability row reachable
+                            // inside the trait's declared return type
+                            // stamped `Unknown` too: a returned closure
+                            // could have come from ANY implementing type.
+                            // `self` inside a default body of the trait is
+                            // the exception below, where the callee set is
+                            // exactly the candidates.
+                            if self_in_default {
+                                // The callee is the default body or one of the impls'
+                                // methods, each referenced above with this call's
+                                // arguments: charge what they charge, return what
+                                // they return.
+                                self.accumulate_caps(&dispatch_charge);
+                                return inst_ret;
+                            }
                             self.accumulate_caps(&crate::ty::CapRow::unknown());
                             return sig.ret.with_caps_erased_to_unknown();
                         }

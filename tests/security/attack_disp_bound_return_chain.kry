@@ -1,0 +1,14 @@
+// LEDGER item 122 / 123: a call through a trait signature references every candidate: a generic helper hands on what a trait method returns, and its caller iterates it in deny!.
+@capabilities(fs:read)
+fn secret() -> fn() -> str { return || file_read("tests/security/secret_for_closure_launder.txt") }
+fn safe() -> str { return "safe" }
+trait Rn { fn pass(self: Self, fns: [fn() -> str]) -> [fn() -> str] }
+struct R1 {}
+impl Rn for R1 { fn pass(self: Self, fns: [fn() -> str]) -> [fn() -> str] { return fns } }
+fn helper<X: Rn>(x: X, fns: [fn() -> str]) -> [fn() -> str] { return x.pass(fns) }
+fn go2(x: R1, fns: [fn() -> str]) { let f = || "h"
+  let ys = helper(x, fns)
+  deny!(fs:read) { for f in ys { println("LEAK: " + f()) } } }
+@capabilities(fs:read)
+fn main() { let r = secret()
+  go2(R1 {}, [safe, r]) }

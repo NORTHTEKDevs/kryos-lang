@@ -310,6 +310,29 @@ impl TypeEnv {
         None
     }
 
+    /// Every impl method named `method` of an `impl <trait_name> for ...`
+    /// block in scope: the candidates a call through a generic bound or a
+    /// `dyn` (or through `self` inside a trait default body) can reach. A
+    /// default method an impl inherits carries the trait's own signature, so it
+    /// is listed once, under the trait's own-row var.
+    pub fn impl_methods_of_trait(&self, trait_name: &str, method: &str) -> Vec<FunctionSig> {
+        let mut out: Vec<FunctionSig> = Vec::new();
+        for scope in self.scopes.iter().rev() {
+            for ((_ty, tr), methods) in &scope.impls {
+                if tr.as_deref() == Some(trait_name) {
+                    for m in methods.iter().filter(|m| m.name == method) {
+                        if !out.iter().any(|o| o.own_cap_var == m.own_cap_var) {
+                            out.push(m.clone());
+                        }
+                    }
+                }
+            }
+        }
+        // The impls live in a hash map: fix the order the candidates are referenced in.
+        out.sort_by_key(|m| m.own_cap_var);
+        out
+    }
+
     /// Collect every method name visible for the given type (across all impls
     /// in scope). Used by the "did you mean?" diagnostics.
     pub fn all_method_names(&self, type_name: &str) -> Vec<String> {

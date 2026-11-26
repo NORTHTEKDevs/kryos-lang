@@ -1,0 +1,1 @@
+tests/threat_model/s44_trait_default_body_unchecked.kry  # 122: master accepted a type error in a trait default method body (`let x: i64 = "not an int"`) and ran it, printing a raw pointer; the body is checked now and the program is rejected, E0100

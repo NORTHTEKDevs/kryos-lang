@@ -1366,6 +1366,30 @@ R3_ESCAPES="$R3_ESCAPES \
     attack_deny_param_pick_passthrough \
     attack_deny_param_factory_guard \
     attack_deny_late_if_branch_store"
+# Residual wave (items 122, 124, 125): the verdict must not depend on where a helper, a trait
+# default or the reader is declared, and a call through a trait signature (self in a default body,
+# a generic bound, a dyn) references every candidate with the call's arguments. The `resid` programs
+# are the finish-line corpus shapes (forward chains into an actor handler, an impl method, a select
+# arm, a spawn, a ring of 40 helpers, trait defaults, a recursion that swaps its parameters, 100
+# rotated parameters); the `disp` programs are the dispatch shapes.
+R3_ESCAPES="$R3_ESCAPES \
+    attack_resid_actor_handler_fwd \
+    attack_resid_method_global_fwd \
+    attack_resid_select_store_fwd \
+    attack_resid_spawn_store_fwd \
+    attack_resid_ring40_fwd \
+    attack_resid_trait_default_show_before_store \
+    attack_resid_trait_default_selfrec_swap \
+    attack_resid_trait_after_main_default_store \
+    attack_resid_selfrec_swap_global \
+    attack_resid_cycle2_k100 \
+    attack_disp_self_returns_container \
+    attack_disp_self_impl_builds_container \
+    attack_disp_self_two_impls \
+    attack_disp_self_put_registry \
+    attack_disp_bound_put_registry \
+    attack_disp_bound_return_chain \
+    attack_disp_dyn_default_param"
 for esc in $R3_ESCAPES; do
     esc_ok=1
     for mode in "" "--strict-capabilities"; do
@@ -1410,6 +1434,25 @@ R3_CONTROLS="ctl_deny_param_wrapper_pure \
     ctl_slot_param_fn_value_map_of_ops_pure \
     ctl_slot_lambda_wrapper_calls_put_pure \
     ctl_deny_plugin_platform_pure"
+# The same shapes with a pure closure: accepted in both modes.
+R3_CONTROLS="$R3_CONTROLS \
+    ctl_resid_actor_handler_fwd \
+    ctl_resid_method_global_fwd \
+    ctl_resid_select_store_fwd \
+    ctl_resid_spawn_store_fwd \
+    ctl_resid_ring40_fwd \
+    ctl_resid_trait_default_show_before_store \
+    ctl_resid_trait_default_selfrec_swap \
+    ctl_resid_trait_after_main_default_store \
+    ctl_resid_selfrec_swap_global \
+    ctl_resid_cycle2_k100 \
+    ctl_disp_self_returns_container \
+    ctl_disp_self_impl_builds_container \
+    ctl_disp_self_two_impls \
+    ctl_disp_self_put_registry \
+    ctl_disp_bound_put_registry \
+    ctl_disp_bound_return_chain \
+    ctl_disp_dyn_default_param"
 for ctl in $R3_CONTROLS; do
     ctl_ok=1
     for mode in "" "--strict-capabilities"; do
@@ -1432,6 +1475,27 @@ for prog in examples/showcase/repo_auditor.kry ecosystem/kryos-tool-broker; do
         fi
     done
     [ $prog_ok -eq 1 ] && echo "  ok   $prog still accepted in default and strict mode"
+done
+
+# Cost of the call-graph-order pass: two functions rotating 100 function-typed parameters need about
+# 100 re-check rounds. Recomputing the strongly connected components of the whole row substitution
+# after every bind made that check take minutes (94 s here, 23 s for the one-function form); the
+# components are now kept up to date incrementally, so it takes about a second. The check must
+# finish (a timeout is a failure) and give the same verdicts.
+for pair in "attack_resid_cycle2_k100:1" "ctl_resid_cycle2_k100:0"; do
+    prog="${pair%%:*}"; want="${pair##*:}"
+    for mode in "" "--strict-capabilities"; do
+        timeout 30 "$K" check $mode "tests/security/$prog.kry" >"$TMP/cost" 2>&1; rc=$?
+        if [ $rc -eq 124 ]; then
+            echo "  FAIL: $prog.kry did not finish \`check $mode\` within 30 s (cost of the rotation pass)"; fail=1
+        elif [ "$want" = 1 ] && [ $rc -eq 0 ]; then
+            echo "  FAIL: $prog.kry passed \`check $mode\`"; fail=1
+        elif [ "$want" = 0 ] && [ $rc -ne 0 ]; then
+            echo "  FAIL: $prog.kry rejected by \`check $mode\`"; tail -3 "$TMP/cost" | sed 's/^/    /'; fail=1
+        else
+            echo "  ok   $prog.kry \`check $mode\` finished in time with the expected verdict"
+        fi
+    done
 done
 
 [ $fail -eq 0 ] && echo "security-gate: PASS" || echo "security-gate: FAIL"

@@ -1,0 +1,34 @@
+// LEDGER items 122, 124, 125 (residual wave): the deny! block is in a trait default method that is declared before the store.
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+fn safe() -> str {
+    return "safe"
+}
+let mut REG: [fn() -> str] = []
+trait Sh {
+    fn show(self: Self) {
+        let f = || "harmless"
+        deny!(fs:read) {
+            for f in REG {
+                println("LEAK: " + f())
+            }
+        }
+    }
+}
+struct S1 {}
+impl Sh for S1 {}
+@capabilities(fs:read)
+fn main() {
+    let r = secret()
+    reg1(r)
+    let s = S1 {}
+    s.show()
+}
+fn reg1(f: fn() -> str) {
+    reg2(f)
+}
+fn reg2(f: fn() -> str) {
+    REG = push(REG, f)
+}

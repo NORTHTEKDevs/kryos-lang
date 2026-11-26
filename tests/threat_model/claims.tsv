@@ -78,8 +78,8 @@ S41-121-coarse-io-deny-default	check	tests/threat_model/s41_121_coarse_io.kry	nz
 S41-121-coarse-io-deny-strict	check --strict-capabilities	tests/threat_model/s41_121_coarse_io.kry	nz	E0110	4.1 item 121 closed: deny!(io) rejects a block whose closure reads a file
 S41-121-coarse-all-deny-default	check	tests/threat_model/s41_121_coarse_all.kry	nz	E0110	4.1 item 121 closed: deny!(all) rejects a block whose closure reads a file
 S41-121-coarse-all-deny-strict	check --strict-capabilities	tests/threat_model/s41_121_coarse_all.kry	nz	E0110	4.1 item 121 closed: deny!(all) rejects a block whose closure reads a file
-S44-trait-default-body-unchecked-default	check	tests/threat_model/s44_trait_default_body_unchecked.kry	0	-	4.4 item 122: a type error in a trait default method body is accepted
-S44-trait-default-body-unchecked-strict	check --strict-capabilities	tests/threat_model/s44_trait_default_body_unchecked.kry	0	-	4.4 item 122: the same in strict mode
+S44-trait-default-body-checked-default	check	tests/threat_model/s44_trait_default_body_unchecked.kry	nz	E0100	4.4 item 122 closed: a type error in a trait default method body is rejected
+S44-trait-default-body-checked-strict	check --strict-capabilities	tests/threat_model/s44_trait_default_body_unchecked.kry	nz	E0100	4.4 item 122 closed: the same in strict mode
 G7-kryos_env_get-default	check	tests/threat_model/g7_extern_kryos_env_get.kry	nz	E0506	G7: a classified kryos_* extern is charged what the native does (default)
 G7-kryos_env_get-strict	check --strict-capabilities	tests/threat_model/g7_extern_kryos_env_get.kry	nz	E0506	G7: a classified kryos_* extern is charged what the native does (strict)
 G7-kryos_process_exec-default	check	tests/threat_model/g7_extern_kryos_process_exec.kry	nz	E0506	G7: a classified kryos_* extern is charged what the native does (default)

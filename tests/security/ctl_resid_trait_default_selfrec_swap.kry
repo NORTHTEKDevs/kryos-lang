@@ -1,0 +1,32 @@
+// LEDGER items 122, 124, 125 (residual wave): a trait default method calls itself through self with the two closures swapped.
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+fn safe() -> str {
+    return "safe"
+}
+struct Plugin {
+    run: fn() -> str,
+}
+trait Rn {
+    fn go(self: Self, reg: [Plugin], n: i64, p1: fn() -> str, p2: fn() -> str) -> [Plugin] {
+        if n == 0 {
+            return push(reg, Plugin { run: p1 })
+        }
+        return self.go(reg, n - 1, p2, p1)
+    }
+}
+struct R1 {}
+impl Rn for R1 {}
+@capabilities(fs:read)
+fn main() {
+    let r = secret()
+    let x = R1 {}
+    let reg = x.go([], 1, safe, safe)
+    deny!(fs:read) {
+        for q in reg {
+            println("LEAK: " + q.run())
+        }
+    }
+}

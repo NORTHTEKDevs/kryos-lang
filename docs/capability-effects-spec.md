@@ -376,9 +376,8 @@ returned value, and the rows of a lambda's annotated parameters.
   parameter is bound to, at the moment it is bound.
 - Not covered:
   * The `deny!` verdict and the forward references: see 2.7. What 2.7 does not reach is a
-    helper's stores followed through a factory result, a generic trait bound or a `dyn`
-    (LEDGER item 123), a container inside a tuple / `Option` / `Result` / enum parameter
-    (item 119) and the body of a trait default method (item 122).
+    helper's stores followed through a factory result (LEDGER item 123a) and a container
+    inside a tuple / `Option` / `Result` / enum parameter (item 119).
   * A store inside a lambda into a variable the lambda captured by move is a dead
     store at run time, but the slot is shared, so the program is rejected when the
     privileged closure reaches a `deny!` that reads the variable.
@@ -422,9 +421,33 @@ it) let a privileged closure reach the block in every one of those cases.
 - The verdict does not depend on the order of the declarations: a privileged closure stored into
   a slot below the block counts, as it did above it. That is the per-declaration slot cost of 2.6,
   now order-independent.
-- Not covered: the body of a trait default method is never checked (LEDGER item 122); a store
-  helper reached through a factory result, a generic trait bound or a `dyn` (item 123), or a
-  container inside a tuple / `Option` / `Result` / enum parameter (item 119), is not followed.
+- **Call-graph order** (LEDGER items 124 and 125). The textual pass still reads the row of a
+  callee declared below its caller before the callee's body was checked. When the module holds a
+  `deny!` whose row can still change, `check_module` checks every body once more in call-graph order
+  (callee before caller; `callee_first_order`, `InferenceEngine`), a strongly connected component
+  (a recursion, mutual recursion, the methods of one impl) re-checked until the resolved rows,
+  stores and global slots it owns stop changing (`convergence_stamp`), and then runs the reporting
+  pass. Rows only widen, so the extra pass has no output of its own and cannot accept a program
+  the textual pass rejected. A component that has not settled after a bound sized by the number of
+  row vars is an E0110 on the component, never a silent accept. The components of the row
+  substitution that lie on a cycle are kept up to date as binds add edges (`CycleState`): a
+  rotation of K function-typed parameters between two functions needs about K rounds, and
+  recomputing them from scratch after every bind made that check cost minutes at K = 100.
+- **A call through a trait signature** (LEDGER items 122 and 123). The body of a trait default
+  method is checked once, with `self` typed as the trait (`Decl::Trait` in `check_decl_inner`),
+  and its row is bound to the trait signature's own row var, which an impl that inherits the
+  default reuses. A call `recv.m(args)` through a generic bound, a `dyn` or `self` in a default
+  body names no callee: `reference_trait_dispatch` instantiates the trait signature for the call,
+  unifies the arguments with it, and references the default body and every impl method named `m`
+  with the call's arguments, pairing the cap vars of the impl's parameter and return types with
+  the instantiated signature (`reference_candidate`; a var no position pairs is bound `Unknown`).
+  Their stores are replayed, their `deny!` obligations are judged on what the call passes (a
+  dispatch owner that is referenced is no longer judged on `all` for the blocks that arrive at it
+  through a reference; a block written directly in an impl method keeps that rule), and a bound or
+  `self` call charges what the candidates charge and returns what they return. A `dyn` call outside
+  a default body keeps the `Unknown` charge and the erased return type.
+- Not covered: a store helper reached through a factory result (item 123a), or a container inside a
+  tuple / `Option` / `Result` / enum parameter (item 119), is not followed.
 
 ## 3. Subtyping and variance
 

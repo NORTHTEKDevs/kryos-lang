@@ -1,0 +1,147 @@
+// LEDGER items 122, 124, 125 (residual wave): a ring of 40 forward helpers rotates the closure to the store.
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+fn safe() -> str {
+    return "safe"
+}
+let mut REG: [fn() -> str] = []
+@capabilities(fs:read)
+fn main() {
+    let r = secret()
+    r1(safe, safe, r, 0)
+    show()
+}
+fn show() {
+    let f = || "harmless"
+    deny!(fs:read) {
+        for f in REG {
+            println("LEAK: " + f())
+        }
+    }
+}
+fn r1(a: fn() -> str, b: fn() -> str, c: fn() -> str, n: i64) {
+    r2(b, c, a, n)
+}
+fn r2(a: fn() -> str, b: fn() -> str, c: fn() -> str, n: i64) {
+    r3(b, c, a, n)
+}
+fn r3(a: fn() -> str, b: fn() -> str, c: fn() -> str, n: i64) {
+    r4(b, c, a, n)
+}
+fn r4(a: fn() -> str, b: fn() -> str, c: fn() -> str, n: i64) {
+    r5(b, c, a, n)
+}
+fn r5(a: fn() -> str, b: fn() -> str, c: fn() -> str, n: i64) {
+    r6(b, c, a, n)
+}
+fn r6(a: fn() -> str, b: fn() -> str, c: fn() -> str, n: i64) {
+    r7(b, c, a, n)
+}
+fn r7(a: fn() -> str, b: fn() -> str, c: fn() -> str, n: i64) {
+    r8(b, c, a, n)
+}
+fn r8(a: fn() -> str, b: fn() -> str, c: fn() -> str, n: i64) {
+    r9(b, c, a, n)
+}
+fn r9(a: fn() -> str, b: fn() -> str, c: fn() -> str, n: i64) {
+    r10(b, c, a, n)
+}
+fn r10(a: fn() -> str, b: fn() -> str, c: fn() -> str, n: i64) {
+    r11(b, c, a, n)
+}
+fn r11(a: fn() -> str, b: fn() -> str, c: fn() -> str, n: i64) {
+    r12(b, c, a, n)
+}
+fn r12(a: fn() -> str, b: fn() -> str, c: fn() -> str, n: i64) {
+    r13(b, c, a, n)
+}
+fn r13(a: fn() -> str, b: fn() -> str, c: fn() -> str, n: i64) {
+    r14(b, c, a, n)
+}
+fn r14(a: fn() -> str, b: fn() -> str, c: fn() -> str, n: i64) {
+    r15(b, c, a, n)
+}
+fn r15(a: fn() -> str, b: fn() -> str, c: fn() -> str, n: i64) {
+    r16(b, c, a, n)
+}
+fn r16(a: fn() -> str, b: fn() -> str, c: fn() -> str, n: i64) {
+    r17(b, c, a, n)
+}
+fn r17(a: fn() -> str, b: fn() -> str, c: fn() -> str, n: i64) {
+    r18(b, c, a, n)
+}
+fn r18(a: fn() -> str, b: fn() -> str, c: fn() -> str, n: i64) {
+    r19(b, c, a, n)
+}
+fn r19(a: fn() -> str, b: fn() -> str, c: fn() -> str, n: i64) {
+    r20(b, c, a, n)
+}
+fn r20(a: fn() -> str, b: fn() -> str, c: fn() -> str, n: i64) {
+    r21(b, c, a, n)
+}
+fn r21(a: fn() -> str, b: fn() -> str, c: fn() -> str, n: i64) {
+    r22(b, c, a, n)
+}
+fn r22(a: fn() -> str, b: fn() -> str, c: fn() -> str, n: i64) {
+    r23(b, c, a, n)
+}
+fn r23(a: fn() -> str, b: fn() -> str, c: fn() -> str, n: i64) {
+    r24(b, c, a, n)
+}
+fn r24(a: fn() -> str, b: fn() -> str, c: fn() -> str, n: i64) {
+    r25(b, c, a, n)
+}
+fn r25(a: fn() -> str, b: fn() -> str, c: fn() -> str, n: i64) {
+    r26(b, c, a, n)
+}
+fn r26(a: fn() -> str, b: fn() -> str, c: fn() -> str, n: i64) {
+    r27(b, c, a, n)
+}
+fn r27(a: fn() -> str, b: fn() -> str, c: fn() -> str, n: i64) {
+    r28(b, c, a, n)
+}
+fn r28(a: fn() -> str, b: fn() -> str, c: fn() -> str, n: i64) {
+    r29(b, c, a, n)
+}
+fn r29(a: fn() -> str, b: fn() -> str, c: fn() -> str, n: i64) {
+    r30(b, c, a, n)
+}
+fn r30(a: fn() -> str, b: fn() -> str, c: fn() -> str, n: i64) {
+    r31(b, c, a, n)
+}
+fn r31(a: fn() -> str, b: fn() -> str, c: fn() -> str, n: i64) {
+    r32(b, c, a, n)
+}
+fn r32(a: fn() -> str, b: fn() -> str, c: fn() -> str, n: i64) {
+    r33(b, c, a, n)
+}
+fn r33(a: fn() -> str, b: fn() -> str, c: fn() -> str, n: i64) {
+    r34(b, c, a, n)
+}
+fn r34(a: fn() -> str, b: fn() -> str, c: fn() -> str, n: i64) {
+    r35(b, c, a, n)
+}
+fn r35(a: fn() -> str, b: fn() -> str, c: fn() -> str, n: i64) {
+    r36(b, c, a, n)
+}
+fn r36(a: fn() -> str, b: fn() -> str, c: fn() -> str, n: i64) {
+    r37(b, c, a, n)
+}
+fn r37(a: fn() -> str, b: fn() -> str, c: fn() -> str, n: i64) {
+    r38(b, c, a, n)
+}
+fn r38(a: fn() -> str, b: fn() -> str, c: fn() -> str, n: i64) {
+    r39(b, c, a, n)
+}
+fn r39(a: fn() -> str, b: fn() -> str, c: fn() -> str, n: i64) {
+    r40(b, c, a, n)
+}
+fn r40(a: fn() -> str, b: fn() -> str, c: fn() -> str, n: i64) {
+    if n == 0 {
+        REG = push(REG, c)
+        return
+    }
+    r1(b, c, a, n - 1)
+}
