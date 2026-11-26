@@ -1,0 +1,80 @@
+// A tuple of narrow integers flowing into a wider tuple slot at a call
+// argument, a struct field initializer, an assignment, a store into an array or
+// map element, a push, a closure call and a nested tuple must read back the same values on
+// both backends.
+struct S { t: (i64, i64) }
+struct Acc { n: i64 }
+impl Acc {
+    fn add(self: Acc, p: (i64, i64)) -> i64 { return self.n + p.0 + p.1 }
+    fn mk(p: (i64, i8)) -> i64 { return p.0 * 10 + p.1 }
+}
+fn take(t: (i64, i64)) -> i64 { return t.0 + t.1 }
+fn mk() -> (i32, i32) { return (-5, 6) }
+fn nn() -> ((i32, u8), i16) {
+    let a: i32 = -4
+    let b: u8 = 250
+    let c: i16 = -3
+    return ((a, b), c)
+}
+fn nest() -> ((i64, i64), i64) {
+    let a: i32 = -4
+    let b: i32 = 7
+    return ((a, b), 9)
+}
+fn use_nested(p: ((i64, i64), i64)) -> i64 { return p.0.0 + p.0.1 + p.1 }
+fn main() {
+    let a: i32 = -3
+    let b: u8 = 200
+    println("{take((a, b))}")
+    let m = mk()
+    println("{take(m)}")
+    println("{take(mk())}")
+    let acc = Acc { n: 100 }
+    println("{acc.add((a, b))}")
+    println("{acc.add(m)}")
+    let x: i8 = -2
+    let y: i32 = 7
+    println("{Acc.mk((y, x))}")
+    let s = S { t: (a, b) }
+    println("{s.t.0} {s.t.1}")
+    let s2 = S { t: mk() }
+    println("{s2.t.0} {s2.t.1}")
+    let mut v: (i64, i64) = (1, 2)
+    v = mk()
+    println("{v.0} {v.1}")
+    v = (a, b)
+    println("{v.0} {v.1}")
+    let mut s3 = S { t: (1, 2) }
+    s3.t = mk()
+    println("{s3.t.0} {s3.t.1}")
+    s3.t = (a, b)
+    println("{s3.t.0} {s3.t.1}")
+    let mut arr: [(i64, i64)] = [(1, 2), (3, 4)]
+    arr[1] = mk()
+    arr[0] = (a, b)
+    println("{arr[0].0} {arr[0].1} {arr[1].0} {arr[1].1}")
+    push(arr, mk())
+    println("{arr[2].0} {arr[2].1} {len(arr)}")
+    let mut mp: map<str, (i64, i64)> = {"k": (1, 2)}
+    mp["k"] = mk()
+    println("{mp["k"].0} {mp["k"].1}")
+    let n = nn()
+    let n2: ((i64, i64), i64) = nn()
+    println("{n.0.0} {n.0.1} {n.1}")
+    println("{n2.0.0} {n2.0.1} {n2.1}")
+    println("{use_nested(nn())}")
+    let q: ((i64, i64), i64) = ((a, b), x)
+    println("{q.0.0} {q.0.1} {q.1}")
+    let r = nest()
+    println("{r.0.0} {r.0.1} {r.1}")
+    let f = |p: (i64, i64)| p.0 + p.1
+    println("{f((a, b))}")
+    println("{f(m)}")
+    let mut tot: i64 = 0
+    let mut i = 0
+    while i < 5 {
+        tot = tot + take((a, b))
+        i = i + 1
+    }
+    println("{tot}")
+}
