@@ -2361,6 +2361,7 @@ pub fn lower_module_with_lambda_params(
 
     keep_closures_passed_to_escaping_params(&mut functions);
     crate::dyn_own::own_dyn_refs(&mut functions);
+    widen_unsigned_map_keys(&mut functions);
 
     MirModule {
         functions,
@@ -2368,6 +2369,61 @@ pub fn lower_module_with_lambda_params(
         enum_defs: ctx.enum_defs,
         trait_vtables: ctx.impl_map,
         copy_structs: ctx.copy_structs,
+    }
+}
+
+/// The runtime map keys every non-string key as an i64. Both backends widen a
+/// narrow call argument / map-literal key with a SIGN extension, while an
+/// integer literal key is already its i64 value, so a `u8` 200 variable
+/// became key -56 and missed the literal key 200 (`{200: 1}[k]` read 0,
+/// `contains` false, `m[k] = v` made a second entry; A1, M3). An explicit
+/// `Cast` to i64 goes through the backends' signedness-aware cast path, which
+/// zero-extends unsigned sources. Signed narrow keys already agree with their
+/// literals under sign extension and are left alone.
+fn widen_unsigned_map_keys(functions: &mut [MirFunction]) {
+    const KEY_AT_ARG1: &[&str] = &[
+        "kryos_map_get",
+        "kryos_map_get_or_empty",
+        "kryos_map_has",
+        "kryos_map_insert",
+        "kryos_map_delete",
+    ];
+    let narrow_unsigned = |locals: &[MirLocal], op: &Operand| -> bool {
+        match op {
+            Operand::Local(id) => locals
+                .get(id.0 as usize)
+                .is_some_and(|l| l.id == *id && matches!(l.ty, MirType::U8 | MirType::U16 | MirType::U32)),
+            Operand::Constant(_) => false,
+        }
+    };
+    for f in functions.iter_mut() {
+        for bi in 0..f.blocks.len() {
+            let old = std::mem::take(&mut f.blocks[bi].instructions);
+            let mut out = Vec::with_capacity(old.len());
+            for mut inst in old {
+                let mut keys: Vec<&mut Operand> = Vec::new();
+                if let Instruction::Assign { value, .. } = &mut inst {
+                    match value {
+                        RValue::Call { func, args } if KEY_AT_ARG1.contains(&func.as_str()) && args.len() >= 2 => {
+                            keys.push(&mut args[1]);
+                        }
+                        RValue::Map(pairs) => keys.extend(pairs.iter_mut().map(|(k, _)| k)),
+                        _ => {}
+                    }
+                }
+                for key in keys {
+                    if !narrow_unsigned(&f.locals, key) {
+                        continue;
+                    }
+                    let tmp = LocalId(f.locals.len() as u32);
+                    f.locals.push(MirLocal { id: tmp, name: None, ty: MirType::I64, mutable: false });
+                    let src = std::mem::replace(key, Operand::Local(tmp));
+                    out.push(Instruction::Assign { dest: tmp, value: RValue::Cast { operand: src, ty: MirType::I64 } });
+                }
+                out.push(inst);
+            }
+            f.blocks[bi].instructions = out;
+        }
     }
 }
 

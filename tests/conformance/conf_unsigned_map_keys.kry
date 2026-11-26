@@ -1,0 +1,71 @@
+// Conformance: a map keyed by an UNSIGNED narrow int (u8/u16/u32) must treat
+// a key variable and the same-valued literal key as ONE key, on both backends.
+// The runtime keys every non-string map by i64. An integer literal key is
+// already its i64 value (200), but a u8/u16/u32 variable passed to the map
+// runtime was widened with a SIGN extension (u8 200 -> -56), so a lookup by
+// variable missed the literal's entry (`{200: 1}[k]` read 0, `contains` was
+// false) and `m[k] = v` silently created a second entry. Only values with the
+// type's top bit set were affected (u8 >= 128, u16 >= 32768, u32 >= 2^31).
+// Fixed in MIR (widen_unsigned_map_keys): every such key gets an explicit
+// cast to i64, which both backends zero-extend. Finish-line items A1, M3.
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn bump(m: map<u16, i64>, k: u16) -> i64 {
+    return m[k] + 1
+}
+
+fn main() {
+    let a: map<u8, i64> = {200: 1}
+    let ka: u8 = 200
+    expect(a[ka] == 1, "u8 200: literal-key entry found by variable key")
+    expect(contains(a, ka), "u8 200: contains by variable key")
+
+    let b: map<u16, i64> = {40000: 1}
+    let kb: u16 = 40000
+    expect(b[kb] == 1 and contains(b, kb), "u16 40000: literal-key entry found by variable key")
+
+    let d: map<u32, i64> = {3000000000: 1}
+    let kd: u32 = 3000000000
+    expect(d[kd] == 1 and contains(d, kd), "u32 3e9: literal-key entry found by variable key")
+
+    // A variable key inside a map literal, then literal-key access.
+    let k: u8 = 200
+    let mut m: map<u8, i64> = {k: 5, 7: 1}
+    expect(m[200] == 5 and contains(m, 200), "variable key in a map literal is found by literal key")
+    expect(len(m) == 2, "map literal with variable key: two entries")
+
+    // Store by literal, overwrite must not create a second entry.
+    m[200] = 9
+    expect(m[k] == 9, "store by literal key is read back by variable key")
+    expect(len(m) == 2, "store by literal key over a variable-keyed entry keeps two entries")
+    m[k] = 10
+    expect(len(m) == 2 and m[200] == 10, "store by variable key over a literal-keyed entry keeps two entries")
+
+    map_delete(m, k)
+    expect(len(m) == 1 and not contains(m, 200), "delete by variable key removes the literal-keyed entry")
+
+    // Through a function parameter, and round-tripped through keys().
+    let mw: map<u16, i64> = {40000: 41}
+    let w: u16 = 40000
+    expect(bump(mw, w) == 42, "u16 key through a function parameter")
+    let mut total: i64 = 0
+    for kk in keys(mw) {
+        let back: u16 = kk
+        total = total + mw[back]
+    }
+    expect(total == 41, "key read back from keys() finds its own entry")
+
+    // Signed narrow keys were already consistent; they must stay so.
+    let s: i8 = 0 - 1
+    let mut ms: map<i8, i64> = {}
+    ms[s] = 3
+    expect(ms[s] == 3 and len(ms) == 1, "i8 -1 key round-trips")
+
+    println("conformance unsigned_map_keys: PASS")
+}

@@ -10,6 +10,35 @@ green CI) > (leak) > (papercut). A silent wrong answer outranks a crash - a
 crash announces itself. A trust-model hole outranks both: nothing above it in
 the stack can be sound if the boundary leaks.
 
+## Wave: unsigned narrow-int map keys -- a u8/u16/u32 key variable missed the same-valued literal key (A1 CLOSED, M3 fixed by the same change) (2026-11-25, night-shift iter 1)
+
+Branch `closeout/integration`. Silent wrong answer on both backends, exit 0, no diagnostic.
+- Repro (fresh integ build, before the fix): `let mu: map<u8, i64> = {200: 1}  let k: u8 = 200` then `mu[k]` printed `0` and
+  `contains(mu, k)` printed `false` (finish-line A1, JIT and AOT). M3 (`mapkeys2.kry`): u16 40000 and u32 3000000000 missed the
+  same way; u8 100, u32 5 and u64 2^63 hit. `m[k] = 7` after `{200: 1}` gave `len(m) == 2`, both keys printing `200`.
+- Root cause: the runtime keys every non-string map by i64. An integer literal key is lowered as its i64 value (200). A
+  narrow-int key VARIABLE is passed straight to `kryos_map_has/get/insert/delete/get_or_empty` (MIR: `call kryos_map_has(_0, _1)`
+  with `_1: u8`), and both backends' generic call-argument widening is `sextend` (Cranelift) / `coerce_value` sext (LLVM), so u8
+  200 became key -56. Only values with the type's top bit set are affected. On master a narrow VARIABLE inside a map literal
+  (`{k: 5}`) was worse on the JIT: Cranelift verifier ICE `arg 1 (v147) has type i8, expected i64`.
+- Fix: `kryos-mir/src/lower.rs` `widen_unsigned_map_keys`, run once at the end of `lower_module_with_lambda_params` (every
+  function, both backends, debug and release): for each `kryos_map_{get,get_or_empty,has,insert,delete}` call (key = arg 1) and
+  each `RValue::Map` literal key whose operand is a `u8`/`u16`/`u32` local, insert `tmp: i64 = Cast(key, i64)` before the
+  instruction and pass `tmp`. Both backends' `Cast` is signedness-aware (zero-extends unsigned). Signed narrow keys are untouched
+  (sign extension already agrees with their literal value).
+- Pin: `tests/conformance/conf_unsigned_map_keys.kry` (run by `tests/conformance/run_conformance.sh`). This tree: `conformance
+  unsigned_map_keys: PASS`, JIT rc=0 and AOT rc=0. Master `kryos-co-nov` binary: JIT rc=1 (Cranelift verifier error on
+  `{k: 5, 7: 1}`), AOT rc=1 `CONF FAIL: u8 200: literal-key entry found by variable key`.
+- Finish line: `run.sh --only '^(A1|M3)$'` 2 PASS, 0 FAIL. Full-run diff vs the integ baseline: see the commit message.
+- Repo output impact: the only other repo program with an unsigned narrow-keyed map (`tests/conformance/conf_array_contains.kry`)
+  uses a literal key only; output unchanged, so no `closeout_targets.txt` line.
+- Also executed after the fix, JIT == AOT, all correct against literal key 200: key read inline from a struct field
+  (`m[s.k]`, `contains(m, s.k)`), an array element (`m[arr[0]]`), a tuple element (`m[t.0]`), and a generic
+  `fn get_it<K, V>(m: map<K, V>, k: K) -> V` called with a `u8` key. Also `map_delete` by variable key, a `u16` key through a
+  function parameter, keys() round-trip, and i8 -1 keys (all in the pin).
+- NOT covered (not executed): the `std::collections` / `std::set` wrappers over narrow ints, and the wasm backend. A negative
+  literal key (`{-1: 3}`) is a parse error, which is the separate open item M4.
+
 ## Wave: ci-windows -- master CI red on build-and-test-windows (rustc 1.100 needs synchronization.lib), and the VS Code publish trigger that never fired (CI-WIN-1 CLOSED, A23 NOT-FIXED) (2026-11-21)
 
 Branch `closeout/misc` off master `dd637a90`.
