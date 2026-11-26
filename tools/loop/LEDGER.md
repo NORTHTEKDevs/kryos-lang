@@ -10477,3 +10477,59 @@ Residual shapes:
 - Also not fixed: a5 (reassign of `mut p` in a one-arm ...; text truncated in the source findings).
 
 Controls that pass on the tree: `let r = if ... {q.a} else {q.b}; r` (c3), else-if chain assigned to a mut (c2), read after the match (a7) all give live=0. The leak depends on tail/return position, pointing at the `terminator_uses -> bad.insert` path in copy_own.rs, outside what dbc63587 changed: the commit fixed one cause and the class is not closed.
+
+## leakmode: leakmode:throw_locals and leakmode:clo_nested_tuple_arr (2026-11-26)
+
+Two unrelated Cranelift-only leaks (the harness reported them as "jit leaks"; LLVM release was flat because it drops
+the unused locals / frees a nested array through its own path). Neither is a shared-handle shape; the shared-ownership
+rule of the 2026-11-24 wall entry was not touched.
+
+ROOT CAUSES
+1. throw_locals. `Stmt::Throw` outside a try lowered to `kryos_exception_throw(v); return` and released only the
+   callee-owned struct/enum params. The named locals live at the throw were never dropped: the codegen unwind
+   cleanup (`emit_exception_cleanup_drops`) only runs after a CALL that left an exception pending, so the frame that
+   itself executes the `throw` was never covered. MIR for `fn thrower() { let p = P{..}; let s = ..; throw "boom" }`
+   was `... _7 = call kryos_exception_throw("boom"); return` with the `drop(_6) drop(_3)` only in the dead bb2.
+2. clo_nested_tuple_arr. A closure env dropper released a captured `[[(str, i64)]]` through `array_free_chain`, which
+   returned None at a tuple leaf and fell back to the one-level `kryos_array_free_elems(.., kryos_array_free)`: the
+   rows were freed, the tuples in them (and their strings) were not.
+
+FIX
+- kryos-mir/src/lower.rs (Stmt::Throw, no try target): drop every named non-param, non-borrowed, non-hidden local
+  live on this path, plus the enclosing for-loop iterables, exactly as `return` does (path-local: `dropped_locals`
+  is restored); the owned-param drop that already existed follows. The retain of the thrown value taken just above
+  keeps a thrown local's buffer alive until `kryos_exception_throw` has copied it.
+- kryos-codegen-cranelift/src/codegen.rs `array_free_chain` + closure dropper, kryos-rt/src/array.rs
+  `kryos_array_free_chain`: chain code 6 = a releasable tuple leaf (`tuple_array_elem_releasable`), its element kinds
+  passed in the `leaf_fn` slot, released with `kryos_tuple_release`.
+
+FILES
+compiler/crates/kryos-mir/src/lower.rs, compiler/crates/kryos-codegen-cranelift/src/codegen.rs,
+compiler/crates/kryos-rt/src/array.rs, tests/mem/throw_closure_leak.kry, tests/mem_throw_closure_gate.sh,
+.github/workflows/ci.yml.
+
+EVIDENCE (both ways, executed)
+- finish run.sh --only '^(leakmode:throw_locals|leakmode:clo_nested_tuple_arr)$' on the tree before: 2 FAIL (jit
+  +133.6MB, +355.3MB); after: 2 PASS.
+- tests/mem_throw_closure_gate.sh (4 modes x JIT and Cranelift AOT at 300k iters, ceiling 25MB): with the master
+  binary (KRYOS_BIN=kryos-co-nov) rc=1, 58/55MB (throw_locals), 142/137 (throw_loop), 141/142 (clo_nested_tuple),
+  197/197 (clo_nested_tuple3); on the tree rc=0, every leg 4MB.
+- Regression scan: finish run.sh '^leakmode:|throw' 17 PASS 0 FAIL; '^mem:' 374 PASS before the 595s timeout, the
+  9 FAILs are the known shared-ownership items (137/139 family: n139_e/f, v139_g, x_tuple, v137_uaf, n139_a_50,
+  c06, n03); c06 and n03 reproduced identically on a rebuilt pre-fix tree binary, the rest were FAIL in
+  oracle last_run.txt. tests/conformance/*.kry 120/120 rc=0 on the JIT; no_double_free.sh, mem_tuple_gate.sh,
+  mem_balance_gate.sh, mem_shared_rule_gate.sh all PASS. Throw shapes (local str, field of local struct, int, loop
+  + for iterable, value pushed then thrown, owned struct param, nested call, rethrow from catch, throwing
+  closure with struct/str captures) give the same output as master on JIT, Cranelift AOT and LLVM release, and are
+  clean under KRYOS_FREE_DIAG=1.
+- Not run: `cargo test` (lane rule), the full run.sh, parity / fuzz gates.
+
+NOT COVERED (leaks as before, safely)
+- The thrown message itself: a DYNAMIC thrown string (`throw "x{i}"`, `throw m`) leaks one reference per throw
+  (the compiler's retain at the throw site is never released; the runtime copies the value). ~70 B per throw,
+  identical on master (measured: inline `try { throw "dyn msg {i}" }` 22.9MB at 300k both). The probe throws a
+  constant for that reason.
+- A throw whose temporaries are live mid-expression (the unnamed temps of the thrown expression itself).
+- Struct-field / array drop helpers (`emit_helper_array_field_free`) for a `[[(str, i64)]]` field of a struct stored
+  in an array were not changed; a struct local holding such a field did not leak in the measured shapes.
+- A tuple leaf whose element is a struct/closure/enum (not `tuple_array_elem_releasable`) still takes the old path.

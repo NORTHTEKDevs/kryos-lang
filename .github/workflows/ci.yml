@@ -370,6 +370,13 @@ jobs:
         # 12 legs over the ceiling; fixed ~4MB. Windows-only -- SKIPs elsewhere.
         run: bash tests/mem_tuple_gate.sh
 
+      - name: Throw and closure-capture memory gate
+        # A function that `throw`s directly releases the named locals live at
+        # the throw; a closure env capturing [[(str, i64)]] releases the
+        # tuples in its rows. Cranelift leaked both (60-200MB at 300k); fixed
+        # ~4MB. Windows-only -- SKIPs elsewhere.
+        run: bash tests/mem_throw_closure_gate.sh
+
       - name: Aggregate-operation memory gate
         # Structural ==, to_string and assert_eq of structs/arrays/tuples, an
         # `and` chain over field reads, an element read off a fresh tuple:
