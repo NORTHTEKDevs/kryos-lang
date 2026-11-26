@@ -10381,3 +10381,23 @@ NOT covered (not executed): other `handle_to_str` readers still collapse invalid
 find/replace/split, http bodies, ed25519 sign/verify message, hex/b64url converters take text
 input by design); `base64_decode` of bytes >= 0x80 still produces latin-1 codepoints, not raw
 bytes (existing documented model); string `==`/`len` on invalid strings were not re-probed.
+
+A4 (second pass): ed25519 sign/verify of an invalid-UTF-8 message -- FIXED (num lane)
+Verifier finding: `kryos_ed25519_sign_ks` / `kryos_ed25519_verify_ks` (kryos-stdlib-native/src/bindings.rs)
+still read the message through `handle_to_str`, so `a = substr("café", 0, 4)` (bytes `caf\xC3`) was signed
+and verified as the EMPTY message: `ed25519_sign(k,a) == ed25519_sign(k,"")` was true and
+`ed25519_verify(pub, "", sig_over_a)` returned 1 (a false accept), on JIT and AOT. Same root cause as the
+digests in the first A4 commit; `handle_to_raw` was already available. Fix: both functions take the
+message as `handle_to_raw` bytes (`kp.sign(msg)`, `key.verify(msg, &sig)`). Valid strings are byte-identical
+(same bytes as `as_bytes()`).
+Files: compiler/crates/kryos-stdlib-native/src/bindings.rs, tests/invalid_utf8_ed25519_pin.{kry,sh}.
+Evidence: pin 9 lines (sign equality vs "" / "caf" / itself; verify of a over sa, "", "caf", "café", plus the
+empty-message signature against a and ""): master binary FAIL JIT and AOT (true,false,true,1,1,0,0,1,1);
+this tree ok JIT and AOT (false,false,true,1,0,0,0,0,1). run.sh --only '^(A4)$' PASS. Regression scan
+(A*, M2-M7, 6, 6.ctl, NaN-neg0, libm-constfold, buf_get_byte-sentinel) master-vs-tree: zero PASS->FAIL;
+6, A1, A2, A4, M3 flip FAIL->PASS; remaining FAILs (A10-A23 leaks/lsp/ci, M4, M5) are identical on master.
+conf_readonly_builtin_args.kry output identical master vs tree.
+NOT covered (not executed): regex_*_ks text/pattern, http request body/url/headers, and the other
+`handle_to_str` readers still collapse invalid UTF-8 to ""; ed25519 key/sig hex arguments and
+hex_to_base64url / base64url_to_hex take hex/base64url text by design (invalid UTF-8 there is malformed
+input and already yields ""/0). base64_decode of bytes >= 0x80 still yields latin-1 codepoints.

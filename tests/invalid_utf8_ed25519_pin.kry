@@ -1,0 +1,17 @@
+@capabilities(crypto)
+fn main() {
+    let k = ed25519_generate()
+    let p = ed25519_public(k)
+    let a = substr("café", 0, 4)
+    let sa = ed25519_sign(k, a)
+    println("{sa == ed25519_sign(k, "")}")
+    println("{sa == ed25519_sign(k, "caf")}")
+    println("{sa == ed25519_sign(k, a)}")
+    println("{ed25519_verify(p, a, sa)}")
+    println("{ed25519_verify(p, "", sa)}")
+    println("{ed25519_verify(p, "caf", sa)}")
+    println("{ed25519_verify(p, "café", sa)}")
+    let se = ed25519_sign(k, "")
+    println("{ed25519_verify(p, a, se)}")
+    println("{ed25519_verify(p, "", se)}")
+}
