@@ -1,0 +1,11 @@
+struct Box<T> { v: T }
+fn dbl(x: i64) -> i64 { return x * 2 }
+fn main() {
+    let a = 1
+    let b = 2
+    let c = 3
+    let d = a < b && b > c
+    let e = (a < b, c > a)
+    let f = [a < b, c > a]
+    println("{d} {e.0} {f[0]}")
+}

@@ -232,9 +232,12 @@ impl Parser {
     /// Returns the index of the closing `>` (or `>>`).
     fn generic_args_before_brace(&self) -> Option<usize> {
         let mut depth = 0usize;
+        let mut brackets = 0usize;
         let mut i = self.pos;
         while i < self.tokens.len() {
             match self.tokens[i].kind {
+                TokenKind::LBracket => brackets += 1,
+                TokenKind::RBracket => brackets = brackets.saturating_sub(1),
                 TokenKind::Lt => depth += 1,
                 TokenKind::Gt | TokenKind::Shr => {
                     let n = if self.tokens[i].kind == TokenKind::Shr { 2 } else { 1 };
@@ -254,10 +257,22 @@ impl Parser {
                 | TokenKind::TypeIdent
                 | TokenKind::Comma
                 | TokenKind::ColonColon
-                | TokenKind::LBracket
-                | TokenKind::RBracket
                 | TokenKind::LParen
-                | TokenKind::RParen => {}
+                | TokenKind::RParen
+                | TokenKind::Amp
+                | TokenKind::Mut
+                | TokenKind::Star
+                | TokenKind::Question
+                | TokenKind::Bang
+                | TokenKind::Arrow
+                | TokenKind::Fn
+                | TokenKind::Dyn
+                | TokenKind::Shared
+                | TokenKind::Weak
+                | TokenKind::Chan
+                | TokenKind::Integer => {}
+                // `[T; 3]`: a `;` is type-shaped only inside brackets.
+                TokenKind::Semicolon if brackets > 0 => {}
                 _ => return None,
             }
             i += 1;
