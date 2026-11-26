@@ -10316,3 +10316,10 @@ Commit bcad0151 was reverted. Verifier findings:
 - 138 not reproduced: LEDGER repro built --release on both binaries printed 'done' rc=0, JIT run also printed 'done'. The row hedges and cites the LEDGER, which is honest; the 'shared L {...}' avoidance advice stays unmeasured.
 
 Residual shapes: docs/learn/book/20-idioms-and-pitfalls.md:198 presents the closed item-3 struct-argument leak as live and gives a workaround (same stale-item-3 class, in a file the fix and the pin gate skip; the gate prints PASS while the line is present).
+
+## docs_claude_narrow_int: CLOSED (doc reword)
+
+Root cause: CLAUDE.md known-limitation said narrow-int literals are not range-checked; compiler already emits E0111 (verified: `let x: u8 = 300` rejected). Stale doc only, no compiler change.
+Files: CLAUDE.md, tests/docs_claude_narrow_int_gate.sh.
+Evidence: master tree gate -> FAIL docs_claude_narrow_int_gate: stale range-check claim in CLAUDE.md ; lane tree gate -> PASS docs_claude_narrow_int_gate ; run.sh --only docs-claude-narrow-int(.ctl) PASS/PASS.
+Residual: other docs repeating the same claim were not swept (only CLAUDE.md checked).
