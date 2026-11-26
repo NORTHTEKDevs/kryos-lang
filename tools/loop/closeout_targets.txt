@@ -1,1 +1,2 @@
 tests/security/probe_mono_impl_method_growing_already_guarded.kry  # a8: master hit an internal "cannot resolve the struct type" codegen error because `self` in a generic impl method was not bound to Box<T>; now the self-growing instantiation reaches the documented E0113 monomorphization limit
+tests/threat_model/s44_trait_default_body_unchecked.kry  # 122_typecheck: master accepted `let x: i64 = "not an int"` in a trait default method body (check rc=0); now rejected E0100

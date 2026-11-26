@@ -632,9 +632,12 @@ items 119, 122 and 123 (4.1).
   symbols (the self-hosted compiler's runtime does) would give a zero-capability
   program raw memory and syscalls, and the Rust toolchain's checker would still
   accept it. The other nine names were not executed.
-- **The body of a trait default method is not type-checked** (LEDGER item 122,
-  root of escape 122). `let x: i64 = "not an int"` in one is accepted in default
-  and strict (pinned: claims.tsv S44-trait-default-body-unchecked-default, -strict).
+- **The `deny!` blocks in the body of a trait default method are not judged**
+  (LEDGER item 122, root of escape 122). The body IS type-checked since
+  closeout/lane-swa: `let x: i64 = "not an int"` in one is rejected E0100 in
+  default and strict (pinned: claims.tsv S44-trait-default-body-checked-default,
+  -strict), but the walk runs on a capability state that is given back, so a
+  `deny!` there is still not judged (escape 122, open).
   The capability checker does charge such a body: a default method calling
   `env_get` made its caller need `process` (executed 2026-11-02 on a scratch
   program, `E0507` in default and `E0505` in strict; not committed).

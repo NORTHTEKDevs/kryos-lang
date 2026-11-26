@@ -224,8 +224,29 @@ pub struct InferenceEngine {
     cap_epoch: u64,
 }
 
+/// See `InferenceEngine::cap_snapshot`.
+#[derive(Debug)]
+pub struct CapSnapshot {
+    cap_substitutions: HashMap<CapVarId, CapRow>,
+    slot_cap_vars: std::collections::HashSet<CapVarId>,
+    global_slot_cap_vars: std::collections::HashSet<CapVarId>,
+    effect_scope: Option<EffectScope>,
+    store_effects: HashMap<CapVarId, Vec<(CapVarId, CapRow)>>,
+    frozen_cap_vars: HashMap<CapVarId, u32>,
+    lambda_param_cap_vars: std::collections::HashSet<CapVarId>,
+    contravariant: bool,
+    input_storage_cap_vars: std::collections::HashSet<CapVarId>,
+    deferred_input_stores: HashMap<CapVarId, Vec<CapRow>>,
+    lambda_input_cap_vars: std::collections::HashSet<CapVarId>,
+    lambda_input_stores: HashMap<CapVarId, Vec<CapRow>>,
+    deny_obligations: Vec<DenyObligation>,
+    instantiations: Vec<Instantiation>,
+    owner_poly: HashMap<CapVarId, Vec<CapVarId>>,
+    dispatch_owners: std::collections::HashSet<CapVarId>,
+}
+
 /// See `InferenceEngine::effect_scope`.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct EffectScope {
     poly: std::collections::HashSet<CapVarId>,
     touched: Vec<CapVarId>,
@@ -906,6 +927,54 @@ impl InferenceEngine {
             owner,
             via: None,
         });
+    }
+
+    /// Every capability-row table, to give back after a walk whose capability
+    /// effects must not count (the body of a trait default method, which is
+    /// type-checked only: its `deny!` verdict is the row layer's, see
+    /// `TypeChecker::check_decl_inner`). `next_cap_var` is not part of it: ids
+    /// handed out during the walk stay spent, so no id is ever reused.
+    pub fn cap_snapshot(&self) -> CapSnapshot {
+        CapSnapshot {
+            cap_substitutions: self.cap_substitutions.clone(),
+            slot_cap_vars: self.slot_cap_vars.clone(),
+            global_slot_cap_vars: self.global_slot_cap_vars.clone(),
+            effect_scope: self.effect_scope.clone(),
+            store_effects: self.store_effects.clone(),
+            frozen_cap_vars: self.frozen_cap_vars.clone(),
+            lambda_param_cap_vars: self.lambda_param_cap_vars.clone(),
+            contravariant: self.contravariant,
+            input_storage_cap_vars: self.input_storage_cap_vars.clone(),
+            deferred_input_stores: self.deferred_input_stores.clone(),
+            lambda_input_cap_vars: self.lambda_input_cap_vars.clone(),
+            lambda_input_stores: self.lambda_input_stores.clone(),
+            deny_obligations: self.deny_obligations.clone(),
+            instantiations: self.instantiations.clone(),
+            owner_poly: self.owner_poly.clone(),
+            dispatch_owners: self.dispatch_owners.clone(),
+        }
+    }
+
+    pub fn cap_restore(&mut self, s: CapSnapshot) {
+        self.cap_substitutions = s.cap_substitutions;
+        self.slot_cap_vars = s.slot_cap_vars;
+        self.global_slot_cap_vars = s.global_slot_cap_vars;
+        self.effect_scope = s.effect_scope;
+        self.store_effects = s.store_effects;
+        self.frozen_cap_vars = s.frozen_cap_vars;
+        self.lambda_param_cap_vars = s.lambda_param_cap_vars;
+        self.contravariant = s.contravariant;
+        self.input_storage_cap_vars = s.input_storage_cap_vars;
+        self.deferred_input_stores = s.deferred_input_stores;
+        self.lambda_input_cap_vars = s.lambda_input_cap_vars;
+        self.lambda_input_stores = s.lambda_input_stores;
+        self.deny_obligations = s.deny_obligations;
+        self.instantiations = s.instantiations;
+        self.owner_poly = s.owner_poly;
+        self.dispatch_owners = s.dispatch_owners;
+        self.cap_resolve_cache.borrow_mut().clear();
+        *self.cap_cycle_cache.borrow_mut() = None;
+        self.cap_epoch += 1;
     }
 
     /// How many obligations and references are filed right now, to discard

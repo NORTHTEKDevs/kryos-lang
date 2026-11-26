@@ -601,6 +601,110 @@ else
     echo "  FAIL: escaped-brace non-regression case broke: $out"; fail=1
 fi
 
+# Trait default method BODIES are type-checked like impl method bodies (LEDGER item 122).
+# Before, `check_decl_inner` had no arm for `Decl::Trait`, so a type error in a default
+# body was accepted (and a deny! block there was never judged). Pinned for a plain trait,
+# a generic trait, and a nested fn inside a default method; each must be rejected E0100.
+cat > "$TMP/tdm_plain.kry" <<'KRY'
+trait Runner {
+    fn go(self: Self) {
+        let x: i64 = "not an int"
+        println(x)
+    }
+}
+struct R1 {}
+impl Runner for R1 {}
+fn main() { R1 {}.go() }
+KRY
+cat > "$TMP/tdm_generic.kry" <<'KRY'
+trait Conv<T> {
+    fn one(self: Self) -> i64 { return 1 }
+    fn two(self: Self) -> i64 {
+        let y: str = self.one()
+        return 2
+    }
+}
+struct S {}
+impl Conv<i64> for S {}
+fn main() { println(to_string(S {}.two())) }
+KRY
+cat > "$TMP/tdm_nested.kry" <<'KRY'
+trait T2 {
+    fn f(self: Self) -> i64 {
+        fn inner() -> i64 {
+            let q: i64 = "x"
+            return 1
+        }
+        return inner()
+    }
+}
+struct S {}
+impl T2 for S {}
+fn main() { println(to_string(S {}.f())) }
+KRY
+for n in tdm_plain tdm_generic tdm_nested; do
+    out="$("$K" check "$TMP/$n.kry" 2>&1)"; rc=$?
+    if [ $rc -ne 0 ] && printf '%s' "$out" | grep -q "E0100"; then
+        echo "  ok   $n: a type error in a trait default method body is rejected (E0100)"
+    else
+        echo "  FAIL: $n: trait default method body not checked (rc=$rc): $out" | head -3; fail=1
+    fi
+done
+cat > "$TMP/tdm_ok.kry" <<'KRY'
+trait Greeter {
+    fn name(self: Self) -> str
+    fn hello(self: Self) -> str {
+        let n: str = self.name()
+        return "hello " + n
+    }
+}
+struct P {}
+impl Greeter for P {
+    fn name(self: P) -> str { return "p" }
+}
+fn main() { println(P {}.hello()) }
+KRY
+out="$("$K" run "$TMP/tdm_ok.kry" 2>&1)"
+if [ "$out" = "hello p" ]; then
+    echo "  ok   a well-typed default method that calls a required method through self still runs"
+else
+    echo "  FAIL: well-typed default method over-rejected or misrun: $out"; fail=1
+fi
+# Walking a default body is for TYPES only: its capability effects are given back, so a
+# legitimate default method that hands a handed-in closure array to a deny! helper through
+# `self.pass(..)` is still accepted (master accepts it; judging it widened the shared row
+# of the field `ys` and rejected it E0110). The deny! verdict on a default body is
+# escape 122 and stays open.
+cat > "$TMP/tdm_deny_ctl.kry" <<'KRY'
+@capabilities(fs:read)
+fn secret() -> fn() -> str { return || file_read("secret.txt") }
+fn safe() -> str { return "safe" }
+struct W { ys: [fn() -> str] }
+fn run_w(w: W) { let f = || "h"
+    deny!(fs:read) { for f in w.ys { println(f()) } }
+}
+trait Rn {
+    fn pass(self: Self, fns: [fn() -> str]) -> [fn() -> str]
+    fn go(self: Self, fns: [fn() -> str]) {
+        let w = W { ys: self.pass(fns) }
+        run_w(w)
+    }
+}
+struct R1 {}
+impl Rn for R1 { fn pass(self: Self, fns: [fn() -> str]) -> [fn() -> str] { return fns } }
+@capabilities(fs:read)
+fn main() {
+    let r = safe
+    R1 {}.go([safe, r])
+}
+KRY
+out="$("$K" check "$TMP/tdm_deny_ctl.kry" 2>&1)"; rc=$?
+if [ $rc -eq 0 ]; then
+    echo "  ok   a default method feeding a deny! helper through self.pass(..) is still accepted"
+else
+    echo "  FAIL: default-body walk leaked capability state and over-rejected (rc=$rc): $out" | head -3; fail=1
+fi
+
 if [ $fail -eq 0 ]; then
     echo "diagnostics-gate: PASS"
 else
