@@ -10978,3 +10978,52 @@ Fix d660022c reverted. Verifier findings:
 - Not attributable to the fix: standalone (Col.R("c{i}"), i) leaks 189MB JIT / 123MB AOT; Some((Col.R(..),i)) 127MB AOT; Some((Some((P..,i)),i)) and E3.A((Some((P,i)),i)) 184-188MB AOT only; JIT leak 94MB for keep=[o] with o: Option<(P,i64)>; AOT printed no answer for that program on tree and master (pre-existing crash).
 - No regressions or unsoundness found. Correctness variants all printed 1000000, no crash, 4MB on tree vs 177-188MB on master JIT. Refcount-checked deep drop looks sound; weakness is coverage.
 - Residual shapes: JIT let o = Some(([P{name:"p{i}",k:i}], i)) 97MB (array-of-struct element not in tuple_payload_needs_deep_drop); JIT let o = Some(([("q{i}", i)], i)) 157MB (array-of-tuple element).
+
+## a17 (finish item A17): a field read off an if / match temporary leaked the whole struct (2026-11-26, lane mem, branch closeout/lane-mem)
+
+Item A17 (`sink = sink + len(match i % 2 { 0 => mkp(i), _ => mkp(i + 1) }.name)`): +72.5MB JIT / +49.5MB AOT
+at n=250000 -> 1000000 on master and on this branch before the change.
+
+Lane note: the lane brief asks for one shared-handle ownership rule (items 137 / 139). A17 involves no `shared`
+handle: it is a plain struct result slot, so this entry does NOT touch 137 / 139 and closes nothing there.
+
+ROOT CAUSE (read in lower.rs, then confirmed on `kryos build --emit-mir`): the FieldAccess arm of
+lower_expr_to_rvalue lowered an if / match object through lower_expr_to_operand, which copies the hidden result
+slot into a fresh temp (`_6 = _4`) and reads the field off that (`_7 = _6.name`). Nobody released the slot: the
+statement-end pass drop_unescaped_str_temps bails on a statement that created blocks, and its tail-block pass only
+sees instructions of the last block, where the slot was never defined. A plain call object (`mkp(i).name`) or a
+named `let q = if ..` is dropped by that pass or the scope end, which is why the controls were flat.
+
+FIX (compiler/crates/kryos-mir/src/lower.rs):
+- FieldAccess arm: when the object is an if / match whose every branch hands the slot an owned struct
+  (struct_value_owned, the same test the discarded-match and `let` paths use) and the field is a scalar or a
+  str / array / map (new helper field_read_borrows_slot: the backends retain those reads), read the field into a
+  temp off the slot itself and emit `Drop { slot }` right after; the temp is returned as `Use`.
+- is_retained_container_get now also accepts that shape (new helper is_read_then_slot_drop: `src = obj.field`
+  immediately followed by `Drop obj`), so the `let` / assignment / statement-end consumers adopt the read's
+  reference instead of retaining it a second time (first attempt without this leaked in `let s = match ..{}.name`).
+
+EVIDENCE
+- run.sh --only '^(A17|A17.ctl)$' on this tree: PASS A17, PASS A17.ctl (master: FAIL A17, jit +72.4MB).
+- New pin tests/mem/field_of_temp_leak.kry + tests/mem_field_of_temp_gate.sh, 11 modes (match_str, if_str,
+  match_int, match_arr, let_str, lit_arr, struct_lit, ret_str, twice, named, control), peak RSS at 1M iters, JIT
+  and AOT. With the master binary (KRYOS_BIN=kryos-co-nov): the 9 field-of-temp modes FAIL on both backends
+  (e.g. match_str AOT 219MB, JIT 256MB, ceiling 24MB), named and control pass; with this tree: PASS, all 4MB.
+  Answers are identical to master in every mode on both backends. An extra scratch program with param arms,
+  pattern-bound arms, block arms, push of the read and named-local arms printed the same line on master JIT, new JIT
+  and new AOT.
+- Regression scan: run.sh on this tree: A10-A16, A12-A16 controls, M5, leakmode:* (16), copy-assign-leak*, 139,
+  137-perf PASS; A18 (+283MB) and A19 (+118MB) and item 41 (doc) still FAIL as on master (not this item).
+  `--only '^mem:(attacks|closure)[-:/]'`: 377 PASS / 10 FAIL; the same 10 ids FAIL on master (the reverted
+  shared-ownership / 139 shapes: c06, n03, n139_a_50, n139_e, n139_f, v139_g x2, x_tuple, v137_uaf, v139_tuple).
+  tests/no_double_free.sh, backend_divergence_pins.sh, builtin_borrow_mir_gate.sh, mem_struct_field_read,
+  mem_field_assign_temp, mem_tuple, mem_balance, mem_struct_arg, mem_element_read, mem_loop gates PASS.
+  mem_agg_ops_gate.sh did not finish inside a 500s limit (86 lines, 0 FAIL so far); not re-run to completion.
+
+RESIDUAL (executed, NOT covered)
+- Two if / match temporaries read in ONE statement (`len(match ..{}.name) + len(if ..{}.name)`): the struct slots
+  are released but the FIRST read's str temp is defined in a non-tail block and still leaks (64MB per 1M, both
+  backends); same limitation as any non-tail-block temp.
+- A struct / enum / tuple / closure / shared FIELD read off an if / match temporary (an unretained alias into the
+  slot): the slot is still not released.
+- A read off an if / match whose branches do not all own a fresh struct (struct_value_owned false): unchanged.

@@ -4498,6 +4498,22 @@ const BORROWING_CALL_ARGS: &[&str] = &[
     "kryos_tuple_handle_release_if_ne",
 ];
 
+/// `src = obj.field` (a retained str / array / map read) followed by a `Drop`
+/// of `obj`: the read of a field off an if / match value's result slot, which
+/// the FieldAccess lowering released right after the read. `src` then holds
+/// the only reference to the field's heap value.
+fn is_read_then_slot_drop(instructions: &[Instruction], src: LocalId) -> bool {
+    let Some(pos) = instructions.iter().position(
+        |i| matches!(i, Instruction::Assign { dest, value: RValue::Field { .. } } if *dest == src),
+    ) else {
+        return false;
+    };
+    let Instruction::Assign { value: RValue::Field { object: Operand::Local(obj), .. }, .. } = &instructions[pos] else {
+        return false;
+    };
+    matches!(instructions.get(pos + 1), Some(Instruction::Drop { local }) if local == obj)
+}
+
 /// Does `src`'s definition, within this instruction window, match the
 /// "Borrow-to-own" container-get pattern -- `src = call kryos_map_get(_str)`
 /// (a map read whose VALUE type is itself str/array/map) immediately
@@ -4543,7 +4559,7 @@ fn is_retained_container_get(instructions: &[Instruction], src: LocalId) -> bool
             }
         }
     }
-    defined_by_map_get && retained
+    (defined_by_map_get && retained) || is_read_then_slot_drop(instructions, src)
 }
 
 /// A runtime call that stores its value argument into a container.
@@ -13861,6 +13877,38 @@ fn consume_call_args(ctx: &mut LoweringContext, dest: LocalId, func: &str, args:
 /// Returns true when `ty` is a copy type (no heap ownership).
 /// Primitives and @copy structs are copy; everything else (str, enum,
 /// non-@copy struct, array, shared, ptr) is non-copy and owns heap memory.
+/// Is a read of `field` off struct type `obj_ty` independent of the struct
+/// afterwards: a scalar copy, or a str / array / map the read retains?
+fn field_read_borrows_slot(ctx: &LoweringContext, obj_ty: &MirType, field: &str) -> bool {
+    let MirType::Struct(sn) = obj_ty else { return false };
+    let fty = ctx
+        .struct_defs
+        .get(sn.as_str())
+        .and_then(|fs| fs.iter().find(|(n, _)| n == field).map(|(_, t)| t.clone()));
+    matches!(
+        fty,
+        Some(
+            MirType::I8
+                | MirType::I16
+                | MirType::I32
+                | MirType::I64
+                | MirType::I128
+                | MirType::U8
+                | MirType::U16
+                | MirType::U32
+                | MirType::U64
+                | MirType::U128
+                | MirType::F32
+                | MirType::F64
+                | MirType::Bool
+                | MirType::Char
+                | MirType::Str
+                | MirType::Array(_, _)
+                | MirType::Map { .. }
+        )
+    )
+}
+
 fn is_copy_type(ctx: &LoweringContext, ty: &MirType) -> bool {
     match ty {
         MirType::I64
@@ -16849,7 +16897,36 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             }
 
             let obj_ty = infer_expr_type(ctx, object);
-            let obj = lower_expr_to_operand(ctx, object);
+            // A field read off an if / match VALUE whose every branch hands the
+            // hidden result slot a fresh struct (`len(match k { 0 => mk(i), _ =>
+            // mk(i + 1) }.name)`): nobody owns the slot after the read, and the
+            // statement-end temp pass bails on a statement that made blocks. A
+            // str / array / map field read is retained (the reader owns its own
+            // reference) and a scalar is a copy, so the slot is released right
+            // after the read. A struct / enum / tuple / closure field read is an
+            // alias into the slot and keeps it (no release here).
+            let mut slot_to_release: Option<LocalId> = None;
+            let obj = if matches!(object.as_ref(), ast::Expr::IfExpr { .. } | ast::Expr::MatchExpr { .. })
+                && is_owned_struct_ty(ctx, &obj_ty)
+                && struct_value_owned(ctx, object)
+                && field_read_borrows_slot(ctx, &obj_ty, field)
+            {
+                match lower_expr_to_rvalue(ctx, object) {
+                    RValue::Use(Operand::Local(t))
+                        if ctx.locals.iter().any(|l| l.id == t && l.name.is_none() && l.ty == obj_ty) =>
+                    {
+                        slot_to_release = Some(t);
+                        Operand::Local(t)
+                    }
+                    rvalue => {
+                        let temp = ctx.alloc_temp(obj_ty.clone());
+                        ctx.emit(Instruction::Assign { dest: temp, value: rvalue });
+                        Operand::Local(temp)
+                    }
+                }
+            } else {
+                lower_expr_to_operand(ctx, object)
+            };
 
             // Partial-move tracking: if a non-copy field is moved out of a
             // non-@copy struct local, mark the source local so scope cleanup
@@ -16941,6 +17018,17 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                     });
                     return RValue::Use(Operand::Local(tmp));
                 }
+            }
+
+            if let Some(slot) = slot_to_release {
+                let fty = infer_expr_type(ctx, expr);
+                let read = ctx.alloc_temp(fty);
+                ctx.emit(Instruction::Assign {
+                    dest: read,
+                    value: RValue::Field { object: obj, field: field.clone() },
+                });
+                ctx.emit(Instruction::Drop { local: slot });
+                return RValue::Use(Operand::Local(read));
             }
 
             RValue::Field {
