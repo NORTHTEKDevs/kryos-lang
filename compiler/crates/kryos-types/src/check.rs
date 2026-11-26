@@ -232,6 +232,10 @@ pub struct TypeChecker {
     /// which would duplicate that table's maintenance burden a second
     /// time in this crate.
     builtin_cap_var: crate::ty::CapVarId,
+    /// Span of the bare identifier currently being inferred as the CALLEE of a
+    /// call. A compiler builtin has no function body to take the address of, so
+    /// the identifier arm rejects a builtin named anywhere else (`let f = exit`).
+    callee_ident_span: Option<Span>,
     /// The (`deny!` statement, capability) pairs already reported, so the
     /// verdict taken when the module is done (`settle_denies`) does not repeat
     /// one the block reported when it was checked.
@@ -286,6 +290,7 @@ impl TypeChecker {
                 .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true")),
             cap_effects_log: Vec::new(),
             builtin_cap_var,
+            callee_ident_span: None,
             denies_reported: std::collections::HashSet::new(),
         }
     }
@@ -5052,6 +5057,28 @@ impl TypeChecker {
                     // each call site gets independent type inference (prevents
                     // generic type pinning across call sites).
                     let sig = sig.clone();
+                    // A compiler builtin has no body whose address a value
+                    // could hold: `let f = exit` lowered to a closure over a
+                    // function that does not exist (a Cranelift verifier
+                    // error / an LLVM undefined-symbol error). Only a direct
+                    // call may name one.
+                    if sig.own_cap_var == self.builtin_cap_var
+                        && self.callee_ident_span != Some(*span)
+                    {
+                        self.error_with_code(
+                            format!(
+                                "built-in function `{name}` cannot be used as a value"
+                            ),
+                            *span,
+                            kryos_errors::codes::E0110,
+                        );
+                        if let Some(diag) = self.diagnostics.last_mut() {
+                            diag.notes.push(format!(
+                                "a built-in has no function body to refer to; wrap it in a closure instead, e.g. `|x| {name}(x)`"
+                            ));
+                        }
+                        return Type::Error;
+                    }
                     let (params, ret, var_map, cap_var_map) = self.engine.instantiate_sig(&sig);
                     self.track_unbindable_generics(&sig, &var_map, *span);
                     // Carry the sig's trait bounds onto the fresh call-site
@@ -5566,7 +5593,13 @@ impl TypeChecker {
                     }
                 }
 
+                let prev_callee_span = self.callee_ident_span;
+                self.callee_ident_span = match callee.as_ref() {
+                    Expr::Identifier { span, .. } => Some(*span),
+                    _ => None,
+                };
                 let callee_ty = self.infer_expr(callee);
+                self.callee_ident_span = prev_callee_span;
                 let callee_ty = self.engine.resolve(&callee_ty);
 
                 match &callee_ty {

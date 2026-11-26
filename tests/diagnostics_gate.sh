@@ -601,6 +601,42 @@ else
     echo "  FAIL: escaped-brace non-regression case broke: $out"; fail=1
 fi
 
+# 135. A compiler builtin named as a VALUE (`let f = exit`) has no function body
+#      to take the address of. It used to lower to a closure over a function
+#      that does not exist: a Cranelift verifier error / LLVM undefined symbol
+#      (or a panic in the JIT). It is now an E0110 diagnostic; a direct call,
+#      a user fn as a value, and a closure wrapping the builtin still work.
+for bn in exit println len; do
+    printf 'fn main() {
+    let f = %s
+    println("after")
+}
+' "$bn" > "$TMP/bval_$bn.kry"
+    out="$("$K" run "$TMP/bval_$bn.kry" 2>&1)"; rc=$?
+    if [ $rc -ne 0 ] && echo "$out" | grep -q "E0110" && ! echo "$out" | grep -qiE "codegen \(|verifier|panicked|clang"; then
+        echo "  ok   \`let f = $bn\` is a clean E0110 diagnostic"
+    else
+        echo "  FAIL: \`let f = $bn\` (rc=$rc) is not a clean E0110 diagnostic:"; echo "$out" | head -3 | sed 's/^/    /'; fail=1
+    fi
+done
+cat > "$TMP/bval_ok.kry" <<'KRY'
+fn twice(x: i64) -> i64 { return x * 2 }
+fn main() {
+    let g = twice
+    let h = |s: str| len(s)
+    println(g(4))
+    println(h("abc"))
+    exit(0)
+}
+KRY
+out="$("$K" run "$TMP/bval_ok.kry" 2>&1)"
+if [ "$out" = "$(printf '8
+3')" ]; then
+    echo "  ok   direct builtin call, user fn value, and closure-wrapped builtin still run"
+else
+    echo "  FAIL: builtin-as-value non-regression case broke: $out"; fail=1
+fi
+
 if [ $fail -eq 0 ]; then
     echo "diagnostics-gate: PASS"
 else
