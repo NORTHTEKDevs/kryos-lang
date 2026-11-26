@@ -10398,3 +10398,26 @@ Residual shapes:
 - contains(a,"caf") panics loudly with a UTF-8 error (acceptable); regex builtins are inconsistent with it.
 
 Item result: A4 oracle PASS and ed25519 pin ok on JIT and AOT (fails on master), but regex_match still collapses invalid-UTF-8 text to "", so the per-consumer fix leaves same-class residuals: REFUTED. The fix commit 2820ba7e was reverted.
+
+## NaN-neg0-divergence: AOT identity copy flipped -0.0, JIT/AOT sorted NaN differently
+
+Root causes (two, both read in the code, not guessed):
+1. LLVM `emit_identity_copy` for f64/f32 emitted `fadd x, 0.0`. IEEE: -0.0 + +0.0 = +0.0, so any
+   float local copy (`parse_float("-0.0")` result moved into a local) lost its sign and
+   `1.0 / z` printed `inf` on AOT (JIT: `-inf`). `x + -0.0 == x` for every x incl. -0.0, so the
+   identity is now `fadd x, -0.0` (the same idiom lines ~7758/7800/9365 already use).
+2. `kryos_builtin_sort_f64` used bare `f64::total_cmp`, which orders by sign bit: -NaN before
+   everything, +NaN after. `0.0 / 0.0` is -NaN when the CPU computes it (JIT) and +NaN when LLVM
+   folds it (AOT), so `sort([3.0, 0.0/0.0, 1.0, 2.0])` gave `[NaN, 1, 2, 3]` vs `[1, 2, 3, NaN]`.
+   Comparator now puts every NaN last regardless of sign bit; non-NaN keeps total_cmp (-0.0 < +0.0).
+Files: compiler/crates/kryos-codegen-llvm/src/codegen.rs, compiler/crates/kryos-rt/src/builtins.rs,
+tests/nan_neg0_pin.{kry,sh}.
+Both-ways evidence: run.sh --only '^(NaN\-neg0\-divergence)$' FAIL before (`JIT/AOT diverge:
+jit=[NaN, 1, 2, 3] aot=[1, 2, 3, NaN]`, and AOT `inf`), PASS after. tests/nan_neg0_pin.sh: master binary FAIL
+both JIT (NaN first) and AOT (`inf`, NaN first), this tree ok both. Regression scan (A*, M2-M7, 6, 6.ctl,
+libm-constfold, buf_get_byte-sentinel, 135/136/138, abort-undefined, turbofish-struct) master-vs-tree diffed: zero
+PASS->FAIL; 6, A1, A2, A4, M3 and NaN-neg0 flip to PASS (the rest fail identically on both).
+NOT covered (not executed): NaN SIGN BIT itself still differs JIT vs AOT for `0.0/0.0` (observable only via
+bit casts or `copysign`-style code, not via print/sort/compare); `sort_by`/`min`/`max`/`group_by` over f64 with
+NaN were not probed; f32 arrays routed to sort_f64 were not probed; the unverified num.patch in
+kryos-oracle/lane_wip (any-slot str rejection) was NOT applied.

@@ -1,0 +1,18 @@
+fn id(x: f64) -> f64 { return x }
+
+fn main() {
+    let z = parse_float("-0.0")
+    println("{1.0 / z}")
+    let mut w: f64 = 1.0
+    w = z
+    println("{1.0 / w}")
+    println("{1.0 / id(z)}")
+    let nan: f64 = 0.0 / 0.0
+    let neg: f64 = -nan
+    let mut a: [f64] = [3.0, nan, 1.0, neg, 2.0]
+    sort(a)
+    println(to_string(a))
+    let mut b: [f64] = [neg, 2.0, nan, 1.0]
+    sort(b)
+    println(to_string(b))
+}

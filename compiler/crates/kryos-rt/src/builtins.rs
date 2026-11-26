@@ -1597,7 +1597,18 @@ pub unsafe extern "C" fn kryos_builtin_sort_f64(arr_handle: i64) {
         return;
     }
     let elems = std::slice::from_raw_parts_mut((*arr).data as *mut i64, len);
-    elems.sort_by(|a, b| f64::from_bits(*a as u64).total_cmp(&f64::from_bits(*b as u64)));
+    // NaN sorts last whatever its sign bit: `0.0 / 0.0` is -NaN when the CPU
+    // computes it (JIT) and +NaN when LLVM folds it (AOT), and bare total_cmp
+    // would put -NaN first, so the two backends disagreed on the order.
+    elems.sort_by(|a, b| {
+        let (x, y) = (f64::from_bits(*a as u64), f64::from_bits(*b as u64));
+        match (x.is_nan(), y.is_nan()) {
+            (true, true) => std::cmp::Ordering::Equal,
+            (true, false) => std::cmp::Ordering::Greater,
+            (false, true) => std::cmp::Ordering::Less,
+            (false, false) => x.total_cmp(&y),
+        }
+    });
 }
 
 /// `reverse(arr)` — Reverse an array in-place.

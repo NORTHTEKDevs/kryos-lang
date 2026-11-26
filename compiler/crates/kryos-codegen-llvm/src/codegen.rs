@@ -11306,7 +11306,7 @@ impl LlvmCodegen {
     /// Emit an identity copy that works for any LLVM type (not just integer types).
     /// For `ptr` types, uses `getelementptr i8, ptr {val}, i64 0` instead of
     /// the illegal `add ptr {val}, 0`.
-    /// For `double` types, uses `fadd double {val}, 0.0`.
+    /// For `double` types, uses `fadd double {val}, -0.0` (x + -0.0 == x for every x incl. -0.0; +0.0 would flip -0.0 to +0.0).
     /// For integer types, uses `add {ty} {val}, 0`.
     fn emit_identity_copy(&mut self, target: &str, ty: &str, val: &str) {
         if ty == "ptr" {
@@ -11319,7 +11319,7 @@ impl LlvmCodegen {
             self.emit_line(&format!("  {target} = getelementptr i8, ptr {val}, i64 0"));
             self.track_type(target, "ptr");
         } else if is_float_type(ty) {
-            self.emit_line(&format!("  {target} = fadd {ty} {val}, 0.0"));
+            self.emit_line(&format!("  {target} = fadd {ty} {val}, -0.0"));
             self.track_type(target, ty);
         } else if ty.starts_with('%') || ty.starts_with('{') {
             // Named struct types and inline aggregate types do not support
