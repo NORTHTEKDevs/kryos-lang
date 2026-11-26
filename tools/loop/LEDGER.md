@@ -10416,3 +10416,19 @@ Residual / NOT covered: the item's second alternative (each line its own stateme
 - **Files:** `compiler/crates/kryos-parser/src/parser.rs`, pin `tests/map_negkey_pin.sh`.
 - **Evidence both ways:** pin on master binary: `FAIL neg`, `FAIL paren` (E0003); on this tree `PASS map_negkey_pin (neg paren negval blk_neg blk_paren)`. `run.sh --only '^(M4)$'`: master FAIL (E0003, jit negkey.kry), here `PASS M4` (jit+aot, negkey and negkey2). Regression: `^(M[0-9]+|A[0-9]+|B[0-9]+|digits|map|import|ASI|turbofish)` executed on this tree (54 items): 0 ids FAIL here that were not already FAIL in master_run2.txt; `diagnostics_gate`, `asi_nonw0001_pin`, `import_*_pin` PASS; `stdlib_compile_gate` 66/66.
 - **NOT covered:** a float first key (`{1.5: 7}`, `{-1.5: 7}`) still fails with E0003 (positive floats were already unparsed; I did NOT widen to Float because a negative-float map then reaches codegen and dies with a Cranelift Verifier error, i.e. f64-keyed maps are a separate defect); Char/true/false first keys, `-` followed by an identifier (`{-x: 1}`) and arbitrary-expression first keys (`{a + 1: 2}`, `{f(x): 1}`) are not map-detected and were not executed; `#{-3: 1}` already took the always-map path and was not re-run; the in-flight misc.patch (ASI warnings for `+`/`*`/`|`) was NOT applied or verified.
+
+## m4: REOPENED -- fix refuted by verifier
+
+Commit 713911cc was reverted. Verifier findings:
+
+- Step 1 passes: kbuild was a no-op and `run.sh ... -j 2 --only '^(M4)$'` printed `PASS M4` and `# RESULT: ALL PASS`. The features.json acceptance command targets kryos-integ, so it was run against kryos-lane-misc as directed.
+- Step 2 is clean: `git show 713911cc` touches only parser.rs, codegen.rs, tests/map_negkey_pin.sh and tools/loop/LEDGER.md. It does not touch kryos-oracle, no test is weakened or deleted, and nothing special-cases test or file names. The pin grew from 4 to 13 cases and added 2 block guards (`blk_stmt` and `blk_lambda`).
+- Step 4 confirmed: `bash tests/map_negkey_pin.sh` on the tree printed `PASS map_negkey_pin (...)`. With KRYOS_BIN set to the master binary it failed `neg`, `paren`, `negid`, `negexpr`, `parenop`, `parenop2`, `addkey`, `callkey`, `charkey` and `floatkey` with E0003 `unexpected token ':'`.
+- Fix verified for the shapes it targets: `{p.id: 9}`, `{a as i64: 5}`, `{-a - 1: 1, -a - 2: 2}` split across lines, `{len([1,2]): 7}`, `{[1,2][0]: 7}`, `{a == 4: 1}`, a map as a fn tail expression `{-a: 1, a * 2: 2}`, and map<i64,char>, map<i64,f64>, map<u8,u8>, map<char,char>. AOT via `kryos build` correct for v1, d4, d5, d6. Master gives E0003 on the `{-a: ...}` fn-tail shape.
+- REFUTED on narrowness: `first_key_then_colon` gates on a whitelist of first-token kinds (Minus, Bang, Tilde, Not, LParen, LBracket, Ident, TypeIdent, Integer, Float, String, Char, True, False). The lexer emits an interpolated string as `StringPart`, which is not in the whitelist. `Star` and `If` are not either. So the claim that any expression-shaped first key parses as a map is false. The defect is specific to first-key detection (non-first keys work: `{"z": 1, "k{a}": 3}` returned 3).
+
+Residual shapes (still E0003 on the tree and on master):
+- Interpolated string first key: `fn main() { let a: i64 = 4; let m8: map<string,i64> = {"k{a}": 3}; println("{m8["k4"]}") }`; also `{"{a}": 3}` and `{"k{a}": 3, "z": 1}`. Cause: StringPart missing from the gate.
+- Deref first key: `let p = &a; let m: map<i64,i64> = {*p: 3}`. `let k = *p; {k: 3}` and `{(*p): 3}` work. Star is missing from the gate.
+- If-expression first key: `{if a > 1 { 1 } else { 2 }: 3}` (exotic; `if` not in the gate).
+- Newline continuation before a binary operator: `{a\n        + 1: 7}` gives E0003.
