@@ -1,0 +1,26 @@
+fn sin(x: f64) -> f64 {
+    return 42.0
+}
+fn cos(x: f64) -> f64 {
+    return 43.0
+}
+fn sqrt(x: f64) -> f64 {
+    return 44.0
+}
+fn floor(x: f64) -> f64 {
+    return 45.0
+}
+fn exp(x: f64) -> f64 {
+    return 46.0
+}
+fn pow(x: f64, y: f64) -> f64 {
+    return 47.0
+}
+fn main() {
+    println("{sin(1.0)}")
+    println("{cos(1.0)}")
+    println("{sqrt(4.0)}")
+    println("{floor(2.5)}")
+    println("{exp(1.0)}")
+    println("{pow(2.0, 3.0)}")
+}

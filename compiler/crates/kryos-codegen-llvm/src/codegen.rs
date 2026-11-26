@@ -3612,8 +3612,16 @@ impl LlvmCodegen {
         // as a single LLVM module so internal linkage doesn't break cross-fn
         // references.
         let linkage = if name == "main" { "" } else { "internal " };
+        // A user function that shares a name with a C library function
+        // (`sin`, `cos`, `pow`, `abs`, ...) with the same signature is
+        // recognised by LLVM as that libfunc and its calls are constant
+        // folded / simplified to the REAL libm result (`fn sin(x) { return
+        // 42.0 }` then `sin(1.0)` printed 0.8414... on AOT, 42 on JIT).
+        // `nobuiltin` on the definition stops LLVM treating it as a library
+        // builtin; it is a no-op for every name that is not a libfunc.
+        let no_builtin = if name == "main" { "" } else { " nobuiltin" };
         self.emit_line(&format!(
-            "define {linkage}{ret} @{name}({params}){dbg_suffix_for_define} {{"
+            "define {linkage}{ret} @{name}({params}){no_builtin}{dbg_suffix_for_define} {{"
         ));
 
         // Detect TCO loops: if any other block branches back to bb0, we must

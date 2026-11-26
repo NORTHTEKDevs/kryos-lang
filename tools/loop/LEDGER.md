@@ -10421,3 +10421,24 @@ NOT covered (not executed): NaN SIGN BIT itself still differs JIT vs AOT for `0.
 bit casts or `copysign`-style code, not via print/sort/compare); `sort_by`/`min`/`max`/`group_by` over f64 with
 NaN were not probed; f32 arrays routed to sort_f64 were not probed; the unverified num.patch in
 kryos-oracle/lane_wip (any-slot str rejection) was NOT applied.
+
+## libm-constfold: AOT constant-folded a user fn named like a libm function to the real libm result
+
+Root cause (read in the emitted IR, not guessed): `fn sin(x: f64) -> f64 { return 42.0 }` is emitted as
+`define internal double @sin(double %_0)`. LLVM's TargetLibraryInfo recognises any function NAMED `sin` with
+the libm signature as the C library `sin`, so `sin(1.0)` was constant folded to 0.8414709848078965 even though
+the module defines its own body (JIT ran the user body and printed 42). `clang -O2` on the dumped .ll
+reproduced it; adding `nobuiltin` to the define made it fold to 42.0.
+Fix: emit_function_as in kryos-codegen-llvm now writes `nobuiltin` on every non-`main` user function
+definition (attribute is a no-op for names that are not libfuncs).
+Files: compiler/crates/kryos-codegen-llvm/src/codegen.rs, tests/libm_user_fn_pin.{kry,sh}.
+Both-ways evidence: run.sh --only '^(libm\-constfold)$' FAIL before (`aot run 1/1: stdout=0.8414709848078965\n want 42\n`),
+PASS after. tests/libm_user_fn_pin.sh (user sin/cos/sqrt/floor/exp/pow, JIT + AOT): master binary FAIL AOT
+(got 0.84.., 0.54.., 2, 2, 2.718.., 8), this tree ok both. Regression scan (A*, M2-M7, 6, 6.ctl, NaN-neg0,
+buf_get_byte-sentinel, 135/136/137/138/139, B*, 41, B-latent-intrinsics, abort-undefined, turbofish-struct)
+run.sh master-vs-tree: zero PASS->FAIL; 6, A1, A2, A4, M3, NaN-neg0, libm-constfold flip to PASS (earlier lane commits + this).
+NOT covered (not executed): other libc names (abs, fabs, memcpy, strlen, printf) defined as user fns with
+a matching signature; user fns reached through spawn/actor thunks or fn pointers under these names;
+`--emit-llvm`-text consumers or cargo unit tests asserting the exact `define` line (only substring
+`contains` assertions exist in crates/kryos-codegen-llvm/tests and were not re-run, cargo not allowed).
+The unverified num.patch (any-slot str rejection) was NOT applied.
