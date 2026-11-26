@@ -3,7 +3,7 @@
 //! Stores the final compiled output (binary, object, or library) for each
 //! `(source content, target triple, build mode, compiler version)` tuple so
 //! that repeated `kryos build` invocations on the same source produce the
-//! same artifact without rerunning the entire pipeline.
+//! same artifact without generating code again (analysis still runs; see below).
 //!
 //! # Cache directory layout
 //!

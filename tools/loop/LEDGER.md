@@ -10514,3 +10514,20 @@ with a global write between them is still unsound; impl-method / static-method `
 that is aliased into a returned/stored value and mutated by the caller is not modelled (callers see a new object anyway); mutating
 runtime helpers other than the five named (they fall into "unknown call = impure", i.e. only a lost optimization).
 The unverified num.patch (any-slot str rejection) was NOT applied: it does not touch @pure.
+
+## 136: `kryos build --help` said the `--cache` hit skips the pipeline
+
+Root cause (read in kryos-driver `pipeline.rs` + `build_cache.rs`, not guessed): the doc comment on the `--cache` flag in
+kryos-cli `main.rs` (clap prints it as help) still said a hit reuses the binary "without rerunning the pipeline". Since the B8 fix
+`build_cache::lookup` is called in `pipeline.rs` only after parse/check/capability analysis accepted the program in this build's mode,
+and the key covers every module file read, target, mode, output type and version; a hit replaces only code generation.
+Fix: rewrote the help text (analysis and capability check always run; hit reuses compiled output instead of generating code again;
+key contents listed) and the matching sentence in the `build_cache.rs` module doc. No behaviour change.
+Files: compiler/crates/kryos-cli/src/main.rs, compiler/crates/kryos-driver/src/build_cache.rs, tests/build_help_cache_pin.sh.
+Both-ways evidence: run.sh --only '^(136)$' FAIL before (help matches forbidden /without rerunning the pipeline/), PASS after.
+tests/build_help_cache_pin.sh: master binary FAILS (exit 1, both checks), tree binary PASSES (exit 0).
+Regression scan: run.sh --only over all numeric ids, B7, NaN-neg0, M1-M6 (15 items): the only FAILs (B7, 41, 138, 135, M4, M5, 137, 139)
+are other open items and fail identically on the master tree; tests/cli_smoke_gate.sh 38/38.
+NOT covered: the other `kryos --help` texts and docs/ prose were not audited for the same claim (grep for "without rerunning" finds
+only the two sites fixed plus an unrelated CHANGELOG line). The unverified num.patch (any-slot str rejection) was NOT applied: it does
+not touch help text.
