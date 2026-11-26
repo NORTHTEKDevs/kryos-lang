@@ -10865,3 +10865,53 @@ Commit dc7e8a98 was reverted. Verifier findings:
 - Variants the fix handles (all 4MB on both AOT and JIT on the tree; master is 29-165MB on most): enum field read (GN = h.o), enum field via a param, tuple field (GT = h.t), Option field, nested field (GS = o.h.g), global-to-global (GS = GS2), swap through two globals, if with named locals, if with params, a struct-wrapper global, `if c { GS = GS }`, and `GS = h.g` in an if/else statement. The fix is real for the shapes it covers.
 - Step 4 (pin test): tests/mem_global_aggregate_gate.sh on the tree prints 'mem-global-aggregate: PASS' with all 28 rows at 4MB and answer 7888890. With KRYOS_BIN set to the master binary it FAILs (glob_param, glob_elem, glob_tupstruct, glob_self, glob_if each marked 'leak present'; control stays 4MB). The pin fails on master and passes on the tree.
 - Cleanup: the .verify-scratch directory is empty but could not be removed ('Device or resource busy'); some process still holds a handle on it.
+
+## a15 (finish item A15): a tuple-typed field of an owned struct leaked its old tuple on overwrite
+
+Item A15 (jit/aot leaks.kry glob_tuple_field; glob_field_push already passed on this branch) = `GW.t = ("w{i}", i)` where
+GW is a mutable global struct with a `(str, i64)` field. Same defect for a LOCAL struct (`w.t = (..)`): not global-specific.
+
+ROOT CAUSE (lower.rs, field-assignment arm of lower_stmt_inner)
+- The old-value release (`owned_old`: read the old field before the store, Drop it after) was gated on struct / enum field
+  types only, so a tuple field's old tuple (box + its string) was never released: ~118MB/M iterations on the JIT, ~50-60MB AOT.
+- Three other things had to change for the release to be sound once it exists:
+  1. `fresh` (a value the field may take without its own reference) did not list RValue::Tuple, so a tuple literal was shared
+     (+1) AND moved in: one count leaked per store.
+  2. The later "tuple field takes its own reference" branch shared again after owned_old had shared (`s.t = q`, `s.t = o.t`):
+     now guarded by `!val_shared`.
+  3. strip_escaping_tuple_drops turned the old-value Drop into a Nop (a Field-read tuple temp is an unowned alias) and treated
+     `s.t = q` as an escape of the named `q` even when the block shared it first (leaking q's own reference every iteration).
+     New LoweringContext.owned_tuple_old_reads exempts the old-read temps; a StoreField whose value tuple was shared earlier in
+     the block is no longer an escape. Same ownership rule as the struct/enum field arm: the field slot owns exactly one
+     reference; a fresh value moves in, anything else is shared first; the old reference is released after the store.
+- No perf-sensitive path touched (137-perf x0.589 of master in the regression run).
+
+FILES: compiler/crates/kryos-mir/src/lower.rs (owned_old condition, `fresh`, tuple share guard, strip_escaping_tuple_drops
++ new owned_tuple_old_reads field), tests/mem/tuple_field_overwrite_leak.kry, tests/mem_tuple_field_overwrite_gate.sh.
+
+EVIDENCE (both ways)
+- tests/mem_tuple_field_overwrite_gate.sh (modes loc_field / glob_field / field_named / field_self / field_read / field_call /
+  field_global + control, 1M iterations, JIT and AOT, RSS ceiling 24MB, answer 6888890 checked):
+  MASTER binary: FAIL, all 14 field rows leak (AOT 59-66MB, 184MB field_global; JIT 147-157MB, 310MB field_global); control 4MB.
+  this tree: PASS, all 16 rows 4MB, answer 6888890.
+- run.sh --only '^(A15|A15\.ctl|A14|A14\.ctl|A13\.ctl)$': A15 FAIL on the prior build (jit glob_tuple_field +118.3MB), PASS now.
+- KRYOS_ALLOC_STATS box live=2 (the two initial boxes) on every mode, KRYOS_FREE_DIAG=1 silent on JIT and AOT.
+- Alias probe (w.t = w.t / o.t / named q read afterwards / global tuple overwritten after the copy / xs[1] / fn result /
+  pass(w.t) / `let a = w.t` before the overwrite / `let al = w` struct alias / param struct / GW.t = w.t then overwrite /
+  if-expression value / nested tuple / tuple-with-array): identical stdout to master on the JIT (679601) and on AOT (679901).
+  (JIT and AOT differ from each other on this probe on master too; not caused by this change.)
+- Regression: `--only '^mem:'` 379 PASS / 10 FAIL, the same ten documented shared-handle failures; A10-A19/137-139 scan: A15 now
+  PASS, A16-A19 unchanged FAIL; gates PASS: mem_tuple, mem_global_aggregate, mem_struct_field_read, mem_balance, no_double_free,
+  backend_divergence_pins, mem_struct_array_overwrite, mem_field_assign_temp, mem_copy_assign, mem_loop, mem_shared_rule,
+  type_soundness, jit_symbols, builtin_borrow_mir, mem_throw_closure, mem_string_interp, mem_enum_overwrite, mem_json_handle,
+  minilisp 22/22, stdlib_compile 66/66, selfhost_wholeprogram, concurrency_smoke, run_examples, wasm_differential 66/66,
+  ecosystem_check 259/259, conformance 120/120.
+
+RESIDUAL (not covered, not claimed)
+- A tuple field reached through an array element or map value root (`ws[0].t = (..)`): executed, still leaks (AOT 66MB, JIT
+  153MB per 1M); `root_owned` is false for an index root.
+- `w.t = if c { named } else { (..) }` / match value: executed, still leaks (hidden result slot already owns a reference and the
+  field shares again).
+- Tuple fields whose elements include a struct / enum (not tuple_array_elem_releasable) keep the old behaviour.
+- The shared-handle items 137 / 139 (this lane's single-ownership-rule wall) are untouched here; the unverified lane mem.patch
+  was not applied. A16-A19 are different shapes and untouched.

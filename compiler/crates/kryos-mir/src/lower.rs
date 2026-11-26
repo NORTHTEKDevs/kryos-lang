@@ -322,6 +322,11 @@ pub struct LoweringContext {
     /// the array instead of sharing it, which left the slot's own reference
     /// orphaned.
     owned_slot_temps: HashSet<u32>,
+    /// Temps holding the raw OLD tuple read out of an owned struct field right
+    /// before a store overwrites it: their Drop releases the slot's reference and
+    /// must survive strip_escaping_tuple_drops (a Field-read tuple is otherwise
+    /// an unowned alias).
+    owned_tuple_old_reads: HashSet<u32>,
     /// Set by `Stmt::Let` just before lowering a Lambda-valued initializer
     /// (`let name = |...| { ... }` -- also what a nested/local named
     /// `fn name(...) { ... }` desugars to in the parser), immediately before
@@ -573,6 +578,7 @@ impl LoweringContext {
             pending_env_owned_captures: HashSet::new(),
             env_owned_locals: HashSet::new(),
             owned_slot_temps: HashSet::new(),
+            owned_tuple_old_reads: HashSet::new(),
             pending_self_recursive_name: None,
             keep_closure_locals_once: false,
             pending_let_share: false,
@@ -882,6 +888,7 @@ impl LoweringContext {
         self.borrowed_locals.clear();
         self.env_owned_locals.clear();
         self.owned_slot_temps.clear();
+        self.owned_tuple_old_reads.clear();
         // Variable local id -> box local ids of the function just lowered. Local
         // ids restart at 0, so a stale entry made the NEXT top-level function's
         // plain `name = ...` store through an unrelated local (a verifier error on
@@ -951,6 +958,7 @@ impl LoweringContext {
             borrowed_locals: std::mem::take(&mut self.borrowed_locals),
             env_owned_locals: std::mem::take(&mut self.env_owned_locals),
             owned_slot_temps: std::mem::take(&mut self.owned_slot_temps),
+            owned_tuple_old_reads: std::mem::take(&mut self.owned_tuple_old_reads),
             param_locals: std::mem::take(&mut self.param_locals),
             partial_moved_locals: std::mem::take(&mut self.partial_moved_locals),
         }
@@ -982,6 +990,7 @@ impl LoweringContext {
         self.borrowed_locals = state.borrowed_locals;
         self.env_owned_locals = state.env_owned_locals;
         self.owned_slot_temps = state.owned_slot_temps;
+        self.owned_tuple_old_reads = state.owned_tuple_old_reads;
     }
 }
 
@@ -990,6 +999,11 @@ struct FunctionState {
     borrowed_locals: std::collections::HashSet<u32>,
     env_owned_locals: HashSet<u32>,
     owned_slot_temps: HashSet<u32>,
+    /// Temps holding the raw OLD tuple read out of an owned struct field right
+    /// before a store overwrites it: their Drop releases the slot's reference and
+    /// must survive strip_escaping_tuple_drops (a Field-read tuple is otherwise
+    /// an unowned alias).
+    owned_tuple_old_reads: HashSet<u32>,
     locals: Vec<MirLocal>,
     blocks: Vec<BasicBlock>,
     current_instructions: Vec<Instruction>,
@@ -3743,7 +3757,14 @@ pub fn lower_function(
         .collect();
     let user_fns = ctx.user_fn_names.clone();
     let unowned_tuples =
-        strip_escaping_tuple_drops(&mut blocks, &locals, &droppable_tuples, &user_fns, &ctx.borrowed_locals);
+        strip_escaping_tuple_drops(
+        &mut blocks,
+        &locals,
+        &droppable_tuples,
+        &user_fns,
+        &ctx.borrowed_locals,
+        &ctx.owned_tuple_old_reads,
+    );
     type_array_releases(&mut blocks, &locals);
 
     MirFunction {
@@ -5965,6 +5986,7 @@ fn strip_escaping_tuple_drops(
     droppable: &HashSet<u32>,
     user_fns: &HashSet<String>,
     non_owned: &HashSet<u32>,
+    kept_old_reads: &HashSet<u32>,
 ) -> Vec<u32> {
     use std::collections::BTreeSet;
     let tuples: HashSet<u32> = locals
@@ -6112,6 +6134,7 @@ fn strip_escaping_tuple_drops(
                 }
                 Instruction::Assign { dest, value } => {
                     if tuples.contains(&dest.0)
+                        && !kept_old_reads.contains(&dest.0)
                         && !matches!(
                             value,
                             RValue::Tuple(_) | RValue::Call { .. } | RValue::CallIndirect { .. }
@@ -6133,6 +6156,24 @@ fn strip_escaping_tuple_drops(
             if let Instruction::Assign { value: RValue::Call { func, .. }, .. } = inst {
                 if user_fns.contains(func.as_str()) || func == STRUCT_SHARE_FN {
                     continue;
+                }
+            }
+            // `s.t = q` where this block shared `q` just before: the field took
+            // its own owner, so the store is not an escape of `q` (its own
+            // scope-end release stays). An unshared store still moves `q` in.
+            if let Instruction::StoreField { object: Operand::Local(o), value: Operand::Local(v), .. } = inst {
+                if !tuples.contains(&o.0) && tuples.contains(&v.0) {
+                    let shared_before = b.instructions[..ii]
+                        .iter()
+                        .rev()
+                        .take_while(|j| !matches!(j, Instruction::Assign { dest: d2, value: v2 }
+                            if d2 == v && !matches!(v2, RValue::Call { func, .. } if func == STRUCT_SHARE_FN)))
+                        .any(|j| matches!(j, Instruction::Assign { value: RValue::Call { func, args }, .. }
+                            if func == STRUCT_SHARE_FN && args.len() == 1
+                                && matches!(&args[0], Operand::Local(l) if l == v)));
+                    if shared_before {
+                        continue;
+                    }
                 }
             }
             // A container store (`push`, `a[i] = t`, `m[k] = t`) of a tuple
@@ -8391,8 +8432,14 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             // raw: the slot keeps its reference, the field takes its own.
                             let val_is_global_ident = matches!(value, ast::Expr::Identifier { name: vn, .. }
                                 if visible_local(ctx, vn).is_none() && ctx.mutable_globals.contains_key(vn.as_str()));
+                            // A releasable tuple field is owned by its struct like a
+                            // struct / enum field (the struct's drop releases it), so
+                            // overwriting it releases the old tuple and its elements
+                            // (`G.t = (s, n)` leaked every replaced tuple).
                             let owned_old = if root_owned
-                                && (is_owned_struct_ty(ctx, &field_ty) || is_owned_enum_ty(ctx, &field_ty))
+                                && (is_owned_struct_ty(ctx, &field_ty)
+                                    || is_owned_enum_ty(ctx, &field_ty)
+                                    || (!obj_is_tuple && tuple_array_elem_releasable(&field_ty)))
                             {
                                 let before = ctx.partial_moved_locals.clone();
                                 let old_tmp = ctx.alloc_temp(field_ty.clone());
@@ -8414,6 +8461,7 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                                 if dest == vl && matches!(value,
                                                     RValue::EnumVariant { .. }
                                                         | RValue::Struct { .. }
+                                                        | RValue::Tuple(_)
                                                         | RValue::Call { .. }
                                                         | RValue::CallIndirect { .. }))
                                         });
@@ -8462,9 +8510,10 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                             args: vec![Operand::Local(*vl)],
                                         },
                                     });
-                                } else if named_ty.as_ref().is_some_and(|t| is_owned_tuple_ty(ctx, t))
-                                    || (matches!(value, ast::Expr::FieldAccess { .. } | ast::Expr::IndexAccess { .. })
-                                        && is_owned_tuple_ty(ctx, &field_ty))
+                                } else if !val_shared
+                                    && (named_ty.as_ref().is_some_and(|t| is_owned_tuple_ty(ctx, t))
+                                        || (matches!(value, ast::Expr::FieldAccess { .. } | ast::Expr::IndexAccess { .. })
+                                            && is_owned_tuple_ty(ctx, &field_ty)))
                                 {
                                     // A tuple field releases its tuple when the
                                     // struct is dropped: the field takes its own
@@ -8515,6 +8564,9 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             }
                             if let Some(old_tmp) = owned_old {
                                 drop_tag(ctx, "owned-field-overwrite");
+                                if matches!(field_ty, MirType::Tuple(_)) {
+                                    ctx.owned_tuple_old_reads.insert(old_tmp.0);
+                                }
                                 ctx.emit(Instruction::Drop { local: old_tmp });
                                 ctx.dropped_locals.insert(old_tmp.0);
                             }
