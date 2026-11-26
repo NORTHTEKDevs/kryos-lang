@@ -10301,3 +10301,18 @@ finish/run.sh --only docs-stability-stale result in the commit message.
 Not covered: the 138 row says only "see LEDGER" because the ledger holds no characterised shape for
 138; other stale snapshots in LAUNCH-READINESS.md (dated history) were left as history. The
 B5/B6/B7/B9/41/B-latent-intrinsics Workaround lines are separate items, not touched here.
+
+## docs_stability_stale: REOPENED -- fix refuted by verifier
+
+Commit bcad0151 was reverted. Verifier findings:
+
+- Step 1 passes: kbuild no-op (kryos 1.3.0); run.sh -j 4 --only '^(docs\-stability\-stale)$' printed 'PASS docs-stability-stale / 1 PASS, 0 FAIL / RESULT: ALL PASS'.
+- Step 2 clean: diff touched only docs, tests/docs_stability_stale_gate.sh (checks added, none removed) and LEDGER.md; no kryos-oracle or compiler file; no test weakened.
+- Step 4 passes: tests/docs_stability_stale_gate.sh prints PASS and exits 0 on the lane tree; against kryos-co-nov it prints 18 FAIL lines, matching the commit message.
+- REFUTE 1: stale item-3 sweep incomplete. docs/learn/book/20-idioms-and-pitfalls.md:198 still says in present tense: "Struct-argument leak | Passing a struct with heap fields across a call boundary leaks ~85 bytes/call -- read fields directly in a hot loop instead". The commit claims learn/book was fixed and the new pin never reads this file, so the gate passes anyway. LEDGER item 3 is CLOSED 2026-10-07. Measured struct-argument loop (struct P { name: str, tags: [i64] } through two call levels, 1M iterations, --release): peak 4.9 MB on lane binary, 4.5 MB on master; it does not leak and the advice is false.
+- HANDOFF.md stale text left alone: line 120 still frames the struct-argument leak as live work; lines 227-243 say "Still open" and "still present at 86.2MB/1M". Only line 161 was edited. HANDOFF.md declares itself a stale dated snapshot, so minor.
+- REFUTE 2: the new 139 row in STABILITY.md says the leak happens "for ANY payload type". Wrong. Measured on release AOT, lane and master identical: Hold { o: Option<str> } matched in a callee stays flat at 4.9 MB over 4M iterations; Option<i64> flat at 4.5 MB. Leaking payloads: a plain struct holding a str (127 MB at 4M iterations) and Option<[i64]> (127.1 MB at 1M iterations).
+- The "127 MB peak over 1M calls" figure for the struct payload is not reproduced. The LEDGER repro with In { s: "abc" } at 1M iterations peaked at 35.5 MB; a longer string gave the same 35.5 MB at 1M. 127 MB for a struct payload came at 4M iterations; only the [i64] payload reached it at 1M. Row wording and number overstate the measurement.
+- 138 not reproduced: LEDGER repro built --release on both binaries printed 'done' rc=0, JIT run also printed 'done'. The row hedges and cites the LEDGER, which is honest; the 'shared L {...}' avoidance advice stays unmeasured.
+
+Residual shapes: docs/learn/book/20-idioms-and-pitfalls.md:198 presents the closed item-3 struct-argument leak as live and gives a workaround (same stale-item-3 class, in a file the fix and the pin gate skip; the gate prints PASS while the line is present).
