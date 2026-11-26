@@ -10533,3 +10533,12 @@ NOT COVERED (leaks as before, safely)
 - Struct-field / array drop helpers (`emit_helper_array_field_free`) for a `[[(str, i64)]]` field of a struct stored
   in an array were not changed; a struct local holding such a field did not leak in the measured shapes.
 - A tuple leaf whose element is a struct/closure/enum (not `tuple_array_elem_releasable`) still takes the old path.
+
+## leakmode: REOPENED -- fix refuted by verifier
+
+Commit bbb8bdeb reverted. Verifier findings:
+- The fix is narrow. Callee-thrown exception caught in the same function as the try-scope locals still leaks: `fn callee(i){ let s=..; throw "calleeboom" }` plus `fn f(i){ try { let a="a{i}-padpadpad"; let arr=[..]; callee(i); return len(a)+len(arr) } catch e { return len(e) } }`, looped 300000 times: peak RSS 97MB on AOT and JIT on the tree (master 114MB AOT, 119MB JIT) vs 4MB floor and 25MB gate ceiling. The common pattern `try { work() } catch` still leaks and the pin did not exercise it.
+- Controls: no try in the function (callee throws, mid has locals, top catches) is 4MB on both backends; the leak is specific to a callee-thrown exception caught in the same function as the try-scope locals.
+- No new crash or double free found; output identical to master on v1, v2, v3, v5.
+- Residual shapes: (1) callee-thrown exception caught in same function (above); (2) tuples holding a, listed as still leaking in the commit's own LEDGER.
+- Not verified: LLVM, KRYOS_FREE_DIAG, the claimed regression scans and other mem gates.
