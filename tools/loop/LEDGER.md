@@ -10311,3 +10311,42 @@ the pointer on the JIT (a mut binding can be reassigned to another type, so it k
 the erased i64); an `any`-typed fn PARAMETER or `[any]` element holding a str still has
 no tag (the item-6 ABI design note above is unchanged); `let x: any = <int>` is
 unchanged (already i64-shaped). A real tagged `any` remains the only general fix.
+
+
+### num lane: finish-line item `6` second pass (verifier REFUTED 9428ba32 as let-binding-only) -- `str` into every top-level `any` slot now rejected (2026-11-26)
+
+Verifier findings reproduced on the 9428ba32 build before touching anything (JIT):
+`fn show(a: any)` called with a str, `fn pick(b: bool) -> any` returning str literals,
+and `let mut m: any = "s"` all printed a raw pointer; nothing rejected them (an f64
+into `any` is already E0110). Root cause is unchanged: `any` erases to a bare i64 with
+no tag, so a `str` stored in any `any` slot other than the one immutable `let` that the
+first pass refined cannot be read back (`to_string` / `println` / interpolation print
+the pointer; the AOT fails in clang on the ptr/i64 mismatch). A tagged `any` is the only
+way to make those shapes WORK; this pass takes the other documented option (E0110, same
+as items 24 / 40 / 40b) so they are no longer silent wrong answers.
+Fix (`kryos-types/src/check.rs`, one new helper `reject_str_into_any_slot` that fires
+only when a CONCRETE `str` meets the `any` sentinel `Type::Error`): rejected with E0110 at
+a free-fn / method / closure parameter, a `-> any` return, a `let mut x: any = <str>`,
+an assignment into an `any` slot, an `any`-typed struct field, and a `let a: [any] = [<str>]`
+annotation. User-fn and let-closure parameters annotated literally `any` are tracked in
+`any_annotated_params` (the resolved sig only holds the shared `Type::Error`, which a
+polymorphic builtin param also is, so the builtin `println("x")` etc. are untouched).
+One deliberate exemption, kept because `type_soundness.sh` pins it (`contains_any_param_str`,
+fa16e134): a free fn whose `any` param is used ONLY as the haystack of `contains(p, ..)`
+(`any_str_safe_params`, decided from the body's Debug rendering, fails closed). The
+immutable `let x: any = <str>` from 9428ba32 is unchanged (keeps its concrete type).
+WIP: the saved cut-off patch (kryos-oracle/lane_wip_2026-11-25/num.patch) was applied,
+re-verified, and extended (closure params, contains exemption after it broke
+`contains_any_param_str`).
+Pins (tests/type_soundness.sh, 10 new probes + 1 no-cascade): master binary
+(KRYOS_BIN=kryos-co-nov) reports 18 probes FAILED incl. all 10 new HOLEs; this tree:
+"type-soundness: all probes correct". Evidence: `kryos check` over all 1875 tracked .kry
+files: zero `cannot store a ... any` diagnostics (no repo program changes output, so
+nothing added to closeout_targets.txt); 98-item any/swa family scan identical to before
+(83 PASS, the same 15 pre-existing swa:attacks FAIL); run.sh --only '^(6|6\.ctl)$' PASS/PASS.
+NOT covered (not executed or known still open): a str inside a struct/enum/Option/Result payload typed `any`
+(stdlib `result::ok(val: any)` with a str now E0110 at the call; `Result` payload shapes are
+the swa lane's); `any` via a generic / trait-method return; method-call `a.contains(x)` on
+an `any` param is NOT exempt (rejected); a closure bound with `let f = fn(a: any)` and then
+re-bound/passed around as a value loses the name-keyed check; non-str, non-i64 payloads (arrays/structs
+in an `any` param/return) were NOT probed in this pass. A real tagged `any` remains the only general fix.

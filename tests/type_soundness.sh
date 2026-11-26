@@ -1666,6 +1666,87 @@ fn main() {
     }
 }'
 
+# LEDGER item 6 (num lane, second pass): a `str` stored in a TOP-LEVEL `any`
+# slot other than the immutable `let x: any = <str>` (which keeps its concrete
+# type) printed a raw pointer (JIT) / failed clang (AOT): an `any` fn
+# parameter, an `-> any` return, a `let mut` any binding, an assignment to an
+# any slot, an `any` struct field, an `any` method parameter, a closure with an
+# `any` parameter, an `[any]` let annotation. All rejected with E0110. The one
+# kept shape is `has(a: any, v: str)` where the param is only `contains`'s
+# haystack (`contains_any_param_str` above): that read is correct for a str.
+want_reject str_into_any_fn_param '
+fn show(a: any) { println(to_string(a)) }
+fn main() {
+    let x: any = "hi"
+    show(x)
+}'
+want_reject str_into_any_fn_param_literal '
+fn show(a: any) { println(to_string(a)) }
+fn main() { show("hi") }'
+want_reject str_into_any_param_contains_and_print '
+fn has(a: any, v: str) -> bool {
+    println(to_string(a))
+    return contains(a, v)
+}
+fn main() { if not has("axb", "x") { exit(1) } }'
+want_reject str_returned_as_any '
+fn pick(b: bool) -> any {
+    if b { return "yes" }
+    return "no"
+}
+fn main() {
+    let x: any = pick(true)
+    println(to_string(x))
+}'
+want_reject str_into_let_mut_any '
+fn main() {
+    let mut m: any = "s"
+    println(to_string(m))
+}'
+want_reject str_assigned_to_any_slot '
+fn main() {
+    let mut m: any = 1
+    m = "s"
+    println(to_string(m))
+}'
+want_reject str_into_any_struct_field '
+struct B { v: any }
+fn main() {
+    let b = B { v: "hi" }
+    println(to_string(b.v))
+}'
+want_reject str_into_any_method_param '
+struct S { n: i64 }
+impl S {
+    fn show(self, a: any) { println(to_string(a)) }
+}
+fn main() {
+    let s = S { n: 1 }
+    s.show("hi")
+}'
+want_reject str_into_any_closure_param '
+fn main() {
+    let f = fn(a: any) { println(to_string(a)) }
+    f("hi")
+}'
+want_reject str_into_any_array_let '
+fn main() {
+    let a: [any] = ["x", "y"]
+    println(to_string(a[0]))
+}'
+# NO-CASCADE: i64 through an any param / return stays accepted and correct, and
+# the immutable `let x: any = <str>` (concrete type kept) still prints the text.
+want_pass int_through_any_param_and_return_still_works '
+fn show(a: any) { println(to_string(a)) }
+fn id(v: any) -> any { return v }
+fn main() {
+    show(5)
+    let y: any = id(7)
+    println(to_string(y))
+    let z: any = "q"
+    println(to_string(z))
+}'
+
 if [ "$fail" -eq 0 ]; then
   echo "type-soundness: all probes correct (unsound rejected, correct accepted)"
 else
