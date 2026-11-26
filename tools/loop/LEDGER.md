@@ -10360,3 +10360,24 @@ Residual shapes (all pass `kryos check` and print a raw pointer under `kryos run
 - str to a returned closure: `fn mk() -> fn(any) { fn(a: any) { println(to_string(a)) } }  fn main() { mk()("yo") }`
 - `fn pick() -> [any] { ["hi"] }  fn main() { println(to_string(pick()[0])) }`
 - `fn f() -> i64 { "hi" }  fn main() { println(to_string(f())) }` (tail never unified with the declared return type)
+
+A4: invalid UTF-8 digest/base64 input treated as empty -- FIXED (num lane)
+Root cause: `handle_to_str` (kryos-stdlib-native/src/bindings.rs) returns "" for any string whose
+bytes are not valid UTF-8. `substr("café", 0, 4)` splits the 2-byte `é`, yielding bytes `caf\xC3`
+(len 4); `sha256`, `sha512`, `sha1_hex`, `sha1_base64`, `hmac_sha256` (key and data),
+`pbkdf2_sha256` (password) and `base64_encode` all read it through `handle_to_str`, so they hashed /
+encoded the EMPTY string (`sha256(a) == sha256("")` was true, `base64_encode(a)` was "") on both
+JIT and AOT (shared runtime). Fix: new `handle_to_raw` (the raw byte slice) used by those digest/MAC/
+KDF inputs; `base64_encode_ks` keeps its codepoint-as-byte (latin-1) model for the valid runs and
+takes each invalid byte raw (same unit model `byte_at` uses), so valid strings are byte-identical
+to before (`base64_encode("café")` is still `Y2Fm6Q==`) and `caf\xC3` gives `Y2Fmww==`.
+Files: compiler/crates/kryos-stdlib-native/src/bindings.rs, tests/invalid_utf8_digest_pin.{kry,sh}.
+Evidence: run.sh --only '^(A4)$' FAIL on the previous build (`stdout=true\n[]\n4\n want false\n[Y2Fmww==]\n4\n`),
+PASS after. Pin tests/invalid_utf8_digest_pin.sh (JIT + AOT, 9 lines incl. sha256/sha1/sha512/hmac
+against python hashlib/hmac values): master binary FAIL both backends (empty-string digests,
+empty base64), this tree ok both. Regression scan (A*, M2-M7, NaN-neg0, libm-constfold,
+buf_get_byte-sentinel, 6, 6.ctl) diffed master-vs-tree: zero PASS->FAIL, A4 flips to PASS.
+NOT covered (not executed): other `handle_to_str` readers still collapse invalid UTF-8 to "" (regex
+find/replace/split, http bodies, ed25519 sign/verify message, hex/b64url converters take text
+input by design); `base64_decode` of bytes >= 0x80 still produces latin-1 codepoints, not raw
+bytes (existing documented model); string `==`/`len` on invalid strings were not re-probed.
