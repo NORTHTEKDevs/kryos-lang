@@ -605,6 +605,11 @@ pub fn compile_module_with_options(
     // These break compile-time recursion when array elements are structs/enums
     // that themselves contain heap fields (e.g. strings inside structs inside arrays).
     let mut type_drop_ids: HashMap<String, FuncId> = HashMap::new();
+    // (wrapper, body) pairs for types that can reach themselves: the wrapper is
+    // the `__kryos_drop_<T>` every caller uses and runs the body through the
+    // runtime's worklist (`kryos_drop_call`), so no chain drops recursively.
+    let mut drop_wrappers: Vec<(FuncId, FuncId)> = Vec::new();
+    let rec_drop_types = kryos_mir::ir::recursive_drop_types(&module.struct_defs, &module.enum_defs);
     {
         let call_conv = object_module.isa().default_call_conv();
         let has_heap_fields = |fields: &[(String, MirType)]| -> bool {
@@ -627,9 +632,21 @@ pub fn compile_module_with_options(
                 let drop_name = format!("__kryos_drop_{name}");
                 let mut sig = Signature::new(call_conv);
                 sig.params.push(AbiParam::new(types::I64)); // struct ptr
-                let id = object_module.declare_function(&drop_name, Linkage::Local, &sig)?;
-                type_drop_ids.insert(name.clone(), id);
-                func_ids.insert(drop_name, id);
+                if rec_drop_types.contains(name) {
+                    let bid = object_module.declare_function(
+                        &format!("__kryos_dropb_{name}"),
+                        Linkage::Local,
+                        &sig,
+                    )?;
+                    let wid = object_module.declare_function(&drop_name, Linkage::Local, &sig)?;
+                    type_drop_ids.insert(name.clone(), bid);
+                    drop_wrappers.push((wid, bid));
+                    func_ids.insert(drop_name, wid);
+                } else {
+                    let id = object_module.declare_function(&drop_name, Linkage::Local, &sig)?;
+                    type_drop_ids.insert(name.clone(), id);
+                    func_ids.insert(drop_name, id);
+                }
             }
         }
         for (name, variants) in &module.enum_defs {
@@ -650,9 +667,21 @@ pub fn compile_module_with_options(
                 let drop_name = format!("__kryos_drop_{name}");
                 let mut sig = Signature::new(call_conv);
                 sig.params.push(AbiParam::new(types::I64)); // enum ptr
-                let id = object_module.declare_function(&drop_name, Linkage::Local, &sig)?;
-                type_drop_ids.insert(name.clone(), id);
-                func_ids.insert(drop_name, id);
+                if rec_drop_types.contains(name) {
+                    let bid = object_module.declare_function(
+                        &format!("__kryos_dropb_{name}"),
+                        Linkage::Local,
+                        &sig,
+                    )?;
+                    let wid = object_module.declare_function(&drop_name, Linkage::Local, &sig)?;
+                    type_drop_ids.insert(name.clone(), bid);
+                    drop_wrappers.push((wid, bid));
+                    func_ids.insert(drop_name, wid);
+                } else {
+                    let id = object_module.declare_function(&drop_name, Linkage::Local, &sig)?;
+                    type_drop_ids.insert(name.clone(), id);
+                    func_ids.insert(drop_name, id);
+                }
             }
         }
     }
@@ -2062,6 +2091,14 @@ pub fn compile_module_with_options(
             )?;
             func_ids.insert("kryos_array_free_elems".to_string(), id);
         }
+        // Recursive types' drop wrappers run their body through this worklist.
+        if !func_ids.contains_key("kryos_drop_call") {
+            let mut sig = Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            let id = object_module.declare_function("kryos_drop_call", Linkage::Import, &sig)?;
+            func_ids.insert("kryos_drop_call".to_string(), id);
+        }
     }
     for (func_name, (_, _, cap_types, _, _)) in &closure_info {
         if let Some(&dropper_id) = dropper_ids.get(func_name.as_str()) {
@@ -2468,6 +2505,36 @@ pub fn compile_module_with_options(
         let mut ctx = Context::for_function(cl_func);
         object_module
             .define_function(drop_id, &mut ctx)
+            .map_err(CodegenError::Module)?;
+    }
+
+    // Drop wrappers of self-reaching types: `__kryos_drop_<T>(p)` is
+    // `kryos_drop_call(p, &__kryos_dropb_<T>)`, which runs the body and any
+    // child drops it triggers from a worklist instead of the native stack.
+    for (wrapper_id, body_id) in drop_wrappers {
+        let call_conv = object_module.isa().default_call_conv();
+        let mut sig = Signature::new(call_conv);
+        sig.params.push(AbiParam::new(types::I64));
+        let mut cl_func =
+            Function::with_name_signature(UserFuncName::user(0, wrapper_id.as_u32()), sig);
+        {
+            let mut builder = FunctionBuilder::new(&mut cl_func, &mut fb_ctx);
+            let entry = builder.create_block();
+            builder.append_block_params_for_function_params(entry);
+            builder.switch_to_block(entry);
+            let p = builder.block_params(entry)[0];
+            let body_ref = object_module.declare_func_in_func(body_id, builder.func);
+            let body_addr = builder.ins().func_addr(types::I64, body_ref);
+            let call_ref =
+                object_module.declare_func_in_func(func_ids["kryos_drop_call"], builder.func);
+            builder.ins().call(call_ref, &[p, body_addr]);
+            builder.ins().return_(&[]);
+            builder.seal_all_blocks();
+            builder.finalize();
+        }
+        let mut ctx = Context::for_function(cl_func);
+        object_module
+            .define_function(wrapper_id, &mut ctx)
             .map_err(CodegenError::Module)?;
     }
 

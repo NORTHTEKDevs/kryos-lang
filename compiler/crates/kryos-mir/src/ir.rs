@@ -100,6 +100,56 @@ pub fn tuple_array_elem_releasable(elem: &MirType) -> bool {
         })
 }
 
+/// Names of struct/enum types that can reach themselves through owning fields
+/// (directly, through another type, or through an array/tuple/map element).
+/// Their drop helpers are split into a body plus a `kryos_drop_call` wrapper so
+/// a 1M-deep chain is dropped from a worklist, not by one native frame per node.
+pub fn recursive_drop_types(
+    struct_defs: &HashMap<String, Vec<(String, MirType)>>,
+    enum_defs: &HashMap<String, Vec<EnumVariantDef>>,
+) -> HashSet<String> {
+    fn refs(t: &MirType, out: &mut Vec<String>) {
+        match t {
+            MirType::Struct(n) | MirType::Enum(n) => out.push(n.clone()),
+            MirType::Array(e, _) => refs(e, out),
+            MirType::Tuple(es) => es.iter().for_each(|e| refs(e, out)),
+            MirType::Map { key, value } => {
+                refs(key, out);
+                refs(value, out);
+            }
+            _ => {}
+        }
+    }
+    let mut edges: HashMap<&str, Vec<String>> = HashMap::new();
+    for (n, fields) in struct_defs {
+        let mut v = Vec::new();
+        fields.iter().for_each(|(_, t)| refs(t, &mut v));
+        edges.insert(n.as_str(), v);
+    }
+    for (n, variants) in enum_defs {
+        let mut v = Vec::new();
+        variants.iter().for_each(|var| var.fields.iter().for_each(|t| refs(t, &mut v)));
+        edges.entry(n.as_str()).or_default().extend(v);
+    }
+    let mut out = HashSet::new();
+    for &start in edges.keys() {
+        let mut seen: HashSet<&str> = HashSet::new();
+        let mut stack: Vec<&str> = edges[start].iter().map(|s| s.as_str()).collect();
+        while let Some(n) = stack.pop() {
+            if n == start {
+                out.insert(start.to_string());
+                break;
+            }
+            if seen.insert(n) {
+                if let Some(next) = edges.get(n) {
+                    stack.extend(next.iter().map(|s| s.as_str()));
+                }
+            }
+        }
+    }
+    out
+}
+
 /// MIR-level type representation.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum MirType {

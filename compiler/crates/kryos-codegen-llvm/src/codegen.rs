@@ -1200,6 +1200,7 @@ impl LlvmCodegen {
         self.emit_line("declare void @kryos_dyn_drop(ptr)");
         self.emit_line("declare ptr @kryos_array_retain(ptr)");
         self.emit_line("declare i64 @kryos_struct_release_shared(ptr)");
+        self.emit_line("declare void @kryos_drop_call(ptr, ptr)");
         // Read-only zero image an unboxed aggregate loads from when its box
         // pointer is null (a map read of a missing key returns 0).
         self.emit_line("@__kryos_zero_box = internal constant [2048 x i64] zeroinitializer");
@@ -2263,6 +2264,19 @@ impl LlvmCodegen {
     // Type drop helpers
     // -----------------------------------------------------------------------
 
+    /// `__kryos_drop_<T>` for a self-reaching type: runs `__kryos_dropb_<T>`
+    /// through the runtime worklist (`kryos_drop_call`).
+    fn emit_drop_wrapper(&mut self, name: &str) {
+        self.emit_line(&format!("define internal void @__kryos_drop_{name}(ptr %p) {{"));
+        self.emit_line("entry:");
+        self.emit_line(&format!(
+            "  call void @kryos_drop_call(ptr %p, ptr @__kryos_dropb_{name})"
+        ));
+        self.emit_line("  ret void");
+        self.emit_line("}");
+        self.emit_blank();
+    }
+
     /// Emit named drop helper functions for struct/enum types with heap fields.
     /// `__kryos_drop_MyStruct(ptr)` recursively frees nested heap fields then
     /// frees the struct/enum allocation. Used by array element drop loops.
@@ -2294,6 +2308,10 @@ impl LlvmCodegen {
                 )
             })
         };
+        // Types that can reach themselves: their `__kryos_drop_<T>` is a thin
+        // wrapper over `kryos_drop_call` (a runtime worklist) and the real body
+        // is `__kryos_dropb_<T>`, so a 1M-deep chain never recurses natively.
+        let rec_types = kryos_mir::ir::recursive_drop_types(&self.struct_defs, &self.enum_defs);
 
         // Struct drop helpers.
         for (name, fields) in &struct_defs {
@@ -2352,6 +2370,8 @@ impl LlvmCodegen {
                 continue;
             }
             self.emit_line(&format!("; Type drop helper for struct {name}"));
+            let wrap = rec_types.contains(name);
+            let drop_name = if wrap { format!("__kryos_dropb_{name}") } else { drop_name };
             self.emit_line(&format!("define internal void @{drop_name}(ptr %ptr) {{"));
             self.emit_line("entry:");
             // Null guard: unlike the enum-drop helpers below (which already
@@ -2422,6 +2442,9 @@ impl LlvmCodegen {
             self.emit_line("  ret void");
             self.emit_line("}");
             self.emit_blank();
+            if wrap {
+                self.emit_drop_wrapper(name);
+            }
         }
 
         // Enum drop helpers.
@@ -2452,6 +2475,8 @@ impl LlvmCodegen {
                 && variants
                     .iter()
                     .any(|v| v.fields.iter().any(|f| matches!(f, MirType::Enum(n) if n == name)));
+            let wrap = has_droppable && rec_types.contains(name);
+            let drop_name = if wrap { format!("__kryos_dropb_{name}") } else { drop_name };
             self.emit_line(&format!("; Type drop helper for enum {name}"));
             if self_rec {
                 self.emit_line(&format!("define internal void @{drop_name}(ptr %ptr_in) {{"));
@@ -2650,6 +2675,9 @@ impl LlvmCodegen {
             self.emit_line("  ret void");
             self.emit_line("}");
             self.emit_blank();
+            if wrap {
+                self.emit_drop_wrapper(name);
+            }
         }
     }
 

@@ -223,6 +223,10 @@ impl JitCompiler {
             kryos_rt::array::kryos_array_free_elems as *const u8,
         );
         jit_builder.symbol(
+            "kryos_drop_call",
+            kryos_rt::alloc::kryos_drop_call as *const u8,
+        );
+        jit_builder.symbol(
             "kryos_array_free_chain",
             kryos_rt::array::kryos_array_free_chain as *const u8,
         );
