@@ -10531,3 +10531,12 @@ are other open items and fail identically on the master tree; tests/cli_smoke_ga
 NOT covered: the other `kryos --help` texts and docs/ prose were not audited for the same claim (grep for "without rerunning" finds
 only the two sites fixed plus an unrelated CHANGELOG line). The unverified num.patch (any-slot str rejection) was NOT applied: it does
 not touch help text.
+
+## A20: REOPENED -- fix refuted by verifier
+
+Reverted commits: df815876 (tuple let-copy value copy on the JIT) and 992fb14c (tuple read from an element/field/map value, and `u = t`,
+verifier residuals); revert commits 47dd5088 and cd372ee2. The verifier refuted the fix; the A20 shape is open again.
+Executed after the reverts (this tree, release build): run.sh -j 2 --only '^(A20)$' -> FAIL A20 [jit a20.kry]
+(`stdout=q.n=1 r.n=9\nt.0=7 u.0=7\n want ...t.0=1 u.0=7`), i.e. `let mut u = t; u.0 = 7` still changes `t.0` on the JIT.
+The two tuple value-copy pin tests (tests/tuple_value_copy_pin.*, tests/tuple_elem_value_copy_pin.*) left the tree with the reverts.
+NOT covered (not executed): a replacement fix; whether the AOT backend shares the aliasing for the element/field/map read shapes.
