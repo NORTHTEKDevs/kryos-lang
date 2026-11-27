@@ -274,6 +274,20 @@ per-method dyn-thunks give every method a uniform i64-only ABI suitable
 for indirect dispatch (handling byval-self / sret-return correctly).
 Green since v2.2.
 
+### Documented capability limitations (closeout ids)
+
+Each row is a known limitation, not a fixed defect. Full detail is in
+[docs/THREAT-MODEL.md](docs/THREAT-MODEL.md) sections 4.4 and 4.5.
+
+| Id | Limitation | Workaround |
+|---|---|---|
+| B5 | An unannotated `pub fn` in a file with no `main` is not a capability boundary in the default (inferred) mode | Workaround: annotate library entry points with `@capabilities(...)`, or build with `--strict-capabilities`, which closes it |
+| B6 | A closure parameter's authority is charged to the sender; `deny!` does not bound a callee handed a closure | Workaround: have the receiver take a declared `fn` type with an explicit `@capabilities(...)` bound, and review closures at the call site that supplies them |
+| B7 | `@pure` restricts calls only; a `@pure` fn can still mutate its arguments and globals | Workaround: do not treat `@pure` as a no-mutation guarantee; pass copies or keep state out of `@pure` fns where mutation matters |
+| B9 | stdlib handles (for example `std::sync::AtomicInt.cell`) expose raw addresses as public `i64` fields | Workaround: use only the stdlib methods, never read or write the raw handle fields directly, and do not load untrusted stdlib sources |
+| 41 | Capability precision: 41 of 75 enumerated pure-closure shapes need `@capabilities(all)` (LEDGER item 41) | Workaround: add an explicit `@capabilities(all)` annotation on the enclosing function; the error is in the safe direction (it over-demands authority) |
+| B-latent-intrinsics | Self-host memory intrinsics (`syscall1`..`syscall6`, `mem_read_byte`, `mem_write_byte`, `str_data_ptr` and others, also N3) are ambient in the checker | Workaround: none needed at run time on this build, since `kryos run` fails to link a program that calls them; do not call these intrinsics from application code |
+
 ---
 
 ## 6. Out of scope (will not be implemented)

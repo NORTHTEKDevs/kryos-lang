@@ -10323,3 +10323,7 @@ Root cause: CLAUDE.md known-limitation said narrow-int literals are not range-ch
 Files: CLAUDE.md, tests/docs_claude_narrow_int_gate.sh.
 Evidence: master tree gate -> FAIL docs_claude_narrow_int_gate: stale range-check claim in CLAUDE.md ; lane tree gate -> PASS docs_claude_narrow_int_gate ; run.sh --only docs-claude-narrow-int(.ctl) PASS/PASS.
 Residual: other docs repeating the same claim were not swept (only CLAUDE.md checked).
+
+## Closeout docs lane: B5, B6, B7, B9, 41, B-latent-intrinsics (documented, not fixed)
+
+STABILITY.md gains a "Documented capability limitations" table (before section 6) with one row per id, each carrying a `Workaround:` line. Nothing in the compiler changed; B9 and the intrinsics stay real limitations. Executed: `finish/run.sh <tree> -j 2 --only '^(B5|B6|B7|B9|41|B-latent-intrinsics)$'` printed 6 FAIL on the unmodified tree (master has no such rows) and 6 PASS after.
