@@ -6466,34 +6466,7 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
             span: let_span,
             ..
         } => {
-            // LEDGER item 6: an immutable `let x: any = v` whose concrete type the
-            // checker proved (`resolved_let_types`) takes that type for its slot.
-            let any_annot = matches!(
-                ty,
-                Some(ast::TypeExpr::Simple { name: tn, .. }) if tn == "any" || tn == "Any"
-            );
-            let any_refined = if any_annot {
-                ctx.let_types.get(let_span).cloned()
-            } else {
-                None
-            };
-            // A GENERIC body is type-checked once with its parameters unbound,
-            // so the checker cannot prove `let x: any = s` (`s: T`) holds a
-            // `str`. At monomorphization the initializer's concrete type is
-            // known: an immutable binding keeps a `str` as a `str`.
-            let any_refined_str = any_annot
-                && any_refined.is_none()
-                && !*mutable
-                && pattern.is_none()
-                && !ctx.active_generic_bindings.is_empty()
-                && value
-                    .as_ref()
-                    .is_some_and(|v| matches!(infer_expr_type(ctx, v), MirType::Str));
-            let mir_ty = if let Some(te) = any_refined {
-                ctx.resolve_type(&te)
-            } else if any_refined_str {
-                MirType::Str
-            } else if let Some(t) = ty {
+            let mir_ty = if let Some(t) = ty {
                 // A generic function body monomorphized for concrete type args
                 // still carries the RAW generic annotation on its locals
                 // (`let inner: T` / `let inner: Box<T>`) -- resolve_type would

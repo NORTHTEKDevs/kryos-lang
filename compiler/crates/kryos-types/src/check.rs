@@ -182,38 +182,6 @@ pub struct TypeChecker {
     /// keeps both diagnostics.
     dyn_container_reject_params: std::collections::HashSet<(String, usize)>,
 
-    /// LEDGER item 6 (num lane): `(function name, param index)` of every free
-    /// function parameter whose written annotation is literally `any`/`Any`.
-    /// `FunctionSig` keeps only the resolved `Type::Error` sentinel, which a
-    /// polymorphic builtin's parameter shares, so the call-site check that
-    /// rejects a `str` argument for an `any` parameter keys off this table.
-    any_annotated_params: std::collections::HashSet<(String, usize)>,
-
-    /// Subset of `any_annotated_params` whose parameter the body uses ONLY as
-    /// the haystack of `contains(p, ..)`. That read is correct for a `str`
-    /// payload (pinned by `contains_any_param_str`), so a `str` argument stays
-    /// accepted there; every other use of an `any` param prints the raw pointer.
-    any_str_safe_params: std::collections::HashSet<(String, usize)>,
-
-    /// LEDGER item 6 (num lane, third pass): spans of the expressions a fn /
-    /// method / handler body yields as its IMPLICIT value (the last statement
-    /// of the body, recursing through a trailing if/elif/else or try/catch).
-    /// The tail is never unified against the declared return type, so a `str`
-    /// tail of a `-> any` fn needs its own check (`Stmt::Expr`).
-    fn_tail_value_spans: std::collections::HashSet<Span>,
-    /// LEDGER item 6 (fifth pass): `(generic fn, generic param index)` pairs
-    /// whose type parameter flows, inside the body, into an `any` slot (a
-    /// `let mut`, an `any` parameter, a return, ...). A generic body is checked
-    /// once with `T` unbound, so a `str` bound to `T` at a CALL SITE is invisible
-    /// there; these summaries let the call site reject it.
-    generic_any_sinks: std::collections::HashSet<(String, usize)>,
-    /// `(caller, caller generic idx) -> (callee, callee generic idx)`: a generic
-    /// fn handing its own type parameter to another generic fn (closed to a
-    /// fixpoint at the end of the module).
-    generic_any_edges: Vec<((String, usize), (String, usize))>,
-    /// Call sites that bound a generic parameter to `str`: `(callee, idx, span)`.
-    generic_str_calls: Vec<(String, usize, Span)>,
-
     // ── Capability-typed fn values (Stage 1: representation + inference,
     // no enforcement -- docs/capability-effects-spec.md) ──────────────
     /// Fresh capability-row variable ids collected while resolving a
@@ -343,12 +311,6 @@ impl TypeChecker {
             pattern_dup_seen: None,
             suppress_array_elem_unify: std::collections::HashSet::new(),
             dyn_container_reject_params: std::collections::HashSet::new(),
-            any_annotated_params: std::collections::HashSet::new(),
-            any_str_safe_params: std::collections::HashSet::new(),
-            fn_tail_value_spans: std::collections::HashSet::new(),
-            generic_any_sinks: std::collections::HashSet::new(),
-            generic_any_edges: Vec::new(),
-            generic_str_calls: Vec::new(),
             pending_cap_var_ids: Vec::new(),
             cap_accum_stack: Vec::new(),
             current_actor_fn_state_fields: std::collections::HashSet::new(),
@@ -515,7 +477,6 @@ impl TypeChecker {
     /// silently defaulted to i64 -- an f64 body computed on garbage bits.
     /// Call after `current_return_type` is set, before `check_block(body)`.
     fn seed_tail_lambda_expected(&mut self, body: &Block) {
-        Self::collect_tail_value_spans(body, &mut self.fn_tail_value_spans);
         if let Some(Stmt::Expr {
             expr:
                 Expr::Lambda {
@@ -535,38 +496,6 @@ impl TypeChecker {
                     }
                 }
             }
-        }
-    }
-
-    /// Spans of the tail value expressions of a fn body (see `fn_tail_value_spans`).
-    fn collect_tail_value_spans(block: &Block, out: &mut std::collections::HashSet<Span>) {
-        match block.stmts.last() {
-            Some(Stmt::Expr { expr, .. }) => {
-                out.insert(expr.span());
-            }
-            Some(Stmt::If {
-                then_block,
-                elif_clauses,
-                else_block,
-                ..
-            }) => {
-                Self::collect_tail_value_spans(then_block, out);
-                for (_, b) in elif_clauses {
-                    Self::collect_tail_value_spans(b, out);
-                }
-                if let Some(b) = else_block {
-                    Self::collect_tail_value_spans(b, out);
-                }
-            }
-            Some(Stmt::TryCatch {
-                try_block,
-                catch_block,
-                ..
-            }) => {
-                Self::collect_tail_value_spans(try_block, out);
-                Self::collect_tail_value_spans(catch_block, out);
-            }
-            _ => {}
         }
     }
 
@@ -766,10 +695,29 @@ impl TypeChecker {
         // (`let x: any = <bool>`) at `Stmt::Let`. Only CONTAINER positions are
         // unambiguous: nothing polymorphic is typed `[any]`/`map<_, any>`, so
         // a concrete `Bool`/`F64` landing inside one is always the item-40 bug.
-        let nested = if matches!(p, Type::Error) {
-            None
-        } else {
-            Self::untagged_scalar_into_any(&p, &a)
+        let nested = match (&p, &a) {
+            (Type::Array { element: pe, .. }, Type::Array { element: ae, .. }) => {
+                Self::untagged_scalar_into_any(pe, ae)
+            }
+            (Type::Set { element: pe }, Type::Set { element: ae }) => {
+                Self::untagged_scalar_into_any(pe, ae)
+            }
+            (Type::Option { inner: pi }, Type::Option { inner: ai }) => {
+                Self::untagged_scalar_into_any(pi, ai)
+            }
+            (Type::Tuple { elements: pv }, Type::Tuple { elements: av }) => pv
+                .iter()
+                .zip(av.iter())
+                .find_map(|(x, y)| Self::untagged_scalar_into_any(x, y)),
+            (Type::Map { key: pk, value: pv }, Type::Map { key: ak, value: av }) => {
+                Self::untagged_scalar_into_any(pk, ak)
+                    .or_else(|| Self::untagged_scalar_into_any(pv, av))
+            }
+            (Type::Result { ok: po, err: pe }, Type::Result { ok: ao, err: ae }) => {
+                Self::untagged_scalar_into_any(po, ao)
+                    .or_else(|| Self::untagged_scalar_into_any(pe, ae))
+            }
+            _ => None,
         };
         if let Some(bad) = nested {
             let msg = if bad == Type::Str {
@@ -789,163 +737,6 @@ impl TypeChecker {
                 )
             };
             self.error_with_code(msg, span, kryos_errors::codes::E0110);
-        }
-    }
-
-    /// True when every identifier use of `pname` in the Debug rendering of a
-    /// function body is the first argument of a `contains(..)` call and there is
-    /// at least one. Fails closed: any unrecognised shape reads as "not safe".
-    fn param_used_only_as_contains_haystack(dbg: &str, pname: &str) -> bool {
-        let ident = format!("Identifier {{ name: \"{pname}\", ");
-        let arg0 = format!("args: [{ident}");
-        let total = dbg.matches(ident.as_str()).count();
-        let mut safe = 0usize;
-        for (idx, _) in dbg.match_indices(arg0.as_str()) {
-            let before = &dbg[..idx];
-            if let Some(c) = before.rfind("callee: ") {
-                if before[c..].starts_with("callee: Identifier { name: \"contains\", span: Span {") {
-                    safe += 1;
-                }
-            }
-        }
-        safe > 0 && safe == total
-    }
-
-    /// LEDGER item 6 (num lane, fifth pass): a value handed to an enum
-    /// variant constructor whose declared payload type is (or contains) `any`.
-    /// The stdlib bridge enums `Result`/`Option` carry an `any` payload by
-    /// design (typed through `stdlib_bridge_generics`), so only other enums are
-    /// checked.
-    fn reject_variant_payload_into_any(&mut self, enum_name: &str, payload_ty: &Type, arg_ty: &Type, span: Span) {
-        if enum_name == "Result" || enum_name == "Option" {
-            return;
-        }
-        self.reject_str_into_any_slot(payload_ty, arg_ty, span, "an enum variant payload");
-        self.reject_untagged_scalar_into_any(payload_ty, arg_ty, span);
-    }
-
-    /// `(current fn, generic param index)` when `var` (resolved) is one of the
-    /// type-parameter variables of the generic fn whose body is being checked.
-    fn current_generic_param(&self, var: u32) -> Option<(String, usize)> {
-        let f = self.current_function_name.as_ref()?;
-        let sig = self.env.lookup_function(f)?;
-        sig.generic_var_ids
-            .iter()
-            .position(|g| matches!(self.engine.resolve(&Type::Var(*g)), Type::Var(r) if r == var))
-            .map(|i| (f.clone(), i))
-    }
-
-    /// The type `arg` has at the position where the template parameter type
-    /// `tmpl` mentions the generic variable `gid` (parallel structural walk).
-    fn bound_generic(&self, tmpl: &Type, arg: &Type, gid: u32) -> Option<Type> {
-        let t = self.engine.resolve(tmpl);
-        let a = self.engine.resolve(arg);
-        if let Type::Var(v) = &t {
-            if matches!(self.engine.resolve(&Type::Var(gid)), Type::Var(r) if r == *v) {
-                return Some(a);
-            }
-        }
-        match (&t, &a) {
-            (Type::Array { element: te, .. }, Type::Array { element: ae, .. })
-            | (Type::Set { element: te }, Type::Set { element: ae })
-            | (Type::Option { inner: te }, Type::Option { inner: ae }) => self.bound_generic(te, ae, gid),
-            (Type::Tuple { elements: tv }, Type::Tuple { elements: av }) => tv
-                .iter()
-                .zip(av.iter())
-                .find_map(|(x, y)| self.bound_generic(x, y, gid)),
-            (Type::Map { key: tk, value: tv }, Type::Map { key: ak, value: av }) => {
-                self.bound_generic(tk, ak, gid).or_else(|| self.bound_generic(tv, av, gid))
-            }
-            (Type::Result { ok: to, err: te }, Type::Result { ok: ao, err: ae }) => {
-                self.bound_generic(to, ao, gid).or_else(|| self.bound_generic(te, ae, gid))
-            }
-            (Type::Struct { name: tn, generics: tg }, Type::Struct { name: an, generics: ag })
-            | (Type::Enum { name: tn, generics: tg }, Type::Enum { name: an, generics: ag })
-                if tn == an && tg.len() == ag.len() =>
-            {
-                tg.iter().zip(ag.iter()).find_map(|(x, y)| self.bound_generic(x, y, gid))
-            }
-            _ => None,
-        }
-    }
-
-    /// LEDGER item 6 (fifth pass): a call to the generic fn `callee` whose
-    /// argument `i` binds one of its type parameters to `str`, or to a type
-    /// parameter of the generic fn being checked (a hand-off).
-    fn note_generic_call_arg(&mut self, callee: &str, i: usize, arg_ty: &Type, span: Span) {
-        let Some(sig) = self.env.lookup_function(callee).cloned() else { return };
-        if sig.generic_var_ids.is_empty() {
-            return;
-        }
-        let Some((_, tmpl)) = sig.params.get(i) else { return };
-        for (j, gid) in sig.generic_var_ids.iter().enumerate() {
-            match self.bound_generic(tmpl, arg_ty, *gid) {
-                Some(Type::Str) => self.generic_str_calls.push((callee.to_string(), j, span)),
-                Some(Type::Var(v)) => {
-                    if let Some(from) = self.current_generic_param(v) {
-                        self.generic_any_edges.push((from, (callee.to_string(), j)));
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    /// LEDGER item 6 (fifth pass): close the generic-summary graph and reject
-    /// every call site that bound a sink type parameter to `str`.
-    fn report_generic_str_sinks(&mut self) {
-        loop {
-            let mut grew = false;
-            for (from, to) in self.generic_any_edges.clone() {
-                if self.generic_any_sinks.contains(&to) && self.generic_any_sinks.insert(from) {
-                    grew = true;
-                }
-            }
-            if !grew {
-                break;
-            }
-        }
-        let mut seen = std::collections::HashSet::new();
-        for (callee, j, span) in self.generic_str_calls.clone() {
-            if self.generic_any_sinks.contains(&(callee.clone(), j)) && seen.insert(span) {
-                self.error_with_code(
-                    format!(
-                        "cannot bind a generic parameter of `{callee}` to `str` -- its body stores a value of that type in an `any` slot, and `any` is erased to a bare i64 at runtime with no type tag, so reading it back (`to_string`, `println`, interpolation) prints a raw pointer instead of the text. Keep the value in its generic type instead of erasing it to `any`"
-                    ),
-                    span,
-                    kryos_errors::codes::E0110,
-                );
-            }
-        }
-        self.generic_str_calls.clear();
-        self.generic_any_edges.clear();
-    }
-
-    /// LEDGER item 6 (num lane): a `str` stored into a TOP-LEVEL `any` slot
-    /// (a function/method parameter, a `mut` binding, an assignment target, a
-    /// return, a struct field). `any` carries no runtime tag, so the slot is a
-    /// bare i64 and `to_string`/`println`/interpolation on it print the raw
-    /// pointer (JIT) or fail the clang build (AOT). Only the immutable
-    /// `let x: any = <str>` shape can keep the concrete type (see `Stmt::Let`);
-    /// every other position is rejected here, matching items 24 / 40 / 40b.
-    /// Fires only on a CONCRETE `str` value meeting the `any` sentinel, so an
-    /// upstream type error (`Type::Error` on the value side) adds no noise.
-    fn reject_str_into_any_slot(&mut self, slot_ty: &Type, val_ty: &Type, span: Span, what: &str) {
-        if self.engine.resolve(slot_ty) == Type::Error {
-            if let Type::Var(id) = self.engine.resolve(val_ty) {
-                if let Some(key) = self.current_generic_param(id) {
-                    self.generic_any_sinks.insert(key);
-                }
-            }
-        }
-        if self.engine.resolve(slot_ty) == Type::Error && self.engine.resolve(val_ty) == Type::Str {
-            self.error_with_code(
-                format!(
-                    "cannot store a `str` value in {what} typed `any` -- `any` is erased to a bare i64 at runtime with no type tag, so reading the value back (`to_string`, `println`, interpolation) prints a raw pointer instead of the text. Give the slot its concrete type (`str`) or a generic `<T>` parameter instead of `any`, or convert the value to its final form before erasing it"
-                ),
-                span,
-                kryos_errors::codes::E0110,
-            );
         }
     }
 
@@ -998,60 +789,6 @@ impl TypeChecker {
                 },
             ) => Self::untagged_scalar_into_any(po, ao)
                 .or_else(|| Self::untagged_scalar_into_any(pe, ae)),
-            // The constructor-built bridge enums (`Some(x)` is
-            // `Enum{Option,[T]}`, `Ok(x)` is `Enum{Result,[T,E]}`, see
-            // `stdlib_bridge_generics`) meeting the builtin `Option<..>` /
-            // `Result<..>` slot type.
-            (Type::Option { inner: pi }, Type::Enum { name: an, generics: ag })
-                if an == "Option" && ag.len() == 1 =>
-            {
-                Self::untagged_scalar_into_any(pi, &ag[0])
-            }
-            (Type::Result { ok: po, err: pe }, Type::Enum { name: an, generics: ag })
-                if an == "Result" && ag.len() == 2 =>
-            {
-                Self::untagged_scalar_into_any(po, &ag[0])
-                    .or_else(|| Self::untagged_scalar_into_any(pe, &ag[1]))
-            }
-            // LEDGER item 6 (num lane, fifth pass): a user generic instantiated
-            // at `any` (`W<any>`, `Box<any>`) erases whatever the concrete
-            // instantiation (`W<str>`) holds at that argument position, exactly
-            // like a container element.
-            (
-                Type::Struct { name: pn, generics: pg },
-                Type::Struct { name: an, generics: ag },
-            )
-            | (
-                Type::Enum { name: pn, generics: pg },
-                Type::Enum { name: an, generics: ag },
-            ) if pn == an && pg.len() == ag.len() => pg
-                .iter()
-                .zip(ag.iter())
-                .find_map(|(x, y)| Self::untagged_scalar_into_any(x, y)),
-            // LEDGER item 6 (num lane, fourth pass): a function VALUE whose
-            // declared return type is `any` (`fn() -> any`, `fn(i64) -> [any]`)
-            // yields whatever the concrete closure yields, so the closure's
-            // return meets the `any` sentinel exactly like a container element.
-            // The bare opaque `fn` (`fn(any) -> any`, the shape every polymorphic
-            // callback parameter has) is exempt: it is the documented
-            // any-callable that unifies with every function.
-            (
-                Type::Function {
-                    params: pp,
-                    ret: pr,
-                    ..
-                },
-                Type::Function { ret: ar, .. },
-            ) => {
-                let opaque = pp.len() == 1
-                    && matches!(&pp[0], Type::Error)
-                    && matches!(pr.as_ref(), Type::Error);
-                if opaque {
-                    None
-                } else {
-                    Self::untagged_scalar_into_any(pr, ar)
-                }
-            }
             _ => None,
         }
     }
@@ -1958,8 +1695,6 @@ impl TypeChecker {
             }
         }
 
-        self.report_generic_str_sinks();
-
         // Every `deny!` block is judged on the row its body was charged, and the
         // row mentions vars that only a later declaration, a later store or a
         // reference binds. Now nothing can bind any more: take the verdict
@@ -2103,17 +1838,6 @@ impl TypeChecker {
                         {
                             self.dyn_container_reject_params
                                 .insert((name.clone(), i));
-                        }
-                        if matches!(
-                            p.ty.as_ref(),
-                            Some(TypeExpr::Simple { name: tn, .. }) if tn == "any" || tn == "Any"
-                        ) {
-                            self.any_annotated_params.insert((name.clone(), i));
-                            if let Some(b) = body.as_ref() {
-                                if Self::param_used_only_as_contains_haystack(&format!("{b:?}"), &p.name) {
-                                    self.any_str_safe_params.insert((name.clone(), i));
-                                }
-                            }
                         }
                         (p.name.clone(), ty)
                     })
@@ -3237,7 +2961,6 @@ impl TypeChecker {
                         self.engine.mark_input_storage(&param_tys);
                         self.engine.mark_returned_fn_storage(&hs.ret);
                     }
-                    Self::collect_tail_value_spans(&h.body, &mut self.fn_tail_value_spans);
                     self.cap_accum_stack.push(crate::ty::CapRow::empty());
                     self.check_block(&h.body);
                     let handler_caps = self.cap_accum_stack.pop().unwrap_or_else(crate::ty::CapRow::empty);
@@ -3917,21 +3640,6 @@ impl TypeChecker {
                 if pattern.is_none() && matches!(value, Some(Expr::Lambda { .. })) {
                     self.pending_self_recursive_name = Some(name.clone());
                 }
-                // LEDGER item 6: remember the `any`-annotated params of a
-                // closure bound to a plain name so a `str` argument at its call
-                // site is rejected like a named fn's (`any_annotated_params`).
-                if pattern.is_none() {
-                    if let Some(Expr::Lambda { params: lps, .. }) = value {
-                        for (i, lp) in lps.iter().enumerate() {
-                            if matches!(
-                                lp.ty.as_ref(),
-                                Some(TypeExpr::Simple { name: tn, .. }) if tn == "any" || tn == "Any"
-                            ) {
-                                self.any_annotated_params.insert((name.clone(), i));
-                            }
-                        }
-                    }
-                }
                 // See `suppress_array_elem_unify`: a `[dyn Trait]` annotation
                 // over an array literal is already rejected (E0110) by
                 // `resolve_type_expr` above -- don't let the array literal's
@@ -3981,35 +3689,6 @@ impl TypeChecker {
                     }
                 }
 
-                let is_any_annot = matches!(
-                    ty.as_ref(),
-                    Some(TypeExpr::Simple { name: tn, .. }) if tn == "any" || tn == "Any"
-                );
-                // LEDGER item 6 (num lane): the shapes that can NOT keep the
-                // concrete type. A `mut` any binding may be reassigned to a
-                // different type, and an `any` CONTAINER annotation
-                // (`let a: [any] = ["x"]`) erases its element; both would print
-                // the raw pointer for a `str`, so they are rejected like the
-                // call-site container shape (item 40b).
-                if let (Some(decl), Some(inf)) = (&declared_ty, &inferred_ty) {
-                    if is_any_annot {
-                        if *mutable {
-                            self.reject_str_into_any_slot(decl, inf, *span, "a `let mut` binding");
-                        }
-                    } else {
-                        let d = self.engine.resolve(decl);
-                        let a = self.engine.resolve(inf);
-                        if d != Type::Error
-                            && Self::untagged_scalar_into_any(&d, &a) == Some(Type::Str)
-                        {
-                            self.error_with_code(
-                                "cannot store a `str` value in an `any` container slot -- `any` is erased to a bare i64 at runtime with no type tag, so reading the element back (`to_string`, `println`, interpolation) prints a raw pointer instead of the text. Use a concrete element type (e.g. `[str]`) instead of `[any]`".to_string(),
-                                *span,
-                                kryos_errors::codes::E0110,
-                            );
-                        }
-                    }
-                }
                 let final_ty = match (declared_ty, inferred_ty) {
                     (Some(decl), Some(mut inferred)) => {
                         // A bare FLOAT LITERAL adapts to a narrower declared
@@ -4039,42 +3718,7 @@ impl TypeChecker {
                         if let Some(v) = value.as_ref() {
                             self.check_int_literal_range(&decl, v, *span);
                         }
-                        // LEDGER item 6 (num lane): an IMMUTABLE `let x: any = v`
-                        // has exactly one value for its whole life, so its
-                        // concrete type is statically known even though `any`
-                        // carries no runtime tag. Keep that concrete type for
-                        // the binding (checker env AND MIR slot) instead of
-                        // erasing it to a bare i64: `to_string(x)` / `println(x)`
-                        // on an `any` holding a `str` printed the raw pointer on
-                        // the JIT and failed in clang on the AOT. Integer
-                        // payloads are already i64-shaped (unchanged); bool /
-                        // float stay rejected above (E0110); a `mut` binding can
-                        // be reassigned to a different type so it keeps the
-                        // erased behaviour.
-                        let refined = if !*mutable && pattern.is_none() && is_any_annot {
-                            let r = self.engine.resolve(&inferred);
-                            let primitive_num = matches!(
-                                r,
-                                Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
-                                    | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
-                                    | Type::USize | Type::ISize | Type::Bool | Type::F32
-                                    | Type::F64 | Type::Error | Type::Var(_)
-                            );
-                            if !primitive_num && concrete_type_to_type_expr(&r).is_some() {
-                                Some(r)
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        };
-                        match refined {
-                            Some(r) => {
-                                self.resolved_let_types.insert(*span, r.clone());
-                                r
-                            }
-                            None => decl,
-                        }
+                        decl
                     }
                     (Some(decl), None) => decl,
                     (None, Some(inferred)) => self.generalize_binding_type(inferred),
@@ -4214,8 +3858,6 @@ impl TypeChecker {
                 {
                     value_ty = Type::F32;
                 }
-                // LEDGER item 6: assigning a `str` into an `any`-typed slot.
-                self.reject_str_into_any_slot(&target_ty, &value_ty, *span, "an assignment target");
                 if let Err(diag) = self.engine.unify(&target_ty, &value_ty, *span) {
                     self.diagnostics.push(diag);
                 }
@@ -4277,11 +3919,6 @@ impl TypeChecker {
                     .map(|v| self.infer_expr(v))
                     .unwrap_or(Type::Void);
 
-                if let Some(expected) = self.current_return_type.clone() {
-                    // LEDGER item 6: returning a `str` from a `-> any` function.
-                    self.reject_str_into_any_slot(&expected, &ret_ty, *span, "a return value");
-                    self.reject_untagged_scalar_into_any(&expected, &ret_ty, *span);
-                }
                 if let Some(ref expected) = self.current_return_type {
                     if let Err(mut diag) = self.engine.unify(expected, &ret_ty, *span) {
                         // Enhance error message with function context.
@@ -4430,27 +4067,6 @@ impl TypeChecker {
                     );
                 }
                 let ty = self.infer_expr(expr);
-                // LEDGER item 6: an implicit (tail) `str` value of a `-> any` fn.
-                if self.fn_tail_value_spans.contains(&expr.span()) {
-                    if let Some(expected) = self.current_return_type.clone() {
-                        self.reject_str_into_any_slot(&expected, &ty, expr.span(), "a return value");
-                        self.reject_untagged_scalar_into_any(&expected, &ty, expr.span());
-                        // LEDGER item 6 (fourth pass): the implicit tail was never
-                        // unified with the declared return type, so a `str` tail of
-                        // a scalar-returning fn (`fn f() -> i64 { "hi" }`) typed
-                        // clean and printed a pointer. Scalar vs `str` only.
-                        let e = self.engine.resolve(&expected);
-                        let t = self.engine.resolve(&ty);
-                        let scalar = |x: &Type| x.is_integer() || x.is_float() || matches!(x, Type::Bool | Type::Char);
-                        if (scalar(&e) && t == Type::Str) || (e == Type::Str && scalar(&t)) {
-                            self.error_with_code(
-                                format!("function body evaluates to `{t}`, but the declared return type is `{e}`"),
-                                expr.span(),
-                                kryos_errors::codes::E0100,
-                            );
-                        }
-                    }
-                }
                 // must-use lint (W0400): discarding a `Tracked<T>` value as a
                 // statement silently drops its provenance/lineage chain. The
                 // tracked stdlib fns are functional (each returns a NEW Tracked),
@@ -6437,7 +6053,6 @@ impl TypeChecker {
                                     } else {
                                         self.engine.instantiate(expected_ty, &var_map)
                                     };
-                                    self.reject_variant_payload_into_any(&edef.name, &expected_instantiated, &arg_ty, arg.span());
                                     if let Err(diag) =
                                         self.engine.unify(&expected_instantiated, &arg_ty, *span)
                                     {
@@ -6467,16 +6082,6 @@ impl TypeChecker {
                 let callee_ty = self.infer_expr(callee);
                 self.callee_ident_span = prev_callee_span;
                 let callee_ty = self.engine.resolve(&callee_ty);
-                // LEDGER item 6 (fourth pass): a callee that is a fn VALUE (a
-                // local/param name, a struct field, a returned closure, an
-                // indexed element) has no name-keyed table entry, but its
-                // `any` parameter erases a `str` just the same.
-                let callee_is_fn_value = match callee.as_ref() {
-                    Expr::Identifier { name: cn, .. } => {
-                        self.env.lookup_var(cn).is_some() && self.env.lookup_function(cn).is_none()
-                    }
-                    _ => true,
-                };
 
                 match &callee_ty {
                     Type::Function { params, ret, caps } => {
@@ -6567,35 +6172,8 @@ impl TypeChecker {
                                     }
                                 }
                             }
-                            for (i, arg) in args.iter().enumerate() {
-                                let arg_ty = self.infer_expr(arg);
-                                // LEDGER item 6: the `fn(any) -> any` shape of a
-                                // user fn (`fn id(v: any) -> any`) skips the
-                                // parameter check below, so test its `any`
-                                // parameter for a `str` here.
-                                if let Some(ref cn) = callee_name_str {
-                                    if self.any_annotated_params.contains(&(cn.clone(), i))
-                                        && !self.any_str_safe_params.contains(&(cn.clone(), i))
-                                    {
-                                        self.reject_str_into_any_slot(
-                                            &params[0],
-                                            &arg_ty,
-                                            arg.span(),
-                                            "a parameter",
-                                        );
-                                    }
-                                }
-                                // LEDGER item 6: `fn(any) -> any` held in a local /
-                                // parameter (a fn VALUE, not a named fn).
-                                if callee_is_fn_value
-                                {
-                                    self.reject_str_into_any_slot(
-                                        &params[0],
-                                        &arg_ty,
-                                        arg.span(),
-                                        "a parameter of a function value",
-                                    );
-                                }
+                            for arg in args.iter() {
+                                let _ = self.infer_expr(arg);
                             }
                             return *ret.clone();
                         }
@@ -6683,24 +6261,6 @@ impl TypeChecker {
                                 }
                                 // LEDGER item 40: last point a concrete type exists before `any` erasure.
                                 self.reject_untagged_scalar_into_any(param_ty, &arg_ty, arg.span());
-                                // LEDGER item 6: a `str` for a user fn parameter annotated `any`.
-                                if let Some(ref cn) = callee_name_str {
-                                    if self.any_annotated_params.contains(&(cn.clone(), i))
-                                        && !self.any_str_safe_params.contains(&(cn.clone(), i))
-                                    {
-                                        self.reject_str_into_any_slot(param_ty, &arg_ty, arg.span(), "a parameter");
-                                    }
-                                }
-                                if let Some(ref cn) = callee_name_str {
-                                    self.note_generic_call_arg(cn, i, &arg_ty, arg.span());
-                                }
-                                // LEDGER item 6: a fn-VALUE callee (a `fn(any)` parameter
-                                // or local) has no name-keyed table entry, but its `any`
-                                // parameter erases a `str` just the same.
-                                if callee_is_fn_value
-                                {
-                                    self.reject_str_into_any_slot(param_ty, &arg_ty, arg.span(), "a parameter of a function value");
-                                }
                                 if let Err(diag) = self.engine.unify(param_ty, &arg_ty, arg.span())
                                 {
                                     self.diagnostics.push(diag);
@@ -6905,8 +6465,6 @@ impl TypeChecker {
                                             let arg_ty = self.infer_expr(arg);
                                             // LEDGER item 40: last point a concrete type exists before `any` erasure.
                                             self.reject_untagged_scalar_into_any(param_ty, &arg_ty, arg.span());
-                                            // LEDGER item 6: a `str` for a top-level `any` parameter.
-                                            self.reject_str_into_any_slot(param_ty, &arg_ty, arg.span(), "a parameter");
                                             if let Err(diag) =
                                                 self.engine.unify(param_ty, &arg_ty, arg.span())
                                             {
@@ -6986,8 +6544,6 @@ impl TypeChecker {
                                     let arg_ty = self.infer_expr(arg);
                                     // LEDGER item 40: last point a concrete type exists before `any` erasure.
                                     self.reject_untagged_scalar_into_any(param_ty, &arg_ty, arg.span());
-                                    // LEDGER item 6: a `str` for a top-level `any` parameter.
-                                    self.reject_str_into_any_slot(param_ty, &arg_ty, arg.span(), "a parameter");
                                     if let Err(diag) =
                                         self.engine.unify(param_ty, &arg_ty, arg.span())
                                     {
@@ -7142,7 +6698,6 @@ impl TypeChecker {
                                 } else {
                                     self.engine.instantiate(expected_ty, &var_map)
                                 };
-                                self.reject_variant_payload_into_any(tname, &expected_instantiated, &arg_ty, arg.span());
                                 if let Err(diag) =
                                     self.engine
                                         .unify(&expected_instantiated, &arg_ty, arg.span())
@@ -7224,8 +6779,6 @@ impl TypeChecker {
                                 let arg_ty = self.infer_expr(arg);
                                 // LEDGER item 40: last point a concrete type exists before `any` erasure.
                                 self.reject_untagged_scalar_into_any(param_ty, &arg_ty, arg.span());
-                                // LEDGER item 6: a `str` for a top-level `any` parameter.
-                                self.reject_str_into_any_slot(param_ty, &arg_ty, arg.span(), "a parameter");
                                 if let Err(diag) = self.engine.unify(param_ty, &arg_ty, arg.span())
                                 {
                                     self.diagnostics.push(diag);
@@ -7355,9 +6908,6 @@ impl TypeChecker {
                                 let arg_ty = self.infer_expr(arg);
                                 // LEDGER item 40: last point a concrete type exists before `any` erasure.
                                 self.reject_untagged_scalar_into_any(param_ty, &arg_ty, arg.span());
-                                // LEDGER item 6 (fourth pass): a `str` through the `any`
-                                // parameter of a fn-typed struct field.
-                                self.reject_str_into_any_slot(param_ty, &arg_ty, arg.span(), "a parameter of a function field");
                                 if let Err(diag) = self.engine.unify(param_ty, &arg_ty, arg.span())
                                 {
                                     self.diagnostics.push(diag);
@@ -7433,7 +6983,6 @@ impl TypeChecker {
                             } else {
                                 self.engine.instantiate(expected_ty, &var_map)
                             };
-                            self.reject_variant_payload_into_any(type_name, &expected_instantiated, &arg_ty, arg.span());
                             if let Err(diag) =
                                 self.engine
                                     .unify(&expected_instantiated, &arg_ty, arg.span())
@@ -7507,8 +7056,6 @@ impl TypeChecker {
                             let arg_ty = self.infer_expr(arg);
                             // LEDGER item 40: last point a concrete type exists before `any` erasure.
                             self.reject_untagged_scalar_into_any(param_ty, &arg_ty, arg.span());
-                            // LEDGER item 6: a `str` for a top-level `any` parameter.
-                            self.reject_str_into_any_slot(param_ty, &arg_ty, arg.span(), "a parameter");
                             if let Err(diag) = self.engine.unify(param_ty, &arg_ty, arg.span()) {
                                 self.diagnostics.push(diag);
                             }
@@ -7573,8 +7120,6 @@ impl TypeChecker {
                             let arg_ty = self.infer_expr(arg);
                             // LEDGER item 40: last point a concrete type exists before `any` erasure.
                             self.reject_untagged_scalar_into_any(param_ty, &arg_ty, arg.span());
-                            // LEDGER item 6: a `str` for a top-level `any` parameter.
-                            self.reject_str_into_any_slot(param_ty, &arg_ty, arg.span(), "a parameter");
                             if let Err(diag) = self.engine.unify(param_ty, &arg_ty, arg.span()) {
                                 self.diagnostics.push(diag);
                             }
@@ -7734,14 +7279,6 @@ impl TypeChecker {
                             } else {
                                 self.engine.instantiate(expected_ty, &var_map)
                             };
-                            // LEDGER item 6: a `str` for an `any`-typed field.
-                            self.reject_str_into_any_slot(
-                                &expected_instantiated,
-                                &expr_ty,
-                                fexpr.span(),
-                                "a struct field",
-                            );
-                            self.reject_untagged_scalar_into_any(&expected_instantiated, &expr_ty, fexpr.span());
                             if let Err(diag) =
                                 self.engine
                                     .unify(&expected_instantiated, &expr_ty, fexpr.span())
@@ -7820,13 +7357,6 @@ impl TypeChecker {
                 // and the return type. This is what makes `|a, b| a + b` work
                 // when passed to a function expecting `fn(i64, i64) -> i64`.
                 let expected = self.lambda_expected_types.remove(lambda_span);
-                // LEDGER item 6 (fourth pass): an expected return of `any` that
-                // came from a declared `fn() -> any` type (not the opaque bare
-                // `fn`, `fn(any) -> any`) makes the lambda body an `any` slot.
-                let lambda_ret_from_user_any = ret_ty.is_none()
-                    && matches!(&expected, Some((eps, er))
-                        if matches!(self.engine.resolve(er), Type::Error)
-                            && !(eps.len() == 1 && matches!(self.engine.resolve(&eps[0]), Type::Error)));
 
                 let param_types: Vec<Type> = params
                     .iter()
@@ -7915,11 +7445,6 @@ impl TypeChecker {
                 }
                 self.cap_accum_stack.push(crate::ty::CapRow::empty());
                 let body_ty = self.infer_expr(body);
-                // LEDGER item 6: a lambda annotated `-> any` yielding a `str`.
-                if ret_ty.is_some() || lambda_ret_from_user_any {
-                    self.reject_str_into_any_slot(&ret, &body_ty, body.span(), "a return value");
-                }
-                self.reject_untagged_scalar_into_any(&ret, &body_ty, body.span());
                 let lambda_caps = self.cap_accum_stack.pop().unwrap_or_else(crate::ty::CapRow::empty);
                 self.env.pop_scope();
                 self.engine.unfreeze_rows(frozen_rows);
