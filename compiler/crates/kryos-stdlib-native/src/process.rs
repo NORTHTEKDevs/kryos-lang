@@ -18,7 +18,7 @@ use std::process::Command;
 ///
 /// Returns the length of the value on success (may exceed `val_buf_len` if the
 /// buffer is too small — in that case, only `val_buf_len` bytes are written).
-/// Returns -1 if the variable is not found or the key is invalid UTF-8.
+/// Returns -1 if the variable is not found; a key holding invalid UTF-8 panics loudly (finish item A4).
 #[no_mangle]
 pub extern "C" fn kryos_env_get(
     key_ptr: *const u8,
@@ -32,7 +32,7 @@ pub extern "C" fn kryos_env_get(
     let key = unsafe { std::slice::from_raw_parts(key_ptr, key_len) };
     let key = match std::str::from_utf8(key) {
         Ok(s) => s,
-        Err(_) => return -1,
+        Err(_) => crate::panic_invalid_utf8(),
     };
 
     match std::env::var(key) {
@@ -97,7 +97,10 @@ pub extern "C" fn kryos_process_exec(
                     let data = (*ks).data;
                     let len = (*ks).len as usize;
                     let slice = std::slice::from_raw_parts(data, len);
-                    std::str::from_utf8(slice).unwrap_or("")
+                    match std::str::from_utf8(slice) {
+                        Ok(s) => s,
+                        Err(_) => crate::panic_invalid_utf8(),
+                    }
                 };
                 command.arg(s);
             }

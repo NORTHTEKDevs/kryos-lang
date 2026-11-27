@@ -1,0 +1,5 @@
+@capabilities(fs)
+fn main() {
+    let a = substr("café", 0, 4)
+    println("[{file_read(a)}]")
+}

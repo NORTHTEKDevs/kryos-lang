@@ -1,0 +1,5 @@
+fn main() {
+    let a = substr("café", 0, 4)
+    let s = json_to_str(json_string(a))
+    println("{len(s)} {len(a)} {s == a}")
+}

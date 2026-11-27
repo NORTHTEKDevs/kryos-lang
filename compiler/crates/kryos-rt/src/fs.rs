@@ -3,10 +3,16 @@
 use std::fs;
 
 /// Safely convert a raw byte pointer and length to a `&str`.
-/// Returns `""` if the pointer is null or the bytes are not valid UTF-8.
+/// Panics loudly on invalid UTF-8 (a path of "" would silently address something else).
 unsafe fn bytes_to_str<'a>(ptr: *const u8, len: usize) -> &'a str {
     let slice = std::slice::from_raw_parts(ptr, len);
-    std::str::from_utf8(slice).unwrap_or("")
+    match std::str::from_utf8(slice) {
+        Ok(s) => s,
+        Err(_) => {
+            let msg = b"string operation requires valid UTF-8, but the string contains invalid byte sequences (a substr()/byte_at() call likely split a multibyte character mid-codepoint) -- use std::utf8::is_valid(s) to check first";
+            crate::panic::kryos_panic(msg.as_ptr(), msg.len());
+        }
+    }
 }
 
 /// Read a file's contents as a KryosString. Returns null on error.
