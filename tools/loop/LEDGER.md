@@ -12190,3 +12190,53 @@ RESIDUAL (executed, NOT closed, NOT claimed)
   (live 200004 at 300k); the same shape with the global (`GN`) leaks 300003 on the JIT, with correct answers. It is the local-variable if / match family, not global-specific; AOT clean.
 - `pick(GS, mkb(i).g, c)` (a field read of a temporary as a call argument) leaks on both backends (155MB / 308MB at 1M); not global-specific, not touched. The gate uses a named local there.
 - `GB.g = if c { h.g } else { .. }` and the local `bx.g = ..` analog (the admitted field-assign family), `@copy` globals, unshareable types and threads are unchanged from round 3.
+
+## a17 round 3 -- a field read off an if / match temporary is released by the sub-expression that consumed it (2026-11-27, branch closeout/r2-mem)
+
+Reopened twice (80f7b597 and 1baff207 both reverted: PASS A17 but the same defect leaked behind `&&` / `||`, in `while` / `elif` conditions, a `return` of a
+boolean expression, an if-expression condition, a match subject, two reads in one statement, and a struct-valued field). Refuted approaches NOT repeated:
+a per-position `drop_tail_block_temps` call (if / elif / while / return) -- each position the verifier did not name stayed open.
+
+ROOT CAUSE (the one the verifier described, confirmed on `kryos build --emit-mir`): the field read is retained (`_7 = _5.name`, slot dropped, `_8 = _7`)
+and its temp is defined in the LAST block of the if / match sub-expression and consumed there (`_9 = call len(_8)`). Every statement-level cleanup pass looks
+only at the statement's last block, but `&&` / `||` / a later operand / a condition's branch put more blocks after it, so the temp's block is never the
+statement's tail and nothing ever dropped it (64 B per iteration; 65-69MB per 1M). The leak is therefore a property of WHERE the cleanup runs, not of any
+consumer.
+
+FIX (compiler/crates/kryos-mir/src/lower.rs): one rule instead of positions.
+- `lower_field_chain_off_slot` (kept from round 2: a chain of struct / tuple field reads off an if / match value whose branches all own a fresh struct reads
+  the field, releases the slot right after, and the temp is the sole owner) now registers its result in `ctx.slot_read_temps`.
+- `lower_expr_to_operand` is a wrapper: any operand whose lowering created blocks and registered a slot read ends by running the existing temp pass
+  (`drop_unescaped_str_temps`, same escape / borrow analysis, same `dropped_locals` guard) over the block it ended in, restricted to the registered temps
+  (`ctx.temp_pass_only`), with the operand's own result excluded. The operand copy `_8 = _7` is registered as the owner and the pass accepts a `Use` of a
+  registered read. The per-position calls from round 2 are removed (dead `drop_tail_block_temps` deleted).
+- A STRUCT-valued last field (`let q = match ..{}.q`, `return match ..{}.q`, `.q` passed to a user fn) is deep-copied (`__kryos_struct_index_clone`)
+  before the slot is released; the copy is registered, the `let` takes it over (no element-read share on top) and `return` hands it back without a
+  second clone.
+- Round 2's `block_moves_own_let`, `is_read_then_slot_drop` alias-chain walk and `struct_value_owned` block arm are kept.
+
+EVIDENCE (executed)
+- run.sh --only '^(A17|A17\.ctl)$': PASS A17, PASS A17.ctl (master: FAIL A17 jit +72.5MB).
+- tests/mem_field_of_temp_gate.sh extended to 30 modes (round 3: and_if or_if and_while and_elif ret_and ret_or let_if_cond match_subj two_one_stmt let_q
+  ret_q). This tree: "mem-field-of-temp: PASS", every mode 4-5MB at 1M iters on JIT and AOT. KRYOS_BIN=master: 56 FAIL lines (e.g. and_if AOT 219MB, JIT 280MB;
+  two_one_stmt AOT 433MB; let_q AOT 342MB, JIT 516MB), no wrong answer in either (answers identical to master).
+- The verifier's residual list, each measured at 1M iters (tree JIT 34MB / AOT 1MB = baseline; master 225-286MB): `if i >= 0 && len(match ..{}.name) > 1`, the `||`
+  form, `while k < 1 && ..`, `elif i >= 0 && ..`, `return i >= 0 && ..`, `return i < 0 || ..`, `let v = if len(match ..) > 1 {3} else {4}`,
+  `match len(if ..{}.name) {..}`, two reads in one statement, `let q = match ..{}.q` (master 357 / 541MB).
+- Extra shapes, same answers as master on JIT and AOT, no free-diagnostic output (KRYOS_FREE_DIAG): call arg to a user fn, string interpolation, concat,
+  assignment to a global, closure capture, map store, comparison, short-circuit that skips the read, nested if / match reads, struct `.q` through a user fn,
+  `let mut q` then mutate (copy independent of the source), array of two reads, named-local arm.
+- Regression: run.sh `^mem:` 387 PASS / 1 FAIL (v137_uaf, the frozen defective fixture, as before). Feature scan
+  `^(A[0-9]+|A[0-9]+\.ctl|leakmode.*|copy-assign-leak.*|13[5-9].*|137.*|M[0-9]|B[0-9]|41|6|122-typecheck|libm-constfold)$`: 76 PASS / 11 FAIL; the 11 are
+  6, A4, A5, A20, M4, leakmode:throw_locals, leakmode:clo_nested_tuple_arr and the four copy-assign-leak rows, the same ids and reasons as before this change
+  (A17 moved from FAIL to PASS). Gates PASS: all 26 tests/mem_*_gate.sh except mem_agg_ops (not finished inside 580s, same as the earlier entry; not
+  re-run to completion) and mem_global_aggregate (not run), jit_symbols, builtin_borrow_mir, backend_divergence_pins, no_double_free, match_exhaustiveness,
+  minilisp, stdlib_compile, selfhost_wholeprogram, run_examples, concurrency_smoke, ecosystem_check (259/259).
+
+RESIDUAL (executed, NOT covered; every one leaks LESS than master and prints the same answer)
+- Two reads in one statement whose FIRST read is used after the second's blocks (`cat(match..{}.name, if..{}.name)`, `a + "-" + if..{}.name`): the first str is
+  consumed across blocks, so the same-block rule cannot prove it unused later; 20-24MB per 1M AOT (master 135-158MB).
+- A struct-valued read stored into a struct FIELD (`keep.q = match ..{}.q`): the field-store path shares the copy and nothing drops the copy, 64 B per
+  iteration (master 357MB). A tuple-valued read (`.t` as a whole) and an enum / closure field are unchanged (alias; slot not released).
+- An array literal of two struct reads (`[M.q, M.q]`): 41-59MB per 300k.
+- A read off an if / match whose branches do not all own a fresh struct (struct_value_owned false): unchanged.

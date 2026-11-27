@@ -1,0 +1,146 @@
+// A17: a field read off an if / match VALUE (`match k { 0 => mk(i), _ => mk(i + 1) }.name`) left the
+// hidden result slot owning a struct nobody released: every read leaked the struct box and the
+// field's heap value (JIT +72MB / AOT +49MB per 750k iterations of the str case). The FieldAccess
+// lowering now releases the slot right after a retained (str / array / map) or scalar field read.
+// LEAK_MODE picks the shape; the printed sum depends on the bytes read, so a wrong release (use after
+// free, double free) changes the answer. The gate pins the answers measured on master.
+//   match_str    str field off a match temp          if_str     the same off an if temp
+//   match_int    scalar field                         match_arr  array field (its length)
+//   let_str      `let s = match ..{}.name`            lit_arr    the read stored in an array literal
+//   struct_lit   the read stored in a struct literal  ret_str    returned from a function
+//   twice        a match temp then an if temp, one statement each   named   arms are named locals (slot shares them)
+//   control      the same read off a named local
+// Round 2 (the same read in the positions the statement-end pass never reaches, and the shapes whose
+// slot the first fix left alone):
+//   cond_str    the read in an `if` condition        elif_str   in an `elif` condition
+//   while_str   in a `while` condition               ret_if     `return len(if c { mkw(i) } else { .. }.name)`
+//   blk_arm     an arm that is `{ let t = mkw(i)  t }`   blk_let    `let x = { let t = mkw(i)  t }`
+//   nested_q    `.q.name` (a struct field of the slot)   tuple_t    `.t.0` (a tuple field of the slot)
+// Round 3 (the read consumed in the MIDDLE of a statement: its str is defined in a block that is not the
+// statement's last, so the statement-end pass never sees it; every sub-expression that created blocks now
+// releases the reads it consumed, whatever surrounds it):
+//   and_if / or_if   `i >= 0 && len(match ..{}.name) > 1` / `i < 0 || len(if ..{}.name) > 1` as an `if` condition
+//   and_while        the same behind `&&` in a `while` condition   and_elif   behind `&&` in an `elif`
+//   ret_and / ret_or `return i >= 0 && len(if ..{}.name) > 1` / `return i < 0 || len(match ..{}.name) > 1`
+//   let_if_cond      `let v = if len(match ..{}.name) > 1 { 3 } else { 4 }`
+//   match_subj       `match len(if ..{}.name) { .. }`           two_one_stmt   two if / match reads in ONE statement
+//   let_q / ret_q    a STRUCT-valued field (`.q`): deep-copied before the slot is released, then owned by the let / return
+// Not covered: a tuple / enum / closure value that is itself the result, a struct-valued read stored into a field.
+struct P { name: str, n: i64, tags: [str] }
+struct R { s: str }
+struct Q { name: str, n: i64 }
+struct W { name: str, q: Q, t: (str, i64), tags: [str] }
+fn mkp(i: i64) -> P { return P { name: "p{i}", n: i, tags: ["a{i}", "b"] } }
+fn mkw(i: i64) -> W { return W { name: "w{i}", q: Q { name: "q{i}", n: i }, t: ("t{i}", i), tags: ["a{i}", "b"] } }
+fn pick(i: i64) -> str { return match i % 2 { 0 => mkp(i), _ => mkp(i + 1) }.name }
+fn retq(i: i64) -> Q { return match i % 2 { 0 => mkw(i), _ => mkw(i + 1) }.q }
+fn okand(i: i64) -> bool { return i >= 0 && len(if i % 2 == 0 { mkp(i) } else { mkp(i + 1) }.name) > 1 }
+fn okor(i: i64) -> bool { return i < 0 || len(match i % 2 { 0 => mkp(i), _ => mkp(i + 1) }.name) > 1 }
+fn pickw(c: bool, i: i64) -> i64 { return len(if c { mkw(i) } else { mkw(i + 1) }.name) }
+@capabilities(process)
+fn main() {
+    let iters = parse_int(env_get("LEAK_ITERS"))
+    let mode = env_get("LEAK_MODE")
+    let a = mkp(1000)
+    let b = mkp(2000)
+    let mut sink = 0
+    let mut i = 0
+    while i < iters {
+        if mode == "match_str" {
+            sink = sink + len(match i % 2 { 0 => mkp(i), _ => mkp(i + 1) }.name)
+        } elif mode == "if_str" {
+            sink = sink + len(if i % 2 == 0 { mkp(i) } else { mkp(i + 1) }.name)
+        } elif mode == "match_int" {
+            sink = sink + match i % 2 { 0 => mkp(i), _ => mkp(i + 1) }.n
+        } elif mode == "match_arr" {
+            sink = sink + len(match i % 2 { 0 => mkp(i), _ => mkp(i + 1) }.tags)
+        } elif mode == "let_str" {
+            let s = match i % 2 { 0 => mkp(i), _ => mkp(i + 1) }.name
+            sink = sink + len(s)
+        } elif mode == "lit_arr" {
+            let xs = [match i % 2 { 0 => mkp(i), _ => mkp(i + 1) }.name, "z"]
+            sink = sink + len(xs[0]) + len(xs[1])
+        } elif mode == "struct_lit" {
+            let r = R { s: match i % 2 { 0 => mkp(i), _ => mkp(i + 1) }.name }
+            sink = sink + len(r.s)
+        } elif mode == "ret_str" {
+            sink = sink + len(pick(i))
+        } elif mode == "twice" {
+            sink = sink + len(match i % 2 { 0 => mkp(i), _ => mkp(i + 1) }.name)
+            sink = sink + len(if i % 2 == 0 { mkp(i + 2) } else { mkp(i + 3) }.name)
+        } elif mode == "cond_str" {
+            if len(match i % 2 { 0 => mkp(i), _ => mkp(i + 1) }.name) > 1 { sink = sink + 7 }
+        } elif mode == "elif_str" {
+            if i < 0 {
+                sink = sink + 1
+            } elif len(match i % 2 { 0 => mkp(i), _ => mkp(i + 1) }.name) > 1 {
+                sink = sink + 7
+            }
+        } elif mode == "while_str" {
+            let mut k = 0
+            while len(match i % 2 { 0 => mkp(i), _ => mkp(i + 1) }.name) < 0 { k = k + 1 }
+            sink = sink + 7 + k
+        } elif mode == "ret_if" {
+            sink = sink + pickw(i % 2 == 0, i)
+        } elif mode == "blk_arm" {
+            sink = sink + len(match i % 2 {
+                0 => {
+                    let t = mkw(i)
+                    t
+                }
+                _ => mkw(i + 1)
+            }.name)
+        } elif mode == "blk_let" {
+            let x = {
+                let t = mkw(i)
+                t
+            }
+            sink = sink + len(x.name)
+        } elif mode == "nested_q" {
+            sink = sink + len(match i % 2 { 0 => mkw(i), _ => mkw(i + 1) }.q.name)
+        } elif mode == "tuple_t" {
+            sink = sink + len(match i % 2 { 0 => mkw(i), _ => mkw(i + 1) }.t.0)
+        } elif mode == "and_if" {
+            if i >= 0 && len(match i % 2 { 0 => mkp(i), _ => mkp(i + 1) }.name) > 1 { sink = sink + 7 }
+        } elif mode == "or_if" {
+            if i < 0 || len(if i % 2 == 0 { mkp(i) } else { mkp(i + 1) }.name) > 1 { sink = sink + 7 }
+        } elif mode == "and_while" {
+            let mut k = 0
+            while k < 1 && len(match i % 2 { 0 => mkp(i), _ => mkp(i + 1) }.name) > 1 { k = k + 1 }
+            sink = sink + 7 + k
+        } elif mode == "and_elif" {
+            if i < 0 {
+                sink = sink + 1
+            } elif i >= 0 && len(match i % 2 { 0 => mkp(i), _ => mkp(i + 1) }.name) > 1 {
+                sink = sink + 7
+            }
+        } elif mode == "ret_and" {
+            if okand(i) { sink = sink + 7 }
+        } elif mode == "ret_or" {
+            if okor(i) { sink = sink + 7 }
+        } elif mode == "let_if_cond" {
+            let v = if len(match i % 2 { 0 => mkp(i), _ => mkp(i + 1) }.name) > 1 { 3 } else { 4 }
+            sink = sink + v
+        } elif mode == "match_subj" {
+            match len(if i % 2 == 0 { mkp(i) } else { mkp(i + 1) }.name) {
+                1 => { sink = sink + 1 }
+                _ => { sink = sink + 7 }
+            }
+        } elif mode == "two_one_stmt" {
+            sink = sink + len(match i % 2 { 0 => mkp(i), _ => mkp(i + 1) }.name) + len(if i % 2 == 0 { mkp(i + 2) } else { mkp(i + 3) }.name)
+        } elif mode == "let_q" {
+            let q = match i % 2 { 0 => mkw(i), _ => mkw(i + 1) }.q
+            sink = sink + len(q.name)
+        } elif mode == "ret_q" {
+            let q = retq(i)
+            sink = sink + len(q.name)
+        } elif mode == "named" {
+            sink = sink + len(match i % 2 { 0 => a, _ => b }.name) + len(a.name) + len(b.name)
+        } else {
+            let c = mkp(i)
+            sink = sink + len(c.name)
+        }
+        i = i + 1
+    }
+    println("{sink}")
+}
