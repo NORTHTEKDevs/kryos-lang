@@ -1,0 +1,19 @@
+// ASSAULT-F3 control: an actor that declares fs:read but wraps its whole handler in deny!(fs:read)
+// exercises nothing, so a caller that holds no capability may message it. Accepted in both modes;
+// `run` prints the marker. Master charges the caller the actor's raw ceiling:
+// `function `go` has @capabilities(fs:read) but caller lacks [fs:read]`.
+@capabilities(fs:read)
+actor Sand {
+    fn go(self: Sand) {
+        deny!(fs:read) {
+            println("ASSAULT-F3-OK")
+        }
+    }
+}
+
+@capabilities()
+fn main() {
+    let s = Sand()
+    s.go()
+    sleep(100)
+}

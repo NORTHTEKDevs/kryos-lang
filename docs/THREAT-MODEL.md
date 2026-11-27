@@ -594,6 +594,17 @@ the workaround is a more specific signature or `@capabilities(all)` on the
 dispatcher, with the cascade that `tools/loop/ESCAPE-ROUTING.md` measured for
 annotating stdlib dispatchers.
 
+Three further over-rejections of capability-safe code (ASSAULT round 1, findings F1 to F3) were closed
+on 2026-11-27 (gate: the ASSAULT-F1, F2, F3 section of `tests/security_gate.sh`, run for this revision,
+PASS). An actor that keeps a callback in a state field and invokes it from another handler is accepted
+when every write of the field is a message parameter and every closure handed over fits the actor's
+declared capabilities. A function or handler that runs a callback parameter inside `deny!` is accepted
+when each caller passes a named function or a closure literal that does not carry the denied
+capability. An actor whose handler is one `deny!` block is charged to its callers for what the
+narrowing leaves, not for its declared ceiling. Each rule covers the one shape it was written for: a
+callback held in a local, forwarded through a relay or read out of a container still needs the older
+workaround (invariants 25 to 27 of [capability-soundness.md](capability-soundness.md)).
+
 ### 4.3 Deferred alternate roots R6 and R7
 
 Two closures of the shape layer's fail-open defaults were prototyped and not

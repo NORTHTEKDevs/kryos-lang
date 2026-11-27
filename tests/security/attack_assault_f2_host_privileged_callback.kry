@@ -1,0 +1,20 @@
+// ASSAULT-F2 attack: the host runs its callback inside deny!(fs:read) and the caller passes a
+// callback that reads a protected file. The block exists to stop exactly this. Must be REJECTED
+// (E0507, and E0110 from the row layer) in both modes and must never print the secret.
+actor Host {
+    fn run_callback(self: Host, cb: fn() -> str) {
+        deny!(fs:read) {
+            println("ASSAULT-F2-HOST: " + cb())
+        }
+    }
+}
+
+@capabilities(fs:read)
+fn secret() -> str { return file_read("tests/security/secret_for_closure_launder.txt") }
+
+@capabilities(fs:read)
+fn main() {
+    let h = Host()
+    h.run_callback(secret)
+    sleep(100)
+}

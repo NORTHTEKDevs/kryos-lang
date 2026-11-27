@@ -1,0 +1,27 @@
+// ASSAULT-F3 control, free function and method: a declaration whose entire body is one deny! block
+// is charged to its callers for what the narrowing leaves, not for its declared ceiling. Accepted in
+// both modes; `run` prints the markers. Master rejects both calls (the callers hold no fs:read).
+struct Box { n: i64 }
+
+impl Box {
+    @capabilities(fs:read)
+    fn quiet(self: Box) {
+        deny!(fs:read) {
+            println("ASSAULT-F3-METHOD-OK")
+        }
+    }
+}
+
+@capabilities(fs:read)
+fn sandboxed() {
+    deny!(fs:read) {
+        println("ASSAULT-F3-FN-OK")
+    }
+}
+
+@capabilities()
+fn main() {
+    sandboxed()
+    let b = Box { n: 1 }
+    b.quiet()
+}

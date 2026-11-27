@@ -270,6 +270,558 @@ enum PathStep {
     Index,
 }
 
+/// Which kind of declaration owns a parameter (see [`DenyCallbackDecl`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeclKind {
+    /// A free function.
+    Free,
+    /// An `impl` or `trait` method.
+    Method,
+    /// An actor message handler.
+    Handler,
+}
+
+/// How a call site names its callee (see `check_deny_callback_args`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CallForm {
+    /// `f(args)`
+    Bare,
+    /// `receiver.f(args)`
+    Method,
+    /// `Type::f(args)` or `module::f(args)`
+    Static,
+}
+
+/// LEDGER ASSAULT-F2. One declaration with a callback parameter that it
+/// invokes inside a `deny!` block: a parameter used ONLY as the callee of a
+/// direct call (`cb(x)`), with at least one such call inside a `deny!`.
+///
+/// For such a parameter the call inside the block is not charged `all` (the
+/// rule of invariant 2, which no argument can satisfy); the denial is enforced
+/// at every call site instead, where the argument is in view
+/// (`check_deny_callback_args`).
+#[derive(Debug, Clone)]
+struct DenyCallbackDecl {
+    kind: DeclKind,
+    /// The declaration's own `params` start with a `self` receiver.
+    has_self: bool,
+    /// `(index in the declaration's own params, parameter name, the
+    /// capabilities named by every `deny!` block around a call of it, the
+    /// parameter's default value)`. A call that leaves the argument out gets the
+    /// default, which is judged like an argument.
+    params: Vec<(usize, String, CapabilitySet, Option<Expr>)>,
+}
+
+/// LEDGER ASSAULT-F1. A fn-typed message parameter that an actor handler
+/// stores into a fn-typed state field which the actor also invokes
+/// (`self.f = p` in one handler, `self.f()` in another).
+///
+/// The invocation is charged the actor's declared ceiling instead of `all`,
+/// and every closure handed to such a parameter must therefore stay inside
+/// that ceiling (`check_stored_fn_param_args`).
+#[derive(Debug, Clone)]
+struct StoredFnParam {
+    actor: String,
+    field: String,
+    /// The handler's own `params` start with a `self` receiver.
+    has_self: bool,
+    /// Index of the parameter in the handler's own `params`.
+    idx: usize,
+    param: String,
+    /// The actor's declared capabilities (empty when it declares none).
+    ceiling: CapabilitySet,
+}
+
+/// The `deny!` blocks lexically enclosing a node of the AST, outermost first:
+/// each entry is the (recognised) capabilities one block names. Maintained by
+/// the `walk_*_deep` helpers below.
+type DenyStack = Vec<Vec<Capability>>;
+
+/// Visit every statement and every expression reachable from `block`, entering
+/// nested blocks, lambda bodies, match and select arms, spawn bodies and
+/// `deny!` bodies. `on_stmt` / `on_expr` see a node BEFORE its children, with
+/// the `deny!` blocks that enclose it.
+///
+/// The `walk_*_deep` functions are written as EXHAUSTIVE matches with no
+/// wildcard arm on purpose: the structural analyses built on them
+/// (`analyze_deny_callbacks`, `compute_actor_delegated_fields`) conclude
+/// "nothing else mentions this name" from having seen every node, so a new AST
+/// variant must fail the build here rather than be skipped silently.
+fn walk_block_deep(
+    block: &kryos_ast::Block,
+    deny: &mut DenyStack,
+    on_stmt: &mut dyn FnMut(&Stmt, &DenyStack),
+    on_expr: &mut dyn FnMut(&Expr, &DenyStack),
+) {
+    for stmt in &block.stmts {
+        walk_stmt_deep(stmt, deny, on_stmt, on_expr);
+    }
+}
+
+fn walk_pattern_deep(
+    pat: &kryos_ast::Pattern,
+    deny: &mut DenyStack,
+    on_stmt: &mut dyn FnMut(&Stmt, &DenyStack),
+    on_expr: &mut dyn FnMut(&Expr, &DenyStack),
+) {
+    use kryos_ast::Pattern;
+    match pat {
+        Pattern::Wildcard { .. } | Pattern::Ident { .. } => {}
+        Pattern::Literal { expr, .. } => walk_expr_deep(expr, deny, on_stmt, on_expr),
+        Pattern::Tuple { elements, .. } => {
+            for p in elements {
+                walk_pattern_deep(p, deny, on_stmt, on_expr);
+            }
+        }
+        Pattern::Struct { fields, .. } => {
+            for (_, p) in fields {
+                walk_pattern_deep(p, deny, on_stmt, on_expr);
+            }
+        }
+        Pattern::Enum { fields, .. } => {
+            for p in fields {
+                walk_pattern_deep(p, deny, on_stmt, on_expr);
+            }
+        }
+        Pattern::Or { patterns, .. } => {
+            for p in patterns {
+                walk_pattern_deep(p, deny, on_stmt, on_expr);
+            }
+        }
+    }
+}
+
+fn walk_stmt_deep(
+    stmt: &Stmt,
+    deny: &mut DenyStack,
+    on_stmt: &mut dyn FnMut(&Stmt, &DenyStack),
+    on_expr: &mut dyn FnMut(&Expr, &DenyStack),
+) {
+    on_stmt(stmt, deny);
+    match stmt {
+        Stmt::Let { value, pattern, .. } => {
+            if let Some(e) = value {
+                walk_expr_deep(e, deny, on_stmt, on_expr);
+            }
+            if let Some(p) = pattern {
+                walk_pattern_deep(p, deny, on_stmt, on_expr);
+            }
+        }
+        Stmt::Assign { target, value, .. } => {
+            walk_expr_deep(target, deny, on_stmt, on_expr);
+            walk_expr_deep(value, deny, on_stmt, on_expr);
+        }
+        Stmt::Return { value, .. } => {
+            if let Some(e) = value {
+                walk_expr_deep(e, deny, on_stmt, on_expr);
+            }
+        }
+        Stmt::If {
+            condition,
+            then_block,
+            elif_clauses,
+            else_block,
+            ..
+        } => {
+            walk_expr_deep(condition, deny, on_stmt, on_expr);
+            walk_block_deep(then_block, deny, on_stmt, on_expr);
+            for (c, b) in elif_clauses {
+                walk_expr_deep(c, deny, on_stmt, on_expr);
+                walk_block_deep(b, deny, on_stmt, on_expr);
+            }
+            if let Some(b) = else_block {
+                walk_block_deep(b, deny, on_stmt, on_expr);
+            }
+        }
+        Stmt::For {
+            pattern,
+            iterable,
+            body,
+            ..
+        } => {
+            walk_pattern_deep(pattern, deny, on_stmt, on_expr);
+            walk_expr_deep(iterable, deny, on_stmt, on_expr);
+            walk_block_deep(body, deny, on_stmt, on_expr);
+        }
+        Stmt::While { condition, body, .. } => {
+            walk_expr_deep(condition, deny, on_stmt, on_expr);
+            walk_block_deep(body, deny, on_stmt, on_expr);
+        }
+        Stmt::Break { .. } | Stmt::Continue { .. } => {}
+        Stmt::Expr { expr, .. } | Stmt::Spawn { expr, .. } | Stmt::Throw { expr, .. } => {
+            walk_expr_deep(expr, deny, on_stmt, on_expr);
+        }
+        Stmt::Select {
+            branches, timeout, ..
+        } => {
+            for branch in branches {
+                walk_expr_deep(&branch.channel, deny, on_stmt, on_expr);
+                walk_block_deep(&branch.body, deny, on_stmt, on_expr);
+            }
+            if let Some(t) = timeout {
+                walk_expr_deep(&t.duration_ms, deny, on_stmt, on_expr);
+                walk_block_deep(&t.body, deny, on_stmt, on_expr);
+            }
+        }
+        Stmt::TryCatch {
+            try_block,
+            catch_block,
+            ..
+        } => {
+            walk_block_deep(try_block, deny, on_stmt, on_expr);
+            walk_block_deep(catch_block, deny, on_stmt, on_expr);
+        }
+        Stmt::DenyBlock { denied, body, .. } => {
+            deny.push(denied.iter().filter_map(|s| Capability::from_str(s)).collect());
+            walk_block_deep(body, deny, on_stmt, on_expr);
+            deny.pop();
+        }
+    }
+}
+
+fn walk_expr_deep(
+    expr: &Expr,
+    deny: &mut DenyStack,
+    on_stmt: &mut dyn FnMut(&Stmt, &DenyStack),
+    on_expr: &mut dyn FnMut(&Expr, &DenyStack),
+) {
+    on_expr(expr, deny);
+    match expr {
+        Expr::IntLiteral { .. }
+        | Expr::FloatLiteral { .. }
+        | Expr::StringLiteral { .. }
+        | Expr::CharLiteral { .. }
+        | Expr::BoolLiteral { .. }
+        | Expr::NoneLiteral { .. }
+        | Expr::Identifier { .. } => {}
+        Expr::InterpolatedString { parts, .. } => {
+            for part in parts {
+                if let kryos_ast::StringPart::Expr(e) = part {
+                    walk_expr_deep(e, deny, on_stmt, on_expr);
+                }
+            }
+        }
+        Expr::FieldAccess { object, .. } => walk_expr_deep(object, deny, on_stmt, on_expr),
+        Expr::IndexAccess { object, index, .. } => {
+            walk_expr_deep(object, deny, on_stmt, on_expr);
+            walk_expr_deep(index, deny, on_stmt, on_expr);
+        }
+        Expr::BinaryOp { left, right, .. } | Expr::PipeExpr { left, right, .. } => {
+            walk_expr_deep(left, deny, on_stmt, on_expr);
+            walk_expr_deep(right, deny, on_stmt, on_expr);
+        }
+        Expr::UnaryOp { operand, .. } => walk_expr_deep(operand, deny, on_stmt, on_expr),
+        Expr::FnCall { callee, args, .. } => {
+            walk_expr_deep(callee, deny, on_stmt, on_expr);
+            for a in args {
+                walk_expr_deep(a, deny, on_stmt, on_expr);
+            }
+        }
+        Expr::MethodCall { object, args, .. } => {
+            walk_expr_deep(object, deny, on_stmt, on_expr);
+            for a in args {
+                walk_expr_deep(a, deny, on_stmt, on_expr);
+            }
+        }
+        Expr::StaticMethodCall { args, .. } => {
+            for a in args {
+                walk_expr_deep(a, deny, on_stmt, on_expr);
+            }
+        }
+        Expr::ArrayLiteral { elements, .. } | Expr::TupleLiteral { elements, .. } => {
+            for e in elements {
+                walk_expr_deep(e, deny, on_stmt, on_expr);
+            }
+        }
+        Expr::MapLiteral { entries, .. } => {
+            for (k, v) in entries {
+                walk_expr_deep(k, deny, on_stmt, on_expr);
+                walk_expr_deep(v, deny, on_stmt, on_expr);
+            }
+        }
+        Expr::StructLiteral { fields, .. } => {
+            for (_, e) in fields {
+                walk_expr_deep(e, deny, on_stmt, on_expr);
+            }
+        }
+        Expr::Lambda { params, body, .. } => {
+            for p in params {
+                if let Some(d) = &p.default {
+                    walk_expr_deep(d, deny, on_stmt, on_expr);
+                }
+            }
+            walk_expr_deep(body, deny, on_stmt, on_expr);
+        }
+        Expr::IfExpr {
+            condition,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            walk_expr_deep(condition, deny, on_stmt, on_expr);
+            walk_block_deep(then_branch, deny, on_stmt, on_expr);
+            if let Some(b) = else_branch {
+                walk_block_deep(b, deny, on_stmt, on_expr);
+            }
+        }
+        Expr::MatchExpr { subject, arms, .. } => {
+            walk_expr_deep(subject, deny, on_stmt, on_expr);
+            for arm in arms {
+                walk_pattern_deep(&arm.pattern, deny, on_stmt, on_expr);
+                if let Some(g) = &arm.guard {
+                    walk_expr_deep(g, deny, on_stmt, on_expr);
+                }
+                walk_expr_deep(&arm.body, deny, on_stmt, on_expr);
+            }
+        }
+        Expr::RangeExpr { start, end, .. } => {
+            if let Some(s) = start {
+                walk_expr_deep(s, deny, on_stmt, on_expr);
+            }
+            if let Some(e) = end {
+                walk_expr_deep(e, deny, on_stmt, on_expr);
+            }
+        }
+        Expr::Borrow { inner, .. }
+        | Expr::Deref { inner, .. }
+        | Expr::SharedExpr { inner, .. }
+        | Expr::MoveExpr { inner, .. }
+        | Expr::WeakExpr { inner, .. } => walk_expr_deep(inner, deny, on_stmt, on_expr),
+        Expr::ComptimeBlock { body, .. }
+        | Expr::QuantumBlock { body, .. }
+        | Expr::UnsafeBlock { body, .. } => walk_block_deep(body, deny, on_stmt, on_expr),
+        Expr::Cast { expr: inner, .. } => walk_expr_deep(inner, deny, on_stmt, on_expr),
+        Expr::Block { block, .. } => walk_block_deep(block, deny, on_stmt, on_expr),
+        Expr::Await { value, .. } => walk_expr_deep(value, deny, on_stmt, on_expr),
+    }
+}
+
+/// LEDGER ASSAULT-F2. The fn-typed parameters of one declaration that are used
+/// ONLY as the callee of a direct call (`cb(x)`), with at least one such call
+/// inside a `deny!` block: `(index in `params`, name, the capabilities named by
+/// every `deny!` block that encloses a call of it)`.
+///
+/// "Used only as a callee" is counted over every node of the body (the walker
+/// is exhaustive): an `Identifier` that names the parameter anywhere else (an
+/// argument, a `let` initializer, an alias, a field of a literal, an
+/// interpolation, a pipe operand) disqualifies it, so no alias or forwarding
+/// the checker resolves by other means can reach the relaxation in
+/// `deferred_own_param_caps`.
+fn analyze_deny_callbacks(
+    params: &[Param],
+    body: &kryos_ast::Block,
+) -> Vec<(usize, String, CapabilitySet)> {
+    let mut candidates: HashMap<&str, usize> = HashMap::new();
+    for (i, p) in params.iter().enumerate() {
+        if p.name != "self" && matches!(&p.ty, Some(TypeExpr::Function { .. })) {
+            candidates.insert(p.name.as_str(), i);
+        }
+    }
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+    let mut mentions: HashMap<String, usize> = HashMap::new();
+    let mut calls: HashMap<String, usize> = HashMap::new();
+    let mut denied: HashMap<String, Vec<Capability>> = HashMap::new();
+    let mut under_deny: HashSet<String> = HashSet::new();
+    walk_block_deep(
+        body,
+        &mut Vec::new(),
+        &mut |_, _| {},
+        &mut |e, deny| match e {
+            Expr::Identifier { name, .. } if candidates.contains_key(name.as_str()) => {
+                *mentions.entry(name.clone()).or_insert(0) += 1;
+            }
+            Expr::FnCall { callee, .. } => {
+                if let Expr::Identifier { name, .. } = callee.as_ref() {
+                    if candidates.contains_key(name.as_str()) {
+                        *calls.entry(name.clone()).or_insert(0) += 1;
+                        if !deny.is_empty() {
+                            under_deny.insert(name.clone());
+                            denied
+                                .entry(name.clone())
+                                .or_default()
+                                .extend(deny.iter().flatten().copied());
+                        }
+                    }
+                }
+            }
+            _ => {}
+        },
+    );
+    let mut out = Vec::new();
+    for (name, idx) in candidates {
+        let m = mentions.get(name).copied().unwrap_or(0);
+        let c = calls.get(name).copied().unwrap_or(0);
+        if c > 0 && m == c && under_deny.contains(name) {
+            let mut set = CapabilitySet::empty();
+            for cap in denied.get(name).into_iter().flatten() {
+                set.insert(*cap);
+            }
+            out.push((idx, name.to_string(), set));
+        }
+    }
+    out.sort_by_key(|(i, _, _)| *i);
+    out
+}
+
+/// `analyze_deny_callbacks`'s result with each parameter's default value.
+fn with_defaults(
+    params: &[Param],
+    found: Vec<(usize, String, CapabilitySet)>,
+) -> Vec<(usize, String, CapabilitySet, Option<Expr>)> {
+    found
+        .into_iter()
+        .map(|(i, n, d)| {
+            let default = params.get(i).and_then(|p| p.default.as_deref().cloned());
+            (i, n, d, default)
+        })
+        .collect()
+}
+
+/// One assignment found by `scan_body_writes`.
+struct WriteInfo {
+    /// Every field name that appears anywhere in the assignment target.
+    fields: Vec<String>,
+    /// Every bare identifier that appears anywhere in the assignment target.
+    idents: Vec<String>,
+    /// `Some(f)` when the target is exactly `self.f`.
+    self_field: Option<String>,
+    /// The operator is plain `=`.
+    plain_assign: bool,
+    /// `Some(p)` when the assigned value is the bare identifier `p`.
+    value_ident: Option<String>,
+}
+
+/// What `scan_body_writes` found in one body.
+struct BodyScan {
+    /// Every assignment.
+    writes: Vec<WriteInfo>,
+    /// Every field or identifier that sits under a `&mut` borrow (a write
+    /// through the borrow would not show up as an assignment to the field).
+    borrowed: Vec<String>,
+    /// Every name the body (re)binds anywhere: `let` names and patterns, `for`
+    /// patterns, `catch` names, `select` binders, lambda parameters, `match`
+    /// patterns, the bare target of an assignment. A parameter whose name is in
+    /// this set may not be the value the body means by that name.
+    binders: HashSet<String>,
+}
+
+/// Every assignment, `&mut` borrow and binder in `block`. Used by
+/// `compute_actor_delegated_fields`.
+fn scan_body_writes(block: &kryos_ast::Block) -> BodyScan {
+    let mut writes: Vec<WriteInfo> = Vec::new();
+    let mut borrowed: Vec<String> = Vec::new();
+    let mut binders_stmt: HashSet<String> = HashSet::new();
+    let mut binders_expr: HashSet<String> = HashSet::new();
+    walk_block_deep(
+        block,
+        &mut Vec::new(),
+        &mut |s, _| match s {
+            Stmt::Assign {
+                target, op, value, ..
+            } => {
+                let mut fields = Vec::new();
+                let mut idents = Vec::new();
+                walk_expr_deep(
+                    target,
+                    &mut Vec::new(),
+                    &mut |_, _| {},
+                    &mut |e, _| match e {
+                        Expr::FieldAccess { field, .. } => fields.push(field.clone()),
+                        Expr::Identifier { name, .. } => idents.push(name.clone()),
+                        _ => {}
+                    },
+                );
+                if let Expr::Identifier { name, .. } = target {
+                    binders_stmt.insert(name.clone());
+                }
+                let self_field = match target {
+                    Expr::FieldAccess { object, field, .. }
+                        if matches!(object.as_ref(), Expr::Identifier { name, .. } if name == "self") =>
+                    {
+                        Some(field.clone())
+                    }
+                    _ => None,
+                };
+                let value_ident = match value {
+                    Expr::Identifier { name, .. } => Some(name.clone()),
+                    _ => None,
+                };
+                writes.push(WriteInfo {
+                    fields,
+                    idents,
+                    self_field,
+                    plain_assign: matches!(op, kryos_ast::AssignOp::Assign),
+                    value_ident,
+                });
+            }
+            Stmt::Let { name, pattern, .. } => {
+                binders_stmt.insert(name.clone());
+                if let Some(p) = pattern {
+                    CapabilityChecker::pattern_names(p, &mut binders_stmt);
+                }
+            }
+            Stmt::For { pattern, .. } => {
+                CapabilityChecker::pattern_names(pattern, &mut binders_stmt)
+            }
+            Stmt::TryCatch { catch_name, .. } => {
+                binders_stmt.insert(catch_name.clone());
+            }
+            Stmt::Select { branches, .. } => {
+                for b in branches {
+                    binders_stmt.insert(b.pattern.clone());
+                }
+            }
+            Stmt::Return { .. }
+            | Stmt::If { .. }
+            | Stmt::While { .. }
+            | Stmt::Break { .. }
+            | Stmt::Continue { .. }
+            | Stmt::Expr { .. }
+            | Stmt::Spawn { .. }
+            | Stmt::Throw { .. }
+            | Stmt::DenyBlock { .. } => {}
+        },
+        &mut |e, _| match e {
+            Expr::Borrow {
+                inner,
+                mutable: true,
+                ..
+            } => {
+                walk_expr_deep(
+                    inner,
+                    &mut Vec::new(),
+                    &mut |_, _| {},
+                    &mut |x, _| match x {
+                        Expr::FieldAccess { field, .. } => borrowed.push(field.clone()),
+                        Expr::Identifier { name, .. } => borrowed.push(name.clone()),
+                        _ => {}
+                    },
+                );
+            }
+            Expr::Lambda { params, .. } => {
+                for p in params {
+                    binders_expr.insert(p.name.clone());
+                }
+            }
+            Expr::MatchExpr { arms, .. } => {
+                for arm in arms {
+                    CapabilityChecker::pattern_names(&arm.pattern, &mut binders_expr);
+                }
+            }
+            _ => {}
+        },
+    );
+    binders_stmt.extend(binders_expr);
+    BodyScan {
+        writes,
+        borrowed,
+        binders: binders_stmt,
+    }
+}
+
+
 /// A capability scope entry on the stack.
 ///
 /// Tracks both the capability set and whether this scope was explicitly
@@ -631,6 +1183,24 @@ struct CapabilityChecker {
     /// measured cost. Populated per-actor-handler by `check_actor`, cleared
     /// after each handler is checked.
     current_actor_state_alias_locals: HashMap<String, Option<String>>,
+    /// LEDGER ASSAULT-F2: every declaration that invokes a callback parameter
+    /// inside a `deny!` block, by declaration name (see `DenyCallbackDecl`).
+    /// Computed once, structurally, before the enforcement walk.
+    deny_callback_params: HashMap<String, Vec<DenyCallbackDecl>>,
+    /// ASSAULT-F2: the names of the declaration being checked whose callback
+    /// parameters qualify for `deferred_own_param_caps`'s relaxation (used only
+    /// as the callee of a direct call, at least once inside a `deny!`).
+    current_deny_callback_params: HashSet<String>,
+    /// LEDGER ASSAULT-F1: per actor, its fn-typed state fields that are invoked
+    /// as `self.f(..)` and written only from message parameters (see
+    /// `compute_actor_delegated_fields`).
+    actor_delegated_fn_fields: HashMap<String, HashSet<String>>,
+    /// ASSAULT-F1: handler name -> the parameters it stores into such a field.
+    stored_fn_params: HashMap<String, Vec<StoredFnParam>>,
+    /// ASSAULT-F1: `actor_delegated_fn_fields` of the actor being checked.
+    current_actor_delegated_fields: HashSet<String>,
+    /// ASSAULT-F1: the declared capabilities of the actor being checked.
+    current_actor_ceiling: CapabilitySet,
     /// The active enforcement mode.
     mode: CapabilityMode,
 }
@@ -666,7 +1236,572 @@ impl CapabilityChecker {
             current_local_container_types: HashMap::new(),
             current_actor_fn_state_fields: HashSet::new(),
             current_actor_state_alias_locals: HashMap::new(),
+            deny_callback_params: HashMap::new(),
+            current_deny_callback_params: HashSet::new(),
+            actor_delegated_fn_fields: HashMap::new(),
+            stored_fn_params: HashMap::new(),
+            current_actor_delegated_fields: HashSet::new(),
+            current_actor_ceiling: CapabilitySet::empty(),
             mode,
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // LEDGER ASSAULT-F1, F2, F3: three over-rejections of capability-safe
+    // code (`tests/security/ctl_assault_f*.kry`). Each one narrows a
+    // fail-closed rule to the shape it was written for, and a program without
+    // that shape (a callback parameter called inside a `deny!`, an actor that
+    // invokes a fn-typed state field, a body that is one `deny!`) is judged
+    // exactly as before.
+    // ---------------------------------------------------------------------
+
+    /// ASSAULT-F3. `Some(denied)` when the ENTIRE body of a declaration is one
+    /// `deny!` block: every operation in it then runs under the narrowed scope
+    /// `ceiling.without(denied)`, and the walk in `check_deny_block` has already
+    /// proven each of them to fit that scope.
+    fn whole_body_denied(body: Option<&kryos_ast::Block>) -> Option<Vec<Capability>> {
+        match body?.stmts.as_slice() {
+            [Stmt::DenyBlock { denied, .. }] => {
+                Some(denied.iter().filter_map(|s| Capability::from_str(s)).collect())
+            }
+            _ => None,
+        }
+    }
+
+    /// ASSAULT-F3. What a CALL to a declaration with the declared ceiling
+    /// `declared` must hold. The ceiling bounds the body, but a body that is
+    /// one `deny!` can exercise only what the narrowing leaves; charging a
+    /// caller the full ceiling rejected a properly sandboxed handler for every
+    /// caller that did not itself hold what the handler denies (an
+    /// orchestrator with no authority could not message its sandbox).
+    fn charged_ceiling(declared: CapabilitySet, body: Option<&kryos_ast::Block>) -> CapabilitySet {
+        match Self::whole_body_denied(body) {
+            Some(denied) => declared.without(&denied),
+            None => declared,
+        }
+    }
+
+    /// ASSAULT-F2. Every declaration with a callback parameter that it invokes
+    /// inside a `deny!` block, by declaration NAME (a name shared by several
+    /// declarations keeps one entry each). Structural, so every call site sees
+    /// the complete table whatever order the declarations are checked in.
+    fn compute_deny_callback_params(
+        &self,
+        decls: &[Decl],
+    ) -> HashMap<String, Vec<DenyCallbackDecl>> {
+        let mut out = HashMap::new();
+        self.visit_deny_callback_decls(decls, false, &mut out);
+        out
+    }
+
+    fn visit_deny_callback_decls(
+        &self,
+        decls: &[Decl],
+        in_type: bool,
+        out: &mut HashMap<String, Vec<DenyCallbackDecl>>,
+    ) {
+        for d in decls {
+            match d {
+                Decl::Function {
+                    name,
+                    params,
+                    body: Some(b),
+                    ..
+                } => {
+                    let found = with_defaults(params, self.deny_callbacks_of(params, b));
+                    if !found.is_empty() {
+                        out.entry(name.clone()).or_default().push(DenyCallbackDecl {
+                            kind: if in_type { DeclKind::Method } else { DeclKind::Free },
+                            has_self: params.first().is_some_and(|p| p.name == "self"),
+                            params: found,
+                        });
+                    }
+                }
+                Decl::Impl { methods, .. } | Decl::Trait { methods, .. } => {
+                    self.visit_deny_callback_decls(methods, true, out)
+                }
+                Decl::Actor { handlers, .. } => {
+                    for h in handlers {
+                        let found =
+                            with_defaults(&h.params, self.deny_callbacks_of(&h.params, &h.body));
+                        if !found.is_empty() {
+                            out.entry(h.name.clone()).or_default().push(DenyCallbackDecl {
+                                kind: DeclKind::Handler,
+                                has_self: h.params.first().is_some_and(|p| p.name == "self"),
+                                params: found,
+                            });
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// ASSAULT-F2. `analyze_deny_callbacks` without the parameters whose name is
+    /// also a function, method, handler, actor, enum variant, extern or builtin
+    /// name. A call `name(..)` has two readings there (the parameter shadows the
+    /// global, bypass class B1b), so such a parameter keeps the immediate `all`.
+    fn deny_callbacks_of(
+        &self,
+        params: &[Param],
+        body: &kryos_ast::Block,
+    ) -> Vec<(usize, String, CapabilitySet)> {
+        let mut found = analyze_deny_callbacks(params, body);
+        found.retain(|(_, name, _)| {
+            !(self.fn_params.contains_key(name)
+                || self.actor_names.contains(name)
+                || self.enum_variant_names.contains(name)
+                || self.extern_fns.contains(name)
+                || is_known_builtin_name(name)
+                || required_capability_for_builtin(name).is_some())
+        });
+        found
+    }
+
+    /// ASSAULT-F1. For every actor, the fn-typed state fields it invokes as
+    /// `self.f(..)` and whose value can only have come from a message
+    /// parameter, and the handler parameters that carry those values in.
+    ///
+    /// A field qualifies when NO assignment anywhere in the module writes a
+    /// field of that name except `self.f = p` inside a handler of the same
+    /// actor, with `p` one of that handler's own fn-typed parameters; and no
+    /// `&mut` borrow reaches a field of that name. The test is by field NAME
+    /// over every body of the module (functions, methods, trait defaults,
+    /// handlers, lambdas, top-level initializers), so another actor's field of
+    /// the same name, a write through a second variable and a write from
+    /// `main` all disqualify it rather than being missed.
+    ///
+    /// For a qualifying field every value ever stored in it arrived as a
+    /// message argument, and `check_stored_fn_param_args` bounds each of those
+    /// by the actor's ceiling at the send site.
+    fn compute_actor_delegated_fields(
+        decls: &[Decl],
+    ) -> (
+        HashMap<String, HashSet<String>>,
+        HashMap<String, Vec<StoredFnParam>>,
+    ) {
+        // Candidates: (actor, field, ceiling) for each fn-typed state field that
+        // some handler of the actor invokes as `self.<field>(..)`.
+        let mut cands: Vec<(String, String, CapabilitySet)> = Vec::new();
+        for d in decls {
+            let Decl::Actor {
+                name,
+                state_fields,
+                handlers,
+                annotations,
+                ..
+            } = d
+            else {
+                continue;
+            };
+            let fn_fields: HashSet<&str> = state_fields
+                .iter()
+                .filter(|f| matches!(f.ty, TypeExpr::Function { .. }))
+                .map(|f| f.name.as_str())
+                .collect();
+            if fn_fields.is_empty() {
+                continue;
+            }
+            let mut invoked: Vec<String> = Vec::new();
+            for h in handlers {
+                walk_block_deep(&h.body, &mut Vec::new(), &mut |_, _| {}, &mut |e, _| {
+                    if let Expr::MethodCall { object, method, .. } = e {
+                        if matches!(object.as_ref(), Expr::Identifier { name, .. } if name == "self")
+                            && fn_fields.contains(method.as_str())
+                            && !invoked.contains(method)
+                        {
+                            invoked.push(method.clone());
+                        }
+                    }
+                });
+            }
+            invoked.sort();
+            let ceiling = CapabilitySet::from_annotations(annotations);
+            for f in invoked {
+                cands.push((name.clone(), f, ceiling.clone()));
+            }
+        }
+        if cands.is_empty() {
+            return (HashMap::new(), HashMap::new());
+        }
+        let cand_names: HashSet<String> = cands.iter().map(|(_, f, _)| f.clone()).collect();
+
+        // Every write to a field of a candidate name, anywhere in the module.
+        let mut poisoned: HashSet<String> = HashSet::new();
+        // (actor, field, handler, handler has `self`, param index, param name)
+        let mut stores: Vec<(String, String, String, bool, usize, String)> = Vec::new();
+
+        // The bodies of the module, each with the actor handler it belongs to.
+        struct Body<'a> {
+            block: Option<&'a kryos_ast::Block>,
+            expr: Option<&'a Expr>,
+            ctx: Option<(&'a str, &'a str, &'a [Param])>,
+        }
+        fn collect<'a>(decls: &'a [Decl], out: &mut Vec<Body<'a>>) {
+            for d in decls {
+                match d {
+                    Decl::Function { body, .. } => out.push(Body {
+                        block: body.as_ref(),
+                        expr: None,
+                        ctx: None,
+                    }),
+                    Decl::Impl { methods, .. } | Decl::Trait { methods, .. } => {
+                        collect(methods, out)
+                    }
+                    Decl::Extern { items, .. } => collect(items, out),
+                    Decl::Actor {
+                        name,
+                        handlers,
+                        state_fields,
+                        ..
+                    } => {
+                        for h in handlers {
+                            out.push(Body {
+                                block: Some(&h.body),
+                                expr: None,
+                                ctx: Some((name.as_str(), h.name.as_str(), h.params.as_slice())),
+                            });
+                        }
+                        for f in state_fields {
+                            if let Some(e) = &f.default {
+                                out.push(Body {
+                                    block: None,
+                                    expr: Some(e),
+                                    ctx: None,
+                                });
+                            }
+                        }
+                    }
+                    Decl::Struct { fields, .. } => {
+                        for f in fields {
+                            if let Some(e) = &f.default {
+                                out.push(Body {
+                                    block: None,
+                                    expr: Some(e),
+                                    ctx: None,
+                                });
+                            }
+                        }
+                    }
+                    Decl::Const { value, .. } => out.push(Body {
+                        block: None,
+                        expr: Some(value.as_ref()),
+                        ctx: None,
+                    }),
+                    Decl::Enum { .. } | Decl::TypeAlias { .. } | Decl::Import { .. } => {}
+                }
+            }
+        }
+        let mut bodies: Vec<Body> = Vec::new();
+        collect(decls, &mut bodies);
+
+        for body in &bodies {
+            let mut writes: Vec<WriteInfo> = Vec::new();
+            let mut borrowed: Vec<String> = Vec::new();
+            let mut binders: HashSet<String> = HashSet::new();
+            if let Some(b) = body.block {
+                let scan = scan_body_writes(b);
+                writes.extend(scan.writes);
+                borrowed.extend(scan.borrowed);
+                binders.extend(scan.binders);
+            }
+            if let Some(e) = body.expr {
+                // A bare expression (a top-level initializer, a field default):
+                // wrap-free scan through the same walker.
+                let blk = kryos_ast::Block {
+                    stmts: vec![Stmt::Expr {
+                        expr: e.clone(),
+                        span: e.span(),
+                    }],
+                    span: e.span(),
+                };
+                let scan = scan_body_writes(&blk);
+                writes.extend(scan.writes);
+                borrowed.extend(scan.borrowed);
+                binders.extend(scan.binders);
+            }
+            for name in borrowed {
+                if cand_names.contains(&name) {
+                    poisoned.insert(name);
+                }
+            }
+            for w in writes {
+                // Which candidate names does this assignment touch?
+                let mut touched: Vec<&String> = w
+                    .fields
+                    .iter()
+                    .filter(|f| cand_names.contains(*f))
+                    .collect();
+                if body.ctx.is_some() {
+                    // Inside an actor handler a bare `f = ..` writes the state field.
+                    touched.extend(w.idents.iter().filter(|i| cand_names.contains(*i)));
+                }
+                for f in touched {
+                    let stored = match (&body.ctx, &w.self_field, &w.value_ident) {
+                        (Some((actor, handler, params)), Some(sf), Some(p))
+                            if w.plain_assign
+                                && sf == f
+                                && !binders.contains("self")
+                                && !binders.contains(p)
+                                && cands.iter().any(|(a, cf, _)| a == actor && cf == f) =>
+                        {
+                            params
+                                .iter()
+                                .position(|q| {
+                                    q.name == *p
+                                        && q.name != "self"
+                                        && matches!(&q.ty, Some(TypeExpr::Function { .. }))
+                                })
+                                .map(|idx| {
+                                    (
+                                        actor.to_string(),
+                                        f.clone(),
+                                        handler.to_string(),
+                                        params.first().is_some_and(|q| q.name == "self"),
+                                        idx,
+                                        p.clone(),
+                                    )
+                                })
+                        }
+                        _ => None,
+                    };
+                    match stored {
+                        Some(s) => stores.push(s),
+                        None => {
+                            poisoned.insert(f.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut delegated: HashMap<String, HashSet<String>> = HashMap::new();
+        let mut stored_params: HashMap<String, Vec<StoredFnParam>> = HashMap::new();
+        for (actor, field, ceiling) in &cands {
+            if poisoned.contains(field) {
+                continue;
+            }
+            delegated
+                .entry(actor.clone())
+                .or_default()
+                .insert(field.clone());
+            for (a, f, handler, has_self, idx, param) in &stores {
+                if a == actor && f == field {
+                    stored_params
+                        .entry(handler.clone())
+                        .or_default()
+                        .push(StoredFnParam {
+                            actor: actor.clone(),
+                            field: field.clone(),
+                            has_self: *has_self,
+                            idx: *idx,
+                            param: param.clone(),
+                            ceiling: ceiling.clone(),
+                        });
+                }
+            }
+        }
+        (delegated, stored_params)
+    }
+
+    /// ASSAULT-F1 / ASSAULT-F2. The authority a callback ARGUMENT carries when
+    /// it can be read off the argument itself: a named free function or builtin
+    /// used as a value, or a closure literal. Every other shape (a local or a
+    /// parameter, a call result, a container element, ...) is `Err` with the
+    /// reason, and the caller treats it as not proven.
+    ///
+    /// A named function reads `fn_capabilities` directly instead of going
+    /// through `resolve_closure_caps`: that resolver consults the flat,
+    /// per-function `local_caps` map first, so a `let` of the same name in some
+    /// other block could stand in for the global and report less authority than
+    /// the global carries.
+    fn syntactic_callback_caps(&self, arg: &Expr) -> Result<CapabilitySet, &'static str> {
+        match arg {
+            Expr::Lambda { .. } => match self.resolve_closure_caps(
+                arg,
+                &self.fn_capabilities,
+                &self.fn_return_closure_caps,
+                &self.current_local_closure_caps,
+                &self.current_local_container_lits,
+                &self.current_fn_typed_params,
+            ) {
+                ClosureCapsResult::Known(c) => Ok(c),
+                _ => Err("the closure forwards or hides authority the checker cannot bound"),
+            },
+            Expr::Identifier { name, .. } => {
+                if self.current_locals.contains(name) {
+                    return Err("it is a local variable or a parameter, not a function name");
+                }
+                if self.defined_fns.contains(name) {
+                    if self.hot_params.get(name).is_some_and(|m| !m.is_empty()) {
+                        return Err("that function itself invokes a callback it is handed");
+                    }
+                    return Ok(self
+                        .fn_capabilities
+                        .get(name)
+                        .cloned()
+                        .unwrap_or_else(CapabilitySet::empty));
+                }
+                if let Some(cap) = required_capability_for_builtin(name) {
+                    let mut s = CapabilitySet::empty();
+                    s.insert(cap);
+                    return Ok(s);
+                }
+                Err("it is not a function the checker can name")
+            }
+            _ => Err("it is neither a named function nor a closure literal"),
+        }
+    }
+
+    /// ASSAULT-F2. The call-site half of the relaxation in
+    /// `deferred_own_param_caps`: a callee that invokes its callback parameter
+    /// inside `deny!(D)` is not charged `all`; instead the callback each caller
+    /// passes must be a named function or a closure literal whose authority is
+    /// known and does not overlap `D`. Anything else (a local, a call result, a
+    /// container element, a forwarded parameter) is refused, as it was by the
+    /// old rule.
+    fn check_deny_callback_args(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+        form: CallForm,
+        span: Span,
+    ) {
+        if self.deny_callback_params.is_empty()
+            || !(self.strict_mode() || self.has_annotated_scope())
+        {
+            return;
+        }
+        if form == CallForm::Bare && self.current_locals.contains(name) {
+            return;
+        }
+        let Some(decls) = self.deny_callback_params.get(name).cloned() else {
+            return;
+        };
+        for decl in &decls {
+            for (idx, pname, denied, default) in &decl.params {
+                let arg_idx = match (form, decl.kind) {
+                    (CallForm::Bare, DeclKind::Free) => Some(*idx),
+                    (CallForm::Method, DeclKind::Method | DeclKind::Handler) => {
+                        if decl.has_self {
+                            idx.checked_sub(1)
+                        } else {
+                            Some(*idx)
+                        }
+                    }
+                    (CallForm::Static, _) => Some(*idx),
+                    _ => None,
+                };
+                // A call that leaves the argument out runs with the parameter's default.
+                let Some(k) = arg_idx else {
+                    continue;
+                };
+                let Some(arg) = args.get(k).or(default.as_ref()) else {
+                    continue;
+                };
+                if denied.is_empty() {
+                    continue;
+                }
+                let why = match self.syntactic_callback_caps(arg) {
+                    Ok(carried) => {
+                        let mut overlap: Vec<String> = carried
+                            .iter()
+                            .filter(|c| denied.iter().any(|d| c.overlaps(d)))
+                            .map(|c| c.to_string())
+                            .collect();
+                        if overlap.is_empty() {
+                            continue;
+                        }
+                        overlap.sort();
+                        format!("the callback carries [{}]", overlap.join(", "))
+                    }
+                    Err(reason) => format!("its authority cannot be proven disjoint: {reason}"),
+                };
+                let mut denied_names: Vec<String> = denied.iter().map(|c| c.to_string()).collect();
+                denied_names.sort();
+                self.diagnostics.push(
+                    Diagnostic::error(format!(
+                        "callback passed to `{name}` for `{pname}` may use a capability that `{name}` denies around it"
+                    ))
+                    .with_label(arg.span(), why.clone())
+                    .with_label(span, format!("`{name}` calls `{pname}` inside deny!({})", denied_names.join(", ")))
+                    .with_note(format!(
+                        "`{name}` invokes its parameter `{pname}` inside a `deny!` block, so the \
+                         authority is bounded here, where the argument is in view: pass a named \
+                         function or a closure literal whose authority is known and does not \
+                         overlap [{}] ({why})",
+                        denied_names.join(", ")
+                    ))
+                    .with_code(kryos_errors::codes::E0507),
+                );
+            }
+        }
+    }
+
+    /// ASSAULT-F1. The send-site half of the relaxation in
+    /// `resolve_actor_self_field_invoke_caps`: a closure handed to a handler
+    /// parameter that the handler stores into the actor's state is invoked
+    /// later with the actor's authority, so it must stay inside the actor's
+    /// declared ceiling. The argument must be a named function or a closure
+    /// literal whose authority is known and fits the ceiling.
+    fn check_stored_fn_param_args(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+        form: CallForm,
+        span: Span,
+    ) {
+        if self.stored_fn_params.is_empty() || !(self.strict_mode() || self.has_annotated_scope())
+        {
+            return;
+        }
+        let Some(entries) = self.stored_fn_params.get(name).cloned() else {
+            return;
+        };
+        for e in &entries {
+            let arg_idx = match form {
+                CallForm::Method => {
+                    if e.has_self {
+                        e.idx.checked_sub(1)
+                    } else {
+                        Some(e.idx)
+                    }
+                }
+                CallForm::Static => Some(e.idx),
+                CallForm::Bare => None,
+            };
+            let Some(arg) = arg_idx.and_then(|k| args.get(k)) else {
+                continue;
+            };
+            let why = match self.syntactic_callback_caps(arg) {
+                Ok(carried) if carried.is_subset_of(&e.ceiling) => continue,
+                Ok(carried) => {
+                    let mut over: Vec<String> = carried
+                        .excess_over(&e.ceiling)
+                        .iter()
+                        .map(|c| c.to_string())
+                        .collect();
+                    over.sort();
+                    format!("the closure carries [{}] beyond the actor's capabilities", over.join(", "))
+                }
+                Err(reason) => format!("its authority cannot be proven within the actor's capabilities: {reason}"),
+            };
+            self.diagnostics.push(
+                Diagnostic::error(format!(
+                    "closure passed to `{name}` is stored in the state of actor `{}` and may exceed its capabilities",
+                    e.actor
+                ))
+                .with_label(arg.span(), why.clone())
+                .with_label(span, format!("`{name}` stores `{}` in `{}.{}`", e.param, e.actor, e.field))
+                .with_note(format!(
+                    "the actor invokes `{}` later, under its own declared capabilities, so what it \
+                     is given must fit them: pass a named function or a closure literal whose \
+                     authority is known and covered by the actor's `@capabilities` ({why})",
+                    e.field
+                ))
+                .with_code(kryos_errors::codes::E0507),
+            );
         }
     }
 
@@ -4276,6 +5411,15 @@ impl CapabilityChecker {
             return CapabilitySet::empty();
         }
         if self.scope_stack.len() > self.current_fn_entry_scope_depth {
+            // LEDGER ASSAULT-F2: a callback parameter used only as the callee of
+            // a direct call is deferred even under a narrowing. The narrowing is
+            // enforced where the argument is in view, at every call site
+            // (`check_deny_callback_args`), and a name that reaches a call as a
+            // function value is refused (`check_builtin_value_ref`). Every other
+            // use of a parameter under a `deny!` keeps the immediate `all`.
+            if self.current_deny_callback_params.contains(pname) {
+                return CapabilitySet::empty();
+            }
             let mut c = CapabilitySet::empty();
             c.insert(Capability::All);
             c
@@ -4584,6 +5728,14 @@ impl CapabilityChecker {
                 None => method,
             };
             if self.current_actor_fn_state_fields.contains(touched_field) {
+                // LEDGER ASSAULT-F1: a plain fn-typed field that only ever holds
+                // message arguments (each bounded by the ceiling at its send
+                // site, `check_stored_fn_param_args`) is invoked with at most the
+                // actor's own ceiling. Charged against the scope in force, so a
+                // `deny!` around the call that overlaps the ceiling still fails.
+                if path.is_empty() && self.current_actor_delegated_fields.contains(touched_field) {
+                    return self.current_actor_ceiling.clone();
+                }
                 return all();
             }
             return CapabilitySet::empty();
@@ -4700,9 +5852,18 @@ impl CapabilityChecker {
         for decl in declarations {
             match decl {
                 Decl::Function {
-                    name, annotations, ..
+                    name,
+                    annotations,
+                    body,
+                    ..
                 } if Self::has_capabilities_annotation(annotations) => {
-                    let caps = CapabilitySet::from_annotations(annotations);
+                    let mut caps = CapabilitySet::from_annotations(annotations);
+                    // ASSAULT-F3: a body that is one `deny!` block exercises only what
+                    // the narrowing leaves. `main` keeps its declaration: a top-level
+                    // initializer is checked against it (see `Decl::Const`).
+                    if name != "main" {
+                        caps = Self::charged_ceiling(caps, body.as_ref());
+                    }
                     // UNION on a name collision, not overwrite: impl methods
                     // are keyed by bare name here, so two structs each with an
                     // annotated `write` must contribute BOTH sets. Overwriting
@@ -4737,9 +5898,11 @@ impl CapabilityChecker {
                 } => {
                     let caps = CapabilitySet::from_annotations(annotations);
                     for handler in handlers {
+                        // ASSAULT-F3: see `charged_ceiling`.
+                        let charged = Self::charged_ceiling(caps.clone(), Some(&handler.body));
                         let merged = match self.fn_capabilities.get(&handler.name) {
-                            Some(existing) => existing.union(&caps),
-                            None => caps.clone(),
+                            Some(existing) => existing.union(&charged),
+                            None => charged,
                         };
                         self.fn_capabilities.insert(handler.name.clone(), merged);
                     }
@@ -5367,6 +6530,12 @@ impl CapabilityChecker {
         // its own ceiling (not just at direct enforcement sites).
         self.hot_params = self.compute_hot_params(&module.declarations);
         self.hot_param_companions = self.compute_hot_param_companions(&module.declarations);
+        // ASSAULT-F2 / ASSAULT-F1: structural tables over the whole module, built
+        // before any call site is checked.
+        self.deny_callback_params = self.compute_deny_callback_params(&module.declarations);
+        let (delegated, stored) = Self::compute_actor_delegated_fields(&module.declarations);
+        self.actor_delegated_fn_fields = delegated;
+        self.stored_fn_params = stored;
         let baseline = self.compute_inferred_capabilities(&module.declarations);
         self.fn_return_closure_caps =
             self.compute_fn_return_closure_caps(&module.declarations, &baseline);
@@ -5491,7 +6660,18 @@ impl CapabilityChecker {
                     None => HashMap::new(),
                 };
                 self.current_fn_typed_params = own_params;
+                // ASSAULT-F2: the callback parameters of this declaration that
+                // `deferred_own_param_caps` may defer under a `deny!`.
+                self.current_deny_callback_params = match body {
+                    Some(b) => self
+                        .deny_callbacks_of(params, b)
+                        .into_iter()
+                        .map(|(_, n, _)| n)
+                        .collect(),
+                    None => HashSet::new(),
+                };
                 self.check_function(name, annotations, body.as_ref(), *span);
+                self.current_deny_callback_params.clear();
                 self.current_locals.clear();
                 self.current_fn_typed_params.clear();
                 self.current_local_closure_caps.clear();
@@ -5679,6 +6859,16 @@ impl CapabilityChecker {
         // and Inferred enforce against the actor's declaration (empty if
         // unannotated): actors are message-passing boundaries, so their
         // authority must be declared, not inferred from handler bodies.
+        // ASSAULT-F1: the ceiling every handler of this actor runs under, and the
+        // state fields whose stored closures are bounded by it.
+        let saved_ceiling = std::mem::replace(&mut self.current_actor_ceiling, caps.clone());
+        let saved_delegated = std::mem::replace(
+            &mut self.current_actor_delegated_fields,
+            self.actor_delegated_fn_fields
+                .get(name)
+                .cloned()
+                .unwrap_or_default(),
+        );
         let scope = CapabilityScope {
             capabilities: caps,
             annotated: annotated || !matches!(self.mode, CapabilityMode::Permissive),
@@ -5717,7 +6907,14 @@ impl CapabilityChecker {
                 &self.current_local_container_lits,
             );
             self.current_fn_typed_params = own_params;
+            // ASSAULT-F2: see `check_decl`.
+            self.current_deny_callback_params = self
+                .deny_callbacks_of(&handler.params, &handler.body)
+                .into_iter()
+                .map(|(_, n, _)| n)
+                .collect();
             self.check_block(&handler.body);
+            self.current_deny_callback_params.clear();
             self.current_fn_typed_params.clear();
             self.current_local_closure_caps.clear();
             self.current_local_container_lits.clear();
@@ -5725,6 +6922,8 @@ impl CapabilityChecker {
             self.current_actor_state_alias_locals.clear();
         }
         self.current_actor_fn_state_fields = saved_actor_fn_fields;
+        self.current_actor_delegated_fields = saved_delegated;
+        self.current_actor_ceiling = saved_ceiling;
         self.current_fn_entry_scope_depth = saved_entry_depth;
         self.scope_stack.pop();
     }
@@ -5966,6 +7165,8 @@ impl CapabilityChecker {
                 // is empty there).
                 extra = extra.union(&self.resolve_actor_self_field_invoke_caps(object, method));
                 self.enforce_callee_name(method, *span, false, &extra, args);
+                self.check_deny_callback_args(method, args, CallForm::Method, *span);
+                self.check_stored_fn_param_args(method, args, CallForm::Method, *span);
 
                 self.check_expr(object);
                 for arg in args {
@@ -5995,6 +7196,8 @@ impl CapabilityChecker {
                     && !self.declared_type_names.contains(type_name);
                 let extra = self.compute_hot_extra_caps(method, args, true);
                 self.enforce_callee_name(method, *span, is_gated_builtin, &extra, args);
+                self.check_deny_callback_args(method, args, CallForm::Static, *span);
+                self.check_stored_fn_param_args(method, args, CallForm::Static, *span);
                 for arg in args {
                     self.check_expr(arg);
                 }
@@ -6211,6 +7414,7 @@ impl CapabilityChecker {
             // `compute_hot_extra_caps`.
             let extra = self.compute_hot_extra_caps(&segments[0], args, false);
             self.enforce_callee_name(&segments[0], call_span, true, &extra, args);
+            self.check_deny_callback_args(&segments[0], args, CallForm::Bare, call_span);
             // A local (fn-typed parameter, `let`, `for`, `match`, `catch`
             // binding) shadows every global of the same name in call
             // position, so it is never "named" (B1b; see the same rule in
@@ -6471,6 +7675,26 @@ impl CapabilityChecker {
             // name with a function is not a reference to that function.
             if self.current_locals.contains(name) {
                 return;
+            }
+            // LEDGER ASSAULT-F2: a free function that invokes a callback parameter
+            // inside a `deny!` is checked at its direct call sites only. Handed
+            // out as a value it would be called where no argument is in view.
+            if self
+                .deny_callback_params
+                .get(name)
+                .is_some_and(|ds| ds.iter().any(|d| d.kind == DeclKind::Free))
+            {
+                self.diagnostics.push(
+                    Diagnostic::error(format!(
+                        "function `{name}` invokes a callback parameter inside a `deny!` block and cannot be used as a value"
+                    ))
+                    .with_label(span, "used as a function value")
+                    .with_note(format!(
+                        "`{name}` is checked at its direct call sites, where the callback \
+                         passed to it is in view; call it directly instead of handing it out"
+                    ))
+                    .with_code(kryos_errors::codes::E0507),
+                );
             }
             if let Some(fn_caps) = self.fn_capabilities.get(name).cloned() {
                 if let Some(caps) = self.current_caps() {

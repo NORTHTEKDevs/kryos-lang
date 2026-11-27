@@ -1,0 +1,20 @@
+// ASSAULT-F1 attack: a second handler writes the state field from a closure literal, so not every
+// value in the field arrived as a message argument and the send-site bound no longer covers it.
+// The field keeps the fail-closed charge: the read below must be REJECTED (E0507) in both modes.
+actor Vault {
+    reader: fn() -> str
+    fn init(self: Vault, r: fn() -> str) { self.reader = r }
+    fn reset(self: Vault) { self.reader = || "reset" }
+    fn read(self: Vault) { println("ASSAULT-F1-WRITER: " + self.reader()) }
+}
+
+fn plain() -> str { return "plain" }
+
+@capabilities(fs:read)
+fn main() {
+    let v = Vault()
+    v.init(plain)
+    v.reset()
+    v.read()
+    sleep(100)
+}

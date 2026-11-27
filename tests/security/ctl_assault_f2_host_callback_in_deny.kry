@@ -1,0 +1,20 @@
+// ASSAULT-F2 control: a sandbox host runs the plugin callback it is handed inside deny!(fs:read).
+// Each caller passes a named function or a closure literal that cannot read a file, so the denial
+// is met and the program is accepted in both modes; `run` prints the marker twice.
+// Master rejects it for every callback: `call through a function value requires capabilities [all]`.
+actor Host {
+    fn run_callback(self: Host, cb: fn(str) -> str) {
+        deny!(fs:read) {
+            println(cb("ASSAULT-F2-OK"))
+        }
+    }
+}
+
+fn safe(s: str) -> str { return s }
+
+fn main() {
+    let h = Host()
+    h.run_callback(safe)
+    h.run_callback(|s| s + "!")
+    sleep(100)
+}

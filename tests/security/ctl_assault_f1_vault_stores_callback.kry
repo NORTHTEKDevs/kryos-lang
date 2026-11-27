@@ -1,0 +1,19 @@
+// ASSAULT-F1 control: a vault actor keeps the callback it was handed in a state field and
+// invokes it from another handler. The vault declares no capability and the callback is pure,
+// so nothing here reaches a gated operation. Accepted in both modes; `run` prints the marker.
+// Master rejects it: `call to `reader` requires capabilities [all] not granted to caller`.
+actor Vault {
+    reader: fn() -> str
+    fn init(self: Vault, r: fn() -> str) { self.reader = r }
+    fn read(self: Vault) { println(self.reader()) }
+}
+
+fn greeting() -> str { return "ASSAULT-F1-OK" }
+
+@capabilities()
+fn main() {
+    let v = Vault()
+    v.init(greeting)
+    v.read()
+    sleep(100)
+}

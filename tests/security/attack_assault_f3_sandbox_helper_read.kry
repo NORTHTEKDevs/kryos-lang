@@ -1,0 +1,21 @@
+// ASSAULT-F3 attack: the whole handler is one deny!(fs:read) block, but it calls a helper that reads a
+// protected file. The call inside the block is charged against the narrowed scope, so the handler
+// itself is REJECTED (E0507) in both modes and the secret is never printed.
+@capabilities(fs:read)
+fn helper() -> str { return file_read("tests/security/secret_for_closure_launder.txt") }
+
+@capabilities(fs:read)
+actor Sand {
+    fn go(self: Sand) {
+        deny!(fs:read) {
+            println("ASSAULT-F3-HELPER: " + helper())
+        }
+    }
+}
+
+@capabilities()
+fn main() {
+    let s = Sand()
+    s.go()
+    sleep(100)
+}

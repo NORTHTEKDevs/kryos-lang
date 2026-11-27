@@ -113,7 +113,12 @@
 >    boundary currently being checked, and any deferred-charge decision
 >    checks whether a `deny!` has pushed the live scope DEEPER than that
 >    depth since - if so, the deferral is unsound and `Capability::All` is
->    required instead of empty. (A companion field,
+>    required instead of empty. (The one exception is a parameter a function
+>    uses only as the callee of a direct call, with a call inside the
+>    `deny!`: the denial is checked at every call site instead, which must
+>    pass a named function or a closure literal that does not carry the
+>    denied capability, invariant 25 of `docs/capability-soundness.md`.)
+>    (A companion field,
 >    `transparent_lambda_params`/`structural_lambda_eval_depth`, keeps this
 >    scope check from firing on the UNRELATED, purely structural
 >    self-classification `resolve_closure_caps` performs on a fresh lambda

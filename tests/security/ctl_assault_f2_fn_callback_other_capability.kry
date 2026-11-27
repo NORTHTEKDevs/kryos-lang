@@ -1,0 +1,22 @@
+// ASSAULT-F2 control: the denial is about the capability the block names. A free function runs its
+// callback inside deny!(fs:read); a callback that needs another capability (process, for env_get)
+// does not overlap it, so a caller that holds both may pass it. Accepted in both modes.
+fn run_callback(cb: fn(str) -> str) {
+    deny!(fs:read) {
+        println(cb("ASSAULT-F2-FN-OK"))
+    }
+}
+
+fn safe(s: str) -> str { return s }
+
+@capabilities(process)
+fn env_marker(s: str) -> str {
+    if len(env_get("PATH")) >= 0 { return s + "-ENV" }
+    return s
+}
+
+@capabilities(process)
+fn main() {
+    run_callback(safe)
+    run_callback(env_marker)
+}

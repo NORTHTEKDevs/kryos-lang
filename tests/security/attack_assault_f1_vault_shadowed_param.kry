@@ -1,0 +1,26 @@
+// ASSAULT-F1 attack: `init` names the parameter it stores (`r`), but a `let` rebinds `r` to the
+// OTHER parameter first, so the closure that lands in the state field is the second one, which the
+// send-site bound never looked at. The field must keep the fail-closed charge when the name stored
+// is not the handler's own untouched parameter. Must be REJECTED (E0507) in both modes and must never
+// print the secret.
+actor Vault {
+    reader: fn() -> str
+    fn init(self: Vault, r: fn() -> str, extra: fn() -> str) {
+        let r = extra
+        self.reader = r
+    }
+    fn read(self: Vault) { println("ASSAULT-F1-SHADOW: " + self.reader()) }
+}
+
+fn plain() -> str { return "plain" }
+
+@capabilities(fs:read)
+fn secret() -> str { return file_read("tests/security/secret_for_closure_launder.txt") }
+
+@capabilities(fs:read)
+fn main() {
+    let v = Vault()
+    v.init(plain, secret)
+    v.read()
+    sleep(100)
+}

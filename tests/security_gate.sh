@@ -1655,5 +1655,49 @@ for pair in "attack_tdb_two_impls_named_fn:1" "ctl_tdb_two_impls_return_param:0"
     done
 done
 
+# ASSAULT-F1, F2, F3 (LEDGER, "Close-out cap lane, assault_f1_f3"): three programs of capability-safe
+# code that the checker refused, each relaxed for the one shape it was written for. The controls must
+# be accepted in both modes and run; the attacks beside them must stay rejected with E0507 and must
+# never print the secret.
+for ctl in ctl_assault_f1_vault_stores_callback:ASSAULT-F1-OK \
+           ctl_assault_f1_vault_declared_ceiling:ASSAULT-F1-DECLARED-OK \
+           ctl_assault_f2_host_callback_in_deny:ASSAULT-F2-OK \
+           ctl_assault_f2_fn_callback_other_capability:ASSAULT-F2-FN-OK \
+           ctl_assault_f3_sandbox_actor:ASSAULT-F3-OK \
+           ctl_assault_f3_sandbox_fn:ASSAULT-F3-FN-OK; do
+    prog="${ctl%%:*}"; marker="${ctl##*:}"
+    ctl_ok=1
+    for mode in "" "--strict-capabilities"; do
+        if ! "$K" check $mode "tests/security/$prog.kry" >"$TMP/af" 2>&1; then
+            echo "  FAIL: $prog.kry rejected by \`check $mode\` (over-rejection of capability-safe code):"
+            tail -3 "$TMP/af" | sed 's/^/    /'; ctl_ok=0; fail=1
+        fi
+    done
+    if ! "$K" run "tests/security/$prog.kry" 2>&1 | grep -q "$marker"; then
+        echo "  FAIL: $prog.kry did not print $marker under \`run\`"; ctl_ok=0; fail=1
+    fi
+    [ $ctl_ok -eq 1 ] && echo "  ok   $prog.kry accepted in both modes and prints its marker"
+done
+for esc in attack_assault_f1_vault_privileged_callback attack_assault_f1_vault_privileged_lambda \
+           attack_assault_f1_vault_shadowed_param attack_assault_f1_vault_second_writer \
+           attack_assault_f2_host_privileged_callback attack_assault_f2_host_privileged_lambda \
+           attack_assault_f2_host_local_alias attack_assault_f2_fn_as_value \
+           attack_assault_f2_host_forwarded_param attack_assault_f2_host_coarse_family \
+           attack_assault_f3_sandbox_second_statement attack_assault_f3_sandbox_helper_read; do
+    esc_ok=1
+    for mode in "" "--strict-capabilities"; do
+        if "$K" check $mode "tests/security/$esc.kry" >"$TMP/af" 2>&1; then
+            echo "  FAIL: $esc.kry passed \`check $mode\`"; esc_ok=0; fail=1
+        elif ! grep -q "E0507" "$TMP/af"; then
+            echo "  FAIL: $esc.kry rejected by \`check $mode\`, but not with E0507:"
+            tail -3 "$TMP/af" | sed 's/^/    /'; esc_ok=0; fail=1
+        fi
+        if "$K" run $mode "tests/security/$esc.kry" 2>&1 | grep -q "TOPSECRET"; then
+            echo "  FAIL: $esc.kry printed the secret under \`run $mode\`"; esc_ok=0; fail=1
+        fi
+    done
+    [ $esc_ok -eq 1 ] && echo "  ok   $esc.kry rejected in both modes with E0507"
+done
+
 [ $fail -eq 0 ] && echo "security-gate: PASS" || echo "security-gate: FAIL"
 exit $fail
