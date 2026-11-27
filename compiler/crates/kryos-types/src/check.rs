@@ -176,19 +176,6 @@ pub struct TypeChecker {
     /// keeps both diagnostics.
     dyn_container_reject_params: std::collections::HashSet<(String, usize)>,
 
-    /// LEDGER item 6 (num lane): `(function name, param index)` of every free
-    /// function parameter whose written annotation is literally `any`/`Any`.
-    /// `FunctionSig` keeps only the resolved `Type::Error` sentinel, which a
-    /// polymorphic builtin's parameter shares, so the call-site check that
-    /// rejects a `str` argument for an `any` parameter keys off this table.
-    any_annotated_params: std::collections::HashSet<(String, usize)>,
-
-    /// Subset of `any_annotated_params` whose parameter the body uses ONLY as
-    /// the haystack of `contains(p, ..)`. That read is correct for a `str`
-    /// payload (pinned by `contains_any_param_str`), so a `str` argument stays
-    /// accepted there; every other use of an `any` param prints the raw pointer.
-    any_str_safe_params: std::collections::HashSet<(String, usize)>,
-
     // ── Capability-typed fn values (Stage 1: representation + inference,
     // no enforcement -- docs/capability-effects-spec.md) ──────────────
     /// Fresh capability-row variable ids collected while resolving a
@@ -292,8 +279,6 @@ impl TypeChecker {
             pattern_dup_seen: None,
             suppress_array_elem_unify: std::collections::HashSet::new(),
             dyn_container_reject_params: std::collections::HashSet::new(),
-            any_annotated_params: std::collections::HashSet::new(),
-            any_str_safe_params: std::collections::HashSet::new(),
             pending_cap_var_ids: Vec::new(),
             cap_accum_stack: Vec::new(),
             current_actor_fn_state_fields: std::collections::HashSet::new(),
@@ -717,46 +702,6 @@ impl TypeChecker {
                 )
             };
             self.error_with_code(msg, span, kryos_errors::codes::E0110);
-        }
-    }
-
-    /// True when every identifier use of `pname` in the Debug rendering of a
-    /// function body is the first argument of a `contains(..)` call and there is
-    /// at least one. Fails closed: any unrecognised shape reads as "not safe".
-    fn param_used_only_as_contains_haystack(dbg: &str, pname: &str) -> bool {
-        let ident = format!("Identifier {{ name: \"{pname}\", ");
-        let arg0 = format!("args: [{ident}");
-        let total = dbg.matches(ident.as_str()).count();
-        let mut safe = 0usize;
-        for (idx, _) in dbg.match_indices(arg0.as_str()) {
-            let before = &dbg[..idx];
-            if let Some(c) = before.rfind("callee: ") {
-                if before[c..].starts_with("callee: Identifier { name: \"contains\", span: Span {") {
-                    safe += 1;
-                }
-            }
-        }
-        safe > 0 && safe == total
-    }
-
-    /// LEDGER item 6 (num lane): a `str` stored into a TOP-LEVEL `any` slot
-    /// (a function/method parameter, a `mut` binding, an assignment target, a
-    /// return, a struct field). `any` carries no runtime tag, so the slot is a
-    /// bare i64 and `to_string`/`println`/interpolation on it print the raw
-    /// pointer (JIT) or fail the clang build (AOT). Only the immutable
-    /// `let x: any = <str>` shape can keep the concrete type (see `Stmt::Let`);
-    /// every other position is rejected here, matching items 24 / 40 / 40b.
-    /// Fires only on a CONCRETE `str` value meeting the `any` sentinel, so an
-    /// upstream type error (`Type::Error` on the value side) adds no noise.
-    fn reject_str_into_any_slot(&mut self, slot_ty: &Type, val_ty: &Type, span: Span, what: &str) {
-        if self.engine.resolve(slot_ty) == Type::Error && self.engine.resolve(val_ty) == Type::Str {
-            self.error_with_code(
-                format!(
-                    "cannot store a `str` value in {what} typed `any` -- `any` is erased to a bare i64 at runtime with no type tag, so reading the value back (`to_string`, `println`, interpolation) prints a raw pointer instead of the text. Give the slot its concrete type (`str`) or a generic `<T>` parameter instead of `any`, or convert the value to its final form before erasing it"
-                ),
-                span,
-                kryos_errors::codes::E0110,
-            );
         }
     }
 
@@ -1673,17 +1618,6 @@ impl TypeChecker {
                         {
                             self.dyn_container_reject_params
                                 .insert((name.clone(), i));
-                        }
-                        if matches!(
-                            p.ty.as_ref(),
-                            Some(TypeExpr::Simple { name: tn, .. }) if tn == "any" || tn == "Any"
-                        ) {
-                            self.any_annotated_params.insert((name.clone(), i));
-                            if let Some(b) = body.as_ref() {
-                                if Self::param_used_only_as_contains_haystack(&format!("{b:?}"), &p.name) {
-                                    self.any_str_safe_params.insert((name.clone(), i));
-                                }
-                            }
                         }
                         (p.name.clone(), ty)
                     })
@@ -3349,21 +3283,6 @@ impl TypeChecker {
                 if pattern.is_none() && matches!(value, Some(Expr::Lambda { .. })) {
                     self.pending_self_recursive_name = Some(name.clone());
                 }
-                // LEDGER item 6: remember the `any`-annotated params of a
-                // closure bound to a plain name so a `str` argument at its call
-                // site is rejected like a named fn's (`any_annotated_params`).
-                if pattern.is_none() {
-                    if let Some(Expr::Lambda { params: lps, .. }) = value {
-                        for (i, lp) in lps.iter().enumerate() {
-                            if matches!(
-                                lp.ty.as_ref(),
-                                Some(TypeExpr::Simple { name: tn, .. }) if tn == "any" || tn == "Any"
-                            ) {
-                                self.any_annotated_params.insert((name.clone(), i));
-                            }
-                        }
-                    }
-                }
                 // See `suppress_array_elem_unify`: a `[dyn Trait]` annotation
                 // over an array literal is already rejected (E0110) by
                 // `resolve_type_expr` above -- don't let the array literal's
@@ -3417,31 +3336,6 @@ impl TypeChecker {
                     ty.as_ref(),
                     Some(TypeExpr::Simple { name: tn, .. }) if tn == "any" || tn == "Any"
                 );
-                // LEDGER item 6 (num lane): the shapes that can NOT keep the
-                // concrete type. A `mut` any binding may be reassigned to a
-                // different type, and an `any` CONTAINER annotation
-                // (`let a: [any] = ["x"]`) erases its element; both would print
-                // the raw pointer for a `str`, so they are rejected like the
-                // call-site container shape (item 40b).
-                if let (Some(decl), Some(inf)) = (&declared_ty, &inferred_ty) {
-                    if is_any_annot {
-                        if *mutable {
-                            self.reject_str_into_any_slot(decl, inf, *span, "a `let mut` binding");
-                        }
-                    } else {
-                        let d = self.engine.resolve(decl);
-                        let a = self.engine.resolve(inf);
-                        if d != Type::Error
-                            && Self::untagged_scalar_into_any(&d, &a) == Some(Type::Str)
-                        {
-                            self.error_with_code(
-                                "cannot store a `str` value in an `any` container slot -- `any` is erased to a bare i64 at runtime with no type tag, so reading the element back (`to_string`, `println`, interpolation) prints a raw pointer instead of the text. Use a concrete element type (e.g. `[str]`) instead of `[any]`".to_string(),
-                                *span,
-                                kryos_errors::codes::E0110,
-                            );
-                        }
-                    }
-                }
                 let final_ty = match (declared_ty, inferred_ty) {
                     (Some(decl), Some(mut inferred)) => {
                         // A bare FLOAT LITERAL adapts to a narrower declared
@@ -3646,8 +3540,6 @@ impl TypeChecker {
                 {
                     value_ty = Type::F32;
                 }
-                // LEDGER item 6: assigning a `str` into an `any`-typed slot.
-                self.reject_str_into_any_slot(&target_ty, &value_ty, *span, "an assignment target");
                 if let Err(diag) = self.engine.unify(&target_ty, &value_ty, *span) {
                     self.diagnostics.push(diag);
                 }
@@ -3709,10 +3601,6 @@ impl TypeChecker {
                     .map(|v| self.infer_expr(v))
                     .unwrap_or(Type::Void);
 
-                if let Some(expected) = self.current_return_type.clone() {
-                    // LEDGER item 6: returning a `str` from a `-> any` function.
-                    self.reject_str_into_any_slot(&expected, &ret_ty, *span, "a return value");
-                }
                 if let Some(ref expected) = self.current_return_type {
                     if let Err(mut diag) = self.engine.unify(expected, &ret_ty, *span) {
                         // Enhance error message with function context.
@@ -5809,24 +5697,8 @@ impl TypeChecker {
                                     }
                                 }
                             }
-                            for (i, arg) in args.iter().enumerate() {
-                                let arg_ty = self.infer_expr(arg);
-                                // LEDGER item 6: the `fn(any) -> any` shape of a
-                                // user fn (`fn id(v: any) -> any`) skips the
-                                // parameter check below, so test its `any`
-                                // parameter for a `str` here.
-                                if let Some(ref cn) = callee_name_str {
-                                    if self.any_annotated_params.contains(&(cn.clone(), i))
-                                        && !self.any_str_safe_params.contains(&(cn.clone(), i))
-                                    {
-                                        self.reject_str_into_any_slot(
-                                            &params[0],
-                                            &arg_ty,
-                                            arg.span(),
-                                            "a parameter",
-                                        );
-                                    }
-                                }
+                            for arg in args.iter() {
+                                let _ = self.infer_expr(arg);
                             }
                             return *ret.clone();
                         }
@@ -5914,14 +5786,6 @@ impl TypeChecker {
                                 }
                                 // LEDGER item 40: last point a concrete type exists before `any` erasure.
                                 self.reject_untagged_scalar_into_any(param_ty, &arg_ty, arg.span());
-                                // LEDGER item 6: a `str` for a user fn parameter annotated `any`.
-                                if let Some(ref cn) = callee_name_str {
-                                    if self.any_annotated_params.contains(&(cn.clone(), i))
-                                        && !self.any_str_safe_params.contains(&(cn.clone(), i))
-                                    {
-                                        self.reject_str_into_any_slot(param_ty, &arg_ty, arg.span(), "a parameter");
-                                    }
-                                }
                                 if let Err(diag) = self.engine.unify(param_ty, &arg_ty, arg.span())
                                 {
                                     self.diagnostics.push(diag);
@@ -6118,8 +5982,6 @@ impl TypeChecker {
                                             let arg_ty = self.infer_expr(arg);
                                             // LEDGER item 40: last point a concrete type exists before `any` erasure.
                                             self.reject_untagged_scalar_into_any(param_ty, &arg_ty, arg.span());
-                                            // LEDGER item 6: a `str` for a top-level `any` parameter.
-                                            self.reject_str_into_any_slot(param_ty, &arg_ty, arg.span(), "a parameter");
                                             if let Err(diag) =
                                                 self.engine.unify(param_ty, &arg_ty, arg.span())
                                             {
@@ -6185,8 +6047,6 @@ impl TypeChecker {
                                     let arg_ty = self.infer_expr(arg);
                                     // LEDGER item 40: last point a concrete type exists before `any` erasure.
                                     self.reject_untagged_scalar_into_any(param_ty, &arg_ty, arg.span());
-                                    // LEDGER item 6: a `str` for a top-level `any` parameter.
-                                    self.reject_str_into_any_slot(param_ty, &arg_ty, arg.span(), "a parameter");
                                     if let Err(diag) =
                                         self.engine.unify(param_ty, &arg_ty, arg.span())
                                     {
@@ -6397,8 +6257,6 @@ impl TypeChecker {
                                 let arg_ty = self.infer_expr(arg);
                                 // LEDGER item 40: last point a concrete type exists before `any` erasure.
                                 self.reject_untagged_scalar_into_any(param_ty, &arg_ty, arg.span());
-                                // LEDGER item 6: a `str` for a top-level `any` parameter.
-                                self.reject_str_into_any_slot(param_ty, &arg_ty, arg.span(), "a parameter");
                                 if let Err(diag) = self.engine.unify(param_ty, &arg_ty, arg.span())
                                 {
                                     self.diagnostics.push(diag);
@@ -6676,8 +6534,6 @@ impl TypeChecker {
                             let arg_ty = self.infer_expr(arg);
                             // LEDGER item 40: last point a concrete type exists before `any` erasure.
                             self.reject_untagged_scalar_into_any(param_ty, &arg_ty, arg.span());
-                            // LEDGER item 6: a `str` for a top-level `any` parameter.
-                            self.reject_str_into_any_slot(param_ty, &arg_ty, arg.span(), "a parameter");
                             if let Err(diag) = self.engine.unify(param_ty, &arg_ty, arg.span()) {
                                 self.diagnostics.push(diag);
                             }
@@ -6742,8 +6598,6 @@ impl TypeChecker {
                             let arg_ty = self.infer_expr(arg);
                             // LEDGER item 40: last point a concrete type exists before `any` erasure.
                             self.reject_untagged_scalar_into_any(param_ty, &arg_ty, arg.span());
-                            // LEDGER item 6: a `str` for a top-level `any` parameter.
-                            self.reject_str_into_any_slot(param_ty, &arg_ty, arg.span(), "a parameter");
                             if let Err(diag) = self.engine.unify(param_ty, &arg_ty, arg.span()) {
                                 self.diagnostics.push(diag);
                             }
@@ -6903,13 +6757,6 @@ impl TypeChecker {
                             } else {
                                 self.engine.instantiate(expected_ty, &var_map)
                             };
-                            // LEDGER item 6: a `str` for an `any`-typed field.
-                            self.reject_str_into_any_slot(
-                                &expected_instantiated,
-                                &expr_ty,
-                                fexpr.span(),
-                                "a struct field",
-                            );
                             if let Err(diag) =
                                 self.engine
                                     .unify(&expected_instantiated, &expr_ty, fexpr.span())
