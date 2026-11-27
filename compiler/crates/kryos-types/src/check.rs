@@ -3332,10 +3332,6 @@ impl TypeChecker {
                     }
                 }
 
-                let is_any_annot = matches!(
-                    ty.as_ref(),
-                    Some(TypeExpr::Simple { name: tn, .. }) if tn == "any" || tn == "Any"
-                );
                 let final_ty = match (declared_ty, inferred_ty) {
                     (Some(decl), Some(mut inferred)) => {
                         // A bare FLOAT LITERAL adapts to a narrower declared
@@ -3365,42 +3361,7 @@ impl TypeChecker {
                         if let Some(v) = value.as_ref() {
                             self.check_int_literal_range(&decl, v, *span);
                         }
-                        // LEDGER item 6 (num lane): an IMMUTABLE `let x: any = v`
-                        // has exactly one value for its whole life, so its
-                        // concrete type is statically known even though `any`
-                        // carries no runtime tag. Keep that concrete type for
-                        // the binding (checker env AND MIR slot) instead of
-                        // erasing it to a bare i64: `to_string(x)` / `println(x)`
-                        // on an `any` holding a `str` printed the raw pointer on
-                        // the JIT and failed in clang on the AOT. Integer
-                        // payloads are already i64-shaped (unchanged); bool /
-                        // float stay rejected above (E0110); a `mut` binding can
-                        // be reassigned to a different type so it keeps the
-                        // erased behaviour.
-                        let refined = if !*mutable && pattern.is_none() && is_any_annot {
-                            let r = self.engine.resolve(&inferred);
-                            let primitive_num = matches!(
-                                r,
-                                Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
-                                    | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
-                                    | Type::USize | Type::ISize | Type::Bool | Type::F32
-                                    | Type::F64 | Type::Error | Type::Var(_)
-                            );
-                            if !primitive_num && concrete_type_to_type_expr(&r).is_some() {
-                                Some(r)
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        };
-                        match refined {
-                            Some(r) => {
-                                self.resolved_let_types.insert(*span, r.clone());
-                                r
-                            }
-                            None => decl,
-                        }
+                        decl
                     }
                     (Some(decl), None) => decl,
                     (None, Some(inferred)) => self.generalize_binding_type(inferred),
