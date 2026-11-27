@@ -12150,3 +12150,43 @@ RESIDUAL (executed, NOT closed, NOT claimed)
 - The LOCAL-variable form `loc = if c { h.g } else { Gin{..} }` / `match` (not a global) still leaks on the JIT (live grows 2.5 boxes per iteration);
   the local assignment path was only refactored (the owns_read predicate is shared), not changed.
 - A `spawn` / actor thread reading a global while another overwrites it is not synchronised with the release (as for the str / array / map globals).
+
+## a14 (round 4): a call result that is the global itself, and a bare global read as an if / match branch value (2026-11-27, branch closeout/r2-mem)
+
+Item A14, after the verifier refuted round 3 (17630afa). Residual shapes it listed, all executed and reproduced before the change (1M / 300k iterations, KRYOS_ALLOC_STATS box live):
+`GS = ident(GS)` with `fn ident(g: Gin) -> Gin { return g }` (JIT live 1000001 / 300000, AOT clean), the same for an enum, a nested struct (2 boxes per iteration) and an
+`Option<str>`; `GS = pick(GS, o, c)` (JIT live 500002); `let k = if c { GS } else { Gin{..} }` (JIT live 150002 at 300k, AOT 12MB peak). The fourth shape it listed,
+`GB.g = if c { h.g } else {..}` on a field of a global, is the admitted local field-assign family and is NOT touched.
+
+Root cause 1 (lower.rs, plain assignment to an owned global): round 3 declared every call result "fresh" and released the old value through `DropIfNe`, whose pointer-
+inequality guard skips the release when old and new are the same box. A call result always carries a reference of its own, and when the callee returns its argument
+that box is the one the slot holds: the slot's old reference and the result's reference are two references to one box, and the guard released neither. LLVM stores a
+fresh box per store (never the same pointer), which is why AOT was clean. Fix: `global_new_is_call_result` (a user fn / closure call result, directly or through an
+unnamed temp) releases the old reference unconditionally, exactly as the shared-alias case already did. Literals / variants / tuples keep the guarded release.
+
+Root cause 2 (lower.rs, value-branch tails): a bare mutable-global name as an if / match / block tail was not shared into the hidden result slot (only a named LOCAL
+was: take_tail_identifier / arm_names_outer_owned_struct), and `struct_value_owned` treated the whole value as "not owned", so the `let` cloned the slot and nobody
+released it: every fresh branch value leaked (JIT). For an enum / tuple / Option global the same read was an unshared alias that the round 3 release then freed while the
+`let` still used it: a use-after-free (wrong answer 994445 vs master 2138890 for `let n = if c { GN } else {..}` then `GN = ..`; a str double free on Option). Fix:
+`take_tail_identifier` and `arm_names_outer_owned_struct` share a bare owned-struct / enum / tuple global read into the result slot (`is_owned_global_value_ident`), and
+`struct_value_owned` counts a bare struct global tail as owned (`is_owned_global_struct_ident`), so the slot owns one reference in every branch. A bare `let k = GS`
+is untouched (the top-level Identifier case is not widened).
+
+Files: compiler/crates/kryos-mir/src/lower.rs; tests/mem/global_aggregate_leak.kry (+10 modes), tests/mem_global_aggregate_gate.sh (33 modes, 68 rows; MODES env var selects a subset).
+
+Evidence (executed):
+- New modes glob_call_id / _enum / _nested / _opt / _pick, glob_let_if / _match / _enum / _tup / _opt: this tree, all 20 rows 4MB; kryos-co-nov master binary: all 20 rows
+  FAIL (glob_call_id AOT 140MB / JIT 108-110MB, glob_call_nested 276 / 307MB, glob_let_if 178 / 193MB, glob_let_tup JIT 346MB), control 4MB. Full gate on the tree: 68 rows,
+  all 4MB, `mem-global-aggregate: PASS`.
+- KRYOS_ALLOC_STATS box live, JIT and AOT, 300k iterations: id1 / more (ident, idn, idb, ido, pick, unit-variant call, `GS = getg()`) live 1..7 on both backends and
+  KRYOS_FREE_DIAG clean; let-if / match probes for struct (if, match, block tail, nested elif, mutated copy, `if c { k = GS }`, `return if c { GS } ..`) live 1 on both; enum / tuple / Option
+  forms live 3 on both; the combined probe letif3 (struct + enum + tuple + Option, if / match / block, global overwritten after the read) prints 13583340 on this tree, JIT and AOT, = master.
+- finish `--only '^(A14|A14\.ctl|A1[0-9]|A1[0-9]\.ctl|137.*|138|139|135|136)$'`: 31 PASS / 1 FAIL (A17 field_of_if_temp, the open item that fails the same way on the integ binary). `^mem:closure`: 146 PASS / 1 FAIL
+  (v137_uaf, the frozen defective fixture). `^(mem:attacks.*|A19|A16|137.*|138|139|137-perf|leakmode.*|copy-assign-leak.*|M[0-9]|B[0-9])$`: 279 PASS / 7 FAIL, the seven being M4,
+  leakmode:throw_locals, leakmode:clo_nested_tuple_arr and the four copy-assign-leak rows, all listed as failing identically before this change.
+
+RESIDUAL (executed, NOT closed, NOT claimed)
+- A LOCAL enum / Option named in a match / if branch next to a fresh variant (`let n = match i % 3 { 0 => lN, 1 => Op.Num(i), _ => Op.Name(..) }`, `lN` a local) leaks on the JIT
+  (live 200004 at 300k); the same shape with the global (`GN`) leaks 300003 on the JIT, with correct answers. It is the local-variable if / match family, not global-specific; AOT clean.
+- `pick(GS, mkb(i).g, c)` (a field read of a temporary as a call argument) leaks on both backends (155MB / 308MB at 1M); not global-specific, not touched. The gate uses a named local there.
+- `GB.g = if c { h.g } else { .. }` and the local `bx.g = ..` analog (the admitted field-assign family), `@copy` globals, unshareable types and threads are unchanged from round 3.

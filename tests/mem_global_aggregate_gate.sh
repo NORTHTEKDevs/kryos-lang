@@ -33,7 +33,8 @@ if ! "$KRYOS" build --release "$ROOT/$probe" -o "$aot_bin" >/dev/null 2>&1; then
   echo "mem-global-aggregate: AOT build FAILED"; exit 1
 fi
 
-for mode in glob_struct glob_tuple glob_enum glob_opt glob_share glob_variant glob_field glob_hread glob_param glob_elem glob_tupstruct glob_self glob_if glob_if_field glob_match_field glob_if_named glob_if_glob glob_if_nested glob_if_block glob_mapread glob_tup_if glob_enum_if glob_try control; do
+MODES="${MODES:-glob_struct glob_tuple glob_enum glob_opt glob_share glob_variant glob_field glob_hread glob_param glob_elem glob_tupstruct glob_self glob_if glob_if_field glob_match_field glob_if_named glob_if_glob glob_if_nested glob_if_block glob_mapread glob_tup_if glob_enum_if glob_try glob_call_id glob_call_enum glob_call_nested glob_call_opt glob_call_pick glob_let_if glob_let_match glob_let_enum glob_let_tup glob_let_opt control}"
+for mode in $MODES; do
   aot_bytes=$(powershell -NoProfile -Command \
     "\$env:LEAK_ITERS='$ITERS'; \$env:LEAK_MODE='$mode'; \$p=Start-Process -FilePath '$win_aot' -PassThru -NoNewWindow -RedirectStandardOutput \$env:TEMP\mgag_${mode}_aot.txt; \$m=0; while(-not \$p.HasExited){try{\$p.Refresh(); if(\$p.PeakWorkingSet64 -gt \$m){\$m=\$p.PeakWorkingSet64}}catch{}; Start-Sleep -Milliseconds 20}; try{\$p.Refresh(); if(\$p.PeakWorkingSet64 -gt \$m){\$m=\$p.PeakWorkingSet64}}catch{}; \$m" 2>/dev/null | tr -d '\r')
   case "$aot_bytes" in ''|*[!0-9]*) aot_bytes="" ;; esac

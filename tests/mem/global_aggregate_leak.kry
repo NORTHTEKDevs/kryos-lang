@@ -13,6 +13,12 @@
 // glob_if_named, glob_if_glob, glob_if_nested, glob_if_block, glob_mapread), the tuple and enum forms
 // (glob_tup_if, glob_enum_if), and an if value that can throw (glob_try). Each branch is assigned on its own,
 // so a branch that reads a named place takes its own reference instead of aliasing it.
+// Round 4 (verifier refutations): a global overwritten with a call result that is the global itself
+// (glob_call_id / _enum / _nested / _opt, and glob_call_pick for a conditionally aliasing call): the
+// result holds its own reference, so the old one is released even when it is the same box. A bare global
+// read as an if / match branch value consumed by a `let` (glob_let_if, glob_let_match, glob_let_enum,
+// glob_let_tup, glob_let_opt): the branch shares it into the result slot, so the slot owns one in every
+// branch and the global may be overwritten while the `let` still uses its value.
 // Every mode returns the same answer: the sum of len("<2 chars><i>") over i.
 use std::option::{Option, Some, None}
 struct Gin { name: str }
@@ -25,7 +31,16 @@ let mut GT: (str, i64) = ("t", 1)
 let mut GN: Op = Op.Name("n")
 let mut GO: Option<str> = Some("s")
 let mut GTS: (Gin, i64) = (Gin { name: "t" }, 1)
+let mut GB: Box2 = Box2 { g: Gin { name: "b" }, t: ("b", 0) }
 fn setfrom(h: Box2) { GS = h.g }
+fn ident(g: Gin) -> Gin { return g }
+fn idn(g: Op) -> Op { return g }
+fn idb(g: Box2) -> Box2 { return g }
+fn ido(g: Option<str>) -> Option<str> { return g }
+fn pick(a: Gin, b: Gin, c: bool) -> Gin {
+    if c { return a }
+    return b
+}
 fn mkb(i: i64) -> Box2 { return Box2 { g: Gin { name: "gs{i}" }, t: ("tt{i}", i) } }
 fn boom(i: i64) -> Gin {
     if i % 3 == 0 { throw "boom" }
@@ -148,6 +163,58 @@ fn main() {
                 GS = Gin { name: "gs{i}" }
             }
             sink = sink + len(GS.name)
+        } elif mode == "glob_call_id" {
+            GS = Gin { name: "gs{i}" }
+            GS = ident(GS)
+            sink = sink + len(GS.name)
+        } elif mode == "glob_call_enum" {
+            GN = Op.Name("nn{i}")
+            GN = idn(GN)
+            sink = sink + nlen(GN)
+        } elif mode == "glob_call_nested" {
+            GB = mkb(i)
+            GB = idb(GB)
+            sink = sink + len(GB.g.name)
+        } elif mode == "glob_call_opt" {
+            GO = Some("ss{i}")
+            GO = ido(GO)
+            match GO {
+                Some(s) => { sink = sink + len(s) }
+                None => { sink = sink + 0 }
+            }
+        } elif mode == "glob_call_pick" {
+            GS = Gin { name: "gs{i}" }
+            let o2 = Gin { name: "gs{i}" }
+            GS = pick(GS, o2, i % 2 == 0)
+            sink = sink + len(GS.name)
+        } elif mode == "glob_let_if" {
+            GS = Gin { name: "gs{i}" }
+            let k = if i % 2 == 0 { GS } else { Gin { name: "gs{i}" } }
+            GS = Gin { name: "xx" }
+            sink = sink + len(k.name)
+        } elif mode == "glob_let_match" {
+            GS = Gin { name: "gs{i}" }
+            let k = match i % 3 { 0 => GS, 1 => Gin { name: "gs{i}" }, _ => GS }
+            GS = Gin { name: "xx" }
+            sink = sink + len(k.name)
+        } elif mode == "glob_let_enum" {
+            GN = Op.Name("nn{i}")
+            let n = if i % 2 == 0 { GN } else { Op.Name("nn{i}") }
+            GN = Op.Name("xx")
+            sink = sink + nlen(n)
+        } elif mode == "glob_let_tup" {
+            GT = ("tt{i}", i)
+            let t = if i % 2 == 0 { GT } else { ("tt{i}", i) }
+            GT = ("xx", 0)
+            sink = sink + len(t.0)
+        } elif mode == "glob_let_opt" {
+            GO = Some("ss{i}")
+            let o = if i % 2 == 0 { GO } else { Some("ss{i}") }
+            GO = None
+            match o {
+                Some(s) => { sink = sink + len(s) }
+                None => { sink = sink + 0 }
+            }
         } else {
             let mut c = Gin { name: "a" }
             c = Gin { name: "gs{i}" }

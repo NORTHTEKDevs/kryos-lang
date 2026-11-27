@@ -3374,6 +3374,39 @@ fn global_use_is_fresh(ctx: &LoweringContext, src: LocalId) -> bool {
     false
 }
 
+/// Is the value stored into an owned global a user function's / closure's
+/// result (directly, or through an unnamed temp)? Its reference is its own and
+/// may be the box the slot already holds (the callee returned its argument).
+fn global_new_is_call_result(ctx: &LoweringContext, rvalue: &RValue) -> bool {
+    let is_call = |v: &RValue| match v {
+        RValue::Call { func, .. } => {
+            ctx.user_fn_names.contains(func.as_str()) && !ctx.builtin_fn_names.contains(func.as_str())
+        }
+        RValue::CallIndirect { .. } => true,
+        _ => false,
+    };
+    if is_call(rvalue) {
+        return true;
+    }
+    let RValue::Use(Operand::Local(src)) = rvalue else { return false };
+    let mut t = *src;
+    for _ in 0..8 {
+        if !ctx.locals.iter().any(|l| l.id == t && l.name.is_none()) {
+            return false;
+        }
+        let def = ctx.current_instructions.iter().rev().find_map(|i| match i {
+            Instruction::Assign { dest, value } if *dest == t => Some(value),
+            _ => None,
+        });
+        match def {
+            Some(RValue::Use(Operand::Local(next))) => t = *next,
+            Some(v) => return is_call(v),
+            None => return false,
+        }
+    }
+    false
+}
+
 /// `G = <if / match / block value>` of an owned struct / enum / tuple slot as
 /// one assignment per branch: `if c { G = a } else { G = b }`. The value
 /// reached the slot through a hidden result local whose ownership differs per
@@ -4186,6 +4219,13 @@ fn take_tail_identifier(ctx: &mut LoweringContext, name: &str, scope_start: usiz
         .iter()
         .rposition(|l| l.name.as_deref() == Some(name) && !ctx.hidden_locals.contains(&l.id.0))
     else {
+        // A mutable global's value read as the tail: the result slot takes a
+        // reference of its own (the global keeps its slot's).
+        if let Some(r) = result {
+            if is_owned_global_value_ident(ctx, name) {
+                emit_value_share(ctx, r);
+            }
+        }
         return;
     };
     let (id, ty) = (ctx.locals[pos].id, ctx.locals[pos].ty.clone());
@@ -4255,6 +4295,9 @@ fn arm_names_outer_owned_struct(
     };
     if pattern.is_some_and(|p| pattern_binds(p, name)) {
         return false;
+    }
+    if is_owned_global_value_ident(ctx, name) {
+        return true;
     }
     let Some(l) = find_local_by_name(ctx, name) else { return false };
     // Declared before the match began (a name an arm's pattern binds is
@@ -5962,6 +6005,26 @@ fn pattern_binds(p: &ast::Pattern, name: &str) -> bool {
     }
 }
 
+/// A bare mutable-global name (no local of that name in view) holding an owned
+/// struct, read as an if / match branch value. The read is an alias of the
+/// slot's value, so the branch shares it into the hidden result slot exactly as
+/// it does a named outer local (take_tail_identifier / arm_names_outer_owned_struct):
+/// the slot then owns a reference of its own in every branch.
+fn is_owned_global_struct_ident(ctx: &LoweringContext, name: &str) -> bool {
+    find_local_by_name(ctx, name).is_none()
+        && ctx
+            .mutable_globals
+            .get(name)
+            .is_some_and(|(t, _)| is_owned_struct_ty(ctx, t))
+}
+
+/// Same for a struct, enum or tuple global: the branch value is an alias of the
+/// slot's, and the result slot takes a share of its own.
+fn is_owned_global_value_ident(ctx: &LoweringContext, name: &str) -> bool {
+    find_local_by_name(ctx, name).is_none()
+        && ctx.mutable_globals.get(name).is_some_and(|(t, _)| is_owned_value_ty(ctx, t))
+}
+
 /// Does every value-producing branch of struct-valued `e` hand the if/match
 /// result slot a FRESH, independent value -- a struct literal, or a closure's
 /// env-owned capture, which the branch copies (env_owned_copy)? Only then may
@@ -5999,7 +6062,7 @@ fn struct_value_owned(ctx: &LoweringContext, e: &ast::Expr) -> bool {
                 // A name the block binds itself shadows the one it resolves to.
                 !b.stmts.iter().any(|s| matches!(s, ast::Stmt::Let { name: n, pattern, .. }
                     if n == name || pattern.as_ref().is_some_and(|p| pattern_binds(p, name))))
-                    && tail_ident_owned(ctx, name)
+                    && (tail_ident_owned(ctx, name) || is_owned_global_struct_ident(ctx, name))
             }
             Some(ast::Stmt::Expr { expr, .. }) => struct_value_owned(ctx, expr),
             Some(ast::Stmt::Return { .. }) | Some(ast::Stmt::Throw { .. }) => true,
@@ -6017,7 +6080,9 @@ fn struct_value_owned(ctx: &LoweringContext, e: &ast::Expr) -> bool {
                 // A bare outer name is shared into the slot (see
                 // arm_names_outer_owned_struct); one the pattern binds is not.
                 return !pattern_binds(&a.pattern, name)
-                    && (ident_owned(ctx, name) || tail_ident_owned(ctx, name));
+                    && (ident_owned(ctx, name)
+                        || tail_ident_owned(ctx, name)
+                        || is_owned_global_struct_ident(ctx, name));
             }
             !tail_ident(&a.body).is_some_and(|n| pattern_binds(&a.pattern, n)) && struct_value_owned(ctx, &a.body)
         }),
@@ -7616,6 +7681,13 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                         // element, a named local) is the same alias.
                                         || matches!(&rvalue, RValue::Use(Operand::Local(src))
                                             if !global_use_is_fresh(ctx, *src)));
+                                // A call's result always carries a reference of its own,
+                                // but it may be the very value the slot already holds (a
+                                // callee that returns its argument: `G = id(G)`), so the
+                                // old reference is released unconditionally, as for a
+                                // shared alias; the pointer-inequality guard would skip
+                                // it and leave the extra reference behind.
+                                let new_owns_call_ref = owned_global && global_new_is_call_result(ctx, &rvalue);
                                 let mut retain_src: Option<&'static str> = None;
                                 if let RValue::Use(Operand::Local(src)) = &rvalue {
                                     let src_ty = ctx
@@ -7680,7 +7752,7 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                     // reference more than before and the old one is
                                     // released unconditionally. A fresh value moved
                                     // in is released only when it is not the old box.
-                                    let new_op = if share_global_new {
+                                    let new_op = if share_global_new || new_owns_call_ref {
                                         Operand::Constant(Constant::Int(0))
                                     } else {
                                         Operand::Local(emit_global_load(ctx, name, MirType::I64))
