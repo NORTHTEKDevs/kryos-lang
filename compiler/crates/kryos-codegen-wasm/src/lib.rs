@@ -3573,6 +3573,16 @@ impl<'a> FnEmitter<'a> {
             }
         }
 
+        // Tuple copy-on-write marker (finish item A20): a no-op, like a share.
+        if func == kryos_mir::ir::TUPLE_COW_FN
+            || func == kryos_mir::ir::TUPLE_COW_SLOT_FN
+            || func == kryos_mir::ir::TUPLE_COW_ELEM_FN
+            || func == kryos_mir::ir::TUPLE_COW_MAP_FN
+        {
+            self.wfunc.instruction(&W::I64Const(0));
+            return Ok(());
+        }
+
         // Struct share: v0.1 WASM frees nothing, so one more owner is a no-op.
         if func == kryos_mir::ir::STRUCT_SHARE_FN {
             self.wfunc.instruction(&W::I64Const(0));

@@ -1,0 +1,8 @@
+src-mut t.0=5 u.0=1
+w=1a x=7z
+nest n=1 m=9
+param w=1 b=101
+loop 1 1
+loop 2 1
+loop 3 1
+both 3 2

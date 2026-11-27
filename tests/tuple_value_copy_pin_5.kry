@@ -1,0 +1,38 @@
+// Pin (finish item A20): a tuple is a VALUE. On the JIT it is one refcounted heap array that
+// every owner shared, so a field write through one name showed through the others (AOT copies).
+// Pin (finish item A20): a tuple binding is a value copy. Writing through
+// either name of `let mut u = t` / a `mut` source must not show through the other.
+fn bump(t: (i64, str)) -> (i64, str) {
+    let mut c = t
+    c.0 = c.0 + 100
+    return c
+}
+fn main() {
+    let mut t = (1, "a")
+    let u = t
+    t.0 = 5
+    println("src-mut t.0={t.0} u.0={u.0}")
+    let w = (1, "a")
+    let mut x = w
+    x.0 = 7
+    x.1 = "z"
+    println("w={w.0}{w.1} x={x.0}{x.1}")
+    let n = ((1, 2), "k")
+    let mut m = n
+    m.0.0 = 9
+    println("nest n={n.0.0} m={m.0.0}")
+    let b = bump(w)
+    println("param w={w.0} b={b.0}")
+    let mut i = 0
+    while i < 3 {
+        let mut c = w
+        c.0 = c.0 + i
+        println("loop {c.0} {w.0}")
+        i = i + 1
+    }
+    let mut a = (1, "s")
+    let mut b2 = a
+    b2.0 = 2
+    a.0 = 3
+    println("both {a.0} {b2.0}")
+}
