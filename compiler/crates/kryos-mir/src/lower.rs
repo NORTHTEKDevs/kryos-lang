@@ -8361,13 +8361,25 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             };
                             let old_field = release_if_ne_fn(&field_ty).map(|rel| {
                                 let old_tmp = ctx.alloc_temp(field_ty.clone());
-                                let obj_op = lower_expr_to_operand(ctx, object);
-                                ctx.emit(Instruction::Assign {
-                                    dest: old_tmp,
-                                    value: RValue::Field {
+                                // `(*h).f` reads the old field through the
+                                // handle (the auto-deref path): lowering the
+                                // `*h` object would take a whole-payload share
+                                // that nothing drops, leaking every leaf of
+                                // the payload once per store.
+                                let old_value = if matches!(object.as_ref(), ast::Expr::Deref { inner, .. }
+                                    if matches!(infer_expr_type(ctx, inner), MirType::Shared(_)))
+                                {
+                                    lower_expr_to_rvalue(ctx, target)
+                                } else {
+                                    let obj_op = lower_expr_to_operand(ctx, object);
+                                    RValue::Field {
                                         object: obj_op,
                                         field: field.clone(),
-                                    },
+                                    }
+                                };
+                                ctx.emit(Instruction::Assign {
+                                    dest: old_tmp,
+                                    value: old_value,
                                 });
                                 // The release pair below balances a RETAINED
                                 // read; the backends retain a struct field
@@ -14956,6 +14968,37 @@ fn lower_nested_field_assign(
                 value,
             });
             lower_nested_field_assign(ctx, parent, mid_field, Operand::Local(tmp));
+        }
+        // `(*h).field = v` through a `shared T` handle. The deref is a COPY
+        // of the payload on LLVM (an inline aggregate), so a plain StoreField
+        // on it wrote into the copy and the arc kept the old field (JIT only
+        // worked because its deref is the payload's own box). Same
+        // read-modify-writeback as the nested-field arm, with the handle's
+        // payload as the parent: load a mutable copy WITHOUT taking a share
+        // (it is not a second owner: the writeback overwrites the payload
+        // with the same leaves, the new field value in place of the old),
+        // store the field, store the copy back through the handle.
+        ast::Expr::Deref { inner, .. }
+            if matches!(infer_expr_type(ctx, inner), MirType::Shared(ref t) if matches!(**t, MirType::Struct(_))) =>
+        {
+            let MirType::Shared(payload_ty) = infer_expr_type(ctx, inner) else {
+                unreachable!()
+            };
+            let handle = lower_expr_to_operand(ctx, inner);
+            let tmp = ctx.alloc_local(None, *payload_ty, true);
+            ctx.emit(Instruction::Assign {
+                dest: tmp,
+                value: RValue::Deref { operand: handle.clone() },
+            });
+            ctx.emit(Instruction::StoreField {
+                object: Operand::Local(tmp),
+                field: field.to_string(),
+                value,
+            });
+            ctx.emit(Instruction::StoreDeref {
+                ptr: handle,
+                value: Operand::Local(tmp),
+            });
         }
         // Array/map index: `arr[i].field = v` or `map[k].field = v`.
         // Array elements are heap-boxed; kryos_array_get returns the box pointer as i64.

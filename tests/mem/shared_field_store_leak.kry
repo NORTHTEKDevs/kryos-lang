@@ -1,0 +1,44 @@
+// mem_attacks / c06: `(*h).f = v` through a `shared T` handle must (1) store into the payload the handle
+// points at (AOT stored into a copy of it and lost the write) and (2) release the field value it replaced
+// without leaking the whole-payload copy it reads through. Every mode returns the same answer: the sum of
+// the lengths read back through the handle after each store.
+//   name     (*a).name = <fresh str>
+//   tags     (*a).tags = [<fresh str>]
+//   both     both stores per iteration
+//   copy     name store, then `let x = *a` (a by-value copy keeps the field it was read with)
+//   control  a plain local struct's name store (already flat)
+struct P { name: str, n: i64, tags: [str] }
+@capabilities(process)
+fn main() {
+    let iters = parse_int(env_get("LEAK_ITERS"))
+    let mode = env_get("LEAK_MODE")
+    let a: shared P = shared P { name: "x", n: 0, tags: ["a"] }
+    let mut p = P { name: "x", n: 0, tags: ["a"] }
+    let mut sink = 0
+    let mut i = 0
+    while i < iters {
+        if mode == "name" or mode == "both" or mode == "copy" {
+            if i >= 0 { (*a).name = "newname-{i}-padpadpadpadpadpadpadpadpadpadpadpadpadpadpadpadpad" }
+        }
+        if mode == "tags" or mode == "both" {
+            if i >= 0 { (*a).tags = ["u-{i}-padpadpadpadpadpadpadpadpadpadpadpadpadpadpadpadpadpad"] }
+        }
+        if mode == "copy" {
+            let x = *a
+            sink = sink + len(x.name) - len((*a).name) + 1
+        }
+        if mode == "control" {
+            p.name = "newname-{i}-padpadpadpadpadpadpadpadpadpadpadpadpadpadpadpadpad"
+            sink = sink + 1
+        }
+        if mode == "name" or mode == "both" {
+            sink = sink + len((*a).name) - len("newname-{i}-padpadpadpadpadpadpadpadpadpadpadpadpadpadpadpadpad") + 1
+        }
+        if mode == "tags" or mode == "both" {
+            sink = sink + len((*a).tags[0]) - len("u-{i}-padpadpadpadpadpadpadpadpadpadpadpadpadpadpadpadpadpad") + 1
+        }
+        i = i + 1
+    }
+    if mode == "both" { sink = sink / 2 }
+    println("{sink}")
+}

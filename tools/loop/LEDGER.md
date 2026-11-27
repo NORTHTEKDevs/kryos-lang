@@ -11260,3 +11260,34 @@ RESIDUAL (executed, NOT covered)
   a build with the use-after-free; the program's true sums are 2463990 at n=2200 and 38899290 at n=8800, which this tree prints) and
   work/n139_a_50 (the file has `;` between statements, a hard parse error on every compiler: "Kryos does not use semicolons"). The
   oracle files may not be edited from this lane; they need an excluded.txt line or a regenerated fixture.
+
+## mem_attacks: `(*h).f = v` through a `shared T` handle (c06) -- CLOSED for the stored-write shape; n03 is a defective fixture
+
+mem:attacks was 237 PASS / 2 FAIL on the tree before this change (c06_deref_field_write_then_old_copy, n/n03).
+
+c06 ROOT CAUSE (read in lower.rs, MIR dumped with --emit-mir): the assignment target `(*a).name = v` reaches
+`lower_nested_field_assign`'s catch-all arm, which lowers the object `*a` as a COPY (`_2 = *_1`, a whole-payload
+`kryos_struct_share`) and emits `store_field(_2.name = v)` on the copy. Cranelift's deref yields the payload's own box so the
+store aliased through; LLVM's deref is an inline aggregate load, so the store went into the copy and the arc kept the old field
+(AOT: `ATTACK FAIL: new name-0-padpadpad`). Master cannot even build the shape on AOT (clang: use of undefined value). Second
+defect behind it: the old-field release read (`old_field`) lowered the same `*a` object and so took a whole-payload share that
+nothing drops, leaking every leaf of the payload per store once the write was fixed (measured 8 -> 30 MB name, 13 -> 48 MB tags
+at 50k -> 200k iterations).
+FIX (one rule, MIR only, no backend or shape special case): a field store whose object is `*h` of a `shared Struct` is the
+read-modify-writeback the nested-field arm already uses, with the handle's payload as the parent: load a mutable copy of the
+payload WITHOUT a share, store the field, `StoreDeref` the copy back through the handle. The old-field read goes through the
+auto-deref field path `(*h).f` (the same path a field READ takes) instead of the owned whole-payload copy.
+EVIDENCE (executed): c06 JIT and AOT print `OK c06 303760`; tests/conformance/conf_shared_field_store.kry PASS on both backends
+(master: JIT `CONFORMANCE FAIL: old copy keeps old str newname-0-padpadpad`, AOT build fails); tests/mem_shared_field_store_gate.sh
+(name tags both copy control, 1M iters, JIT + AOT) PASS at 4MB per leg, master binary: AOT build FAILED. conformance 124/124,
+mem_balance / mem_shared_rule / mem_field_assign_temp / mem_struct_field_read / mem_element_read / backend_divergence_pins PASS.
+Regression scan run.sh '^(mem:attacks.*|mem:closure.*|A19|A16|A14|137*|138|139|137-perf)$': 398 PASS / 4 FAIL, the 4 being
+n03, n139_a_50, v137_uaf, A14 glob_struct_reassign -- all four failed identically before this change (see the entries above).
+RESIDUAL (executed, NOT closed): the plain `h.f = v` (no explicit `*`) through a shared handle is rejected/miscompiled on both
+backends (JIT: "StoreField on unknown struct type", AOT: invalid IR) and is not touched here; a statement line starting with `(`
+continues the previous expression (CLAUDE.md hard rule 1), which is why the probes wrap the store in `if`.
+n03 (mem-shared-ownership-e7f16887/n/n03) is a DEFECTIVE FIXTURE, not a compiler bug: `mkc2` returns `|| (*t).v` (= i+1) but
+`run` asserts `g() == len("node-" + to_string(i + 1) + "-padpadpad")` (= 16 for i=0), so it prints `ATTACK FAIL: g 1` on a correct
+compiler. With the assertion corrected to `g() == i + 1` the same program prints `OK n03 595850` on JIT and AOT (master does not
+compile it at all: codegen internal error). The oracle files may not be edited from this lane; it needs an excluded.txt line
+(same class as c04_assign_copy_then_mutate, already excluded) or a regenerated fixture.
