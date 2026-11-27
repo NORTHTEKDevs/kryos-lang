@@ -1,0 +1,8 @@
+fn f() -> (i64, i64) { let a: i32 = 1  let b: i32 = 2  return (a, b) }
+fn g() -> [(i64, i64)] { let a: i32 = 3  let b: i32 = 4  return [(a, b)] }
+fn main() {
+    let t = f()
+    println("{t.0} {t.1}")
+    let u = g()
+    println("{u[0].0} {u[0].1}")
+}

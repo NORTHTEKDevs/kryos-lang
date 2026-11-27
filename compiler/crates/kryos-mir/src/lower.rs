@@ -2570,6 +2570,7 @@ pub fn lower_module_with_lambda_params(
     // (`shared` handles: `kryos_mir::shared_own::own_shared_refs_module`, run by
     // the driver on the finished module.)
     widen_unsigned_map_keys(&mut functions);
+    coerce_int_tuple_widths(&mut functions, &ctx.struct_defs, &ctx.enum_defs);
 
     MirModule {
         functions,
@@ -2633,6 +2634,480 @@ fn widen_unsigned_map_keys(functions: &mut [MirFunction]) {
             f.blocks[bi].instructions = out;
         }
     }
+}
+
+/// Bit width of a fixed-size integer MIR type (`None` for anything else,
+/// including the 128-bit types, which no backend slot carries inline).
+fn int_bits(t: &MirType) -> Option<u8> {
+    match t {
+        MirType::I8 | MirType::U8 => Some(8),
+        MirType::I16 | MirType::U16 => Some(16),
+        MirType::I32 | MirType::U32 => Some(32),
+        MirType::I64 | MirType::U64 => Some(64),
+        _ => None,
+    }
+}
+
+/// Two tuple types of one shape whose layouts differ only in integer widths
+/// (`(i32, i32)` vs `(i64, i64)`, nested tuples included). The type checker
+/// unifies integer widths element by element, but the backends give such
+/// tuples different layouts (an inline `{ i32, i32 }` vs `{ i64, i64 }` on
+/// LLVM), so a value moved from one into the other without a conversion read
+/// garbage or a zero aggregate (finish-line A5).
+fn tuple_widths_differ(from: &MirType, to: &MirType) -> bool {
+    let (MirType::Tuple(a), MirType::Tuple(b)) = (from, to) else { return false };
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut differs = false;
+    for (x, y) in a.iter().zip(b) {
+        if x == y {
+            continue;
+        }
+        match (int_bits(x), int_bits(y)) {
+            (Some(p), Some(q)) => differs |= p != q,
+            (None, None) => {
+                if !matches!((x, y), (MirType::Tuple(_), MirType::Tuple(_))) {
+                    return false;
+                }
+                if tuple_widths_differ(x, y) {
+                    differs = true;
+                } else if !tuple_shape_equal(x, y) {
+                    return false;
+                }
+            }
+            _ => return false,
+        }
+    }
+    differs
+}
+
+/// Same tuple shape up to integer signedness (same widths everywhere).
+fn tuple_shape_equal(a: &MirType, b: &MirType) -> bool {
+    match (a, b) {
+        (MirType::Tuple(x), MirType::Tuple(y)) => {
+            x.len() == y.len() && x.iter().zip(y).all(|(p, q)| tuple_shape_equal(p, q))
+        }
+        _ => match (int_bits(a), int_bits(b)) {
+            (Some(p), Some(q)) => p == q,
+            _ => a == b,
+        },
+    }
+}
+
+fn local_ty_of(locals: &[MirLocal], id: LocalId) -> Option<MirType> {
+    match locals.get(id.0 as usize) {
+        Some(l) if l.id == id => Some(l.ty.clone()),
+        _ => locals.iter().find(|l| l.id == id).map(|l| l.ty.clone()),
+    }
+}
+
+/// Two array types whose element tuples differ only in integer widths.
+fn array_elem_widths_differ(from: &MirType, to: &MirType) -> bool {
+    match (from, to) {
+        (MirType::Array(a, _), MirType::Array(b, _)) => tuple_widths_differ(a, b),
+        _ => false,
+    }
+}
+
+/// `op` as a value of type `want`: itself, or a fresh Cast temp. An array
+/// local whose ONLY definition is an array literal (`return [(a, b)]` with
+/// `a, b: i32` into `-> [(i64, i64)]`) is retyped to the slot's element type
+/// instead: its elements are cast at the literal (`retypable`).
+fn fit_int_tuple(
+    locals: &mut Vec<MirLocal>,
+    out: &mut Vec<Instruction>,
+    op: Operand,
+    want: &MirType,
+    retypable: &HashSet<u32>,
+) -> Operand {
+    let Operand::Local(id) = &op else { return op };
+    let Some(have) = local_ty_of(locals, *id) else { return op };
+    if array_elem_widths_differ(&have, want) {
+        if retypable.contains(&id.0) {
+            if let (Some(l), MirType::Array(e, _), MirType::Array(_, n)) =
+                (locals.get_mut(id.0 as usize), want, &have)
+            {
+                if l.id == *id {
+                    l.ty = MirType::Array(e.clone(), *n);
+                }
+            }
+        }
+        return op;
+    }
+    if !tuple_widths_differ(&have, want) {
+        return op;
+    }
+    let tmp = LocalId(locals.len() as u32);
+    locals.push(MirLocal { id: tmp, name: None, ty: want.clone(), mutable: false });
+    out.push(Instruction::Assign { dest: tmp, value: RValue::Cast { operand: op, ty: want.clone() } });
+    Operand::Local(tmp)
+}
+
+/// `fn __kryos_widen_tuples_N(src: [(T1)]) -> [(T2)]`: a fresh array holding
+/// every element of `src` converted to the tuple type `T2` (integer widths
+/// only). Built as ordinary MIR so both backends compile it like a user
+/// function; the caller keeps `src` and drops it itself.
+fn build_widen_tuples_fn(name: String, src_ty: &MirType, dst_ty: &MirType) -> MirFunction {
+    let (MirType::Array(se, _), MirType::Array(de, _)) = (src_ty, dst_ty) else {
+        unreachable!("widen helper over non-arrays")
+    };
+    let local = |id: u32, ty: MirType, mutable: bool| MirLocal { id: LocalId(id), name: None, ty, mutable };
+    let l = |id: u32| Operand::Local(LocalId(id));
+    let assign = |d: u32, v: RValue| Instruction::Assign { dest: LocalId(d), value: v };
+    let locals = vec![
+        local(0, src_ty.clone(), false),
+        local(1, dst_ty.clone(), true),
+        local(2, MirType::I64, true),
+        local(3, MirType::I64, false),
+        local(4, MirType::Bool, false),
+        local(5, (**se).clone(), false),
+        local(6, (**de).clone(), false),
+        local(7, MirType::I64, false),
+        local(8, MirType::Void, false),
+    ];
+    let bb = |id: u32, instructions: Vec<Instruction>, terminator: Terminator| BasicBlock {
+        id: BlockId(id),
+        instructions,
+        terminator,
+    };
+    let blocks = vec![
+        bb(
+            0,
+            vec![assign(1, RValue::Array(Vec::new())), assign(2, RValue::ConstInt(0))],
+            Terminator::Goto(BlockId(1)),
+        ),
+        bb(
+            1,
+            vec![
+                assign(3, RValue::Call { func: "len".to_string(), args: vec![l(0)] }),
+                assign(4, RValue::BinOp { op: MirBinOp::Lt, left: l(2), right: l(3) }),
+            ],
+            Terminator::Branch { cond: l(4), then_block: BlockId(2), else_block: BlockId(3) },
+        ),
+        bb(
+            2,
+            vec![
+                assign(5, RValue::Index { object: l(0), index: l(2) }),
+                assign(6, RValue::Cast { operand: l(5), ty: (**de).clone() }),
+                assign(7, RValue::Call { func: STRUCT_SHARE_FN.to_string(), args: vec![l(6)] }),
+                assign(8, RValue::Call { func: "push".to_string(), args: vec![l(1), l(6)] }),
+                assign(
+                    2,
+                    RValue::BinOp { op: MirBinOp::Add, left: l(2), right: Operand::Constant(Constant::Int(1)) },
+                ),
+            ],
+            Terminator::Goto(BlockId(1)),
+        ),
+        bb(3, Vec::new(), Terminator::Return(Some(l(1)))),
+    ];
+    MirFunction {
+        name,
+        params: vec![MirParam { local: LocalId(0), ty: src_ty.clone() }],
+        ret_ty: dst_ty.clone(),
+        blocks,
+        locals,
+        attributes: MirAttributes::default(),
+        source_file: None,
+        source_line: 0,
+    }
+}
+
+/// Locals whose only definition is an array literal: nothing else writes
+/// them (no second assignment, receive, address-of, parameter), so their
+/// element type may follow the slot they flow into.
+fn array_literal_only_locals(f: &MirFunction) -> HashSet<u32> {
+    let mut defs: HashMap<u32, (u32, bool)> = HashMap::new();
+    let mut addr_taken: HashSet<u32> = HashSet::new();
+    for b in &f.blocks {
+        for inst in &b.instructions {
+            match inst {
+                Instruction::Assign { dest, value } => {
+                    let e = defs.entry(dest.0).or_insert((0, true));
+                    e.0 += 1;
+                    e.1 &= matches!(value, RValue::Array(_));
+                    if let RValue::AddrOf { local, .. } = value {
+                        addr_taken.insert(local.0);
+                    }
+                }
+                Instruction::Receive { dest, .. }
+                | Instruction::ActorSpawn { dest, .. }
+                | Instruction::ActorStateLoad { dest, .. } => {
+                    let e = defs.entry(dest.0).or_insert((0, true));
+                    e.0 += 1;
+                    e.1 = false;
+                }
+                _ => {}
+            }
+        }
+    }
+    let params: HashSet<u32> = f.params.iter().map(|p| p.local.0).collect();
+    defs.into_iter()
+        .filter(|(id, (n, lit))| *n == 1 && *lit && !addr_taken.contains(id) && !params.contains(id))
+        .map(|(id, _)| id)
+        .collect()
+}
+
+/// Make every move of an integer tuple into a slot of a different integer
+/// width explicit. For each place a tuple value flows into a typed slot (a
+/// local, call argument, return value, struct field, enum payload, array /
+/// map element, tuple element) whose MIR type is the same tuple at other
+/// integer widths, the value goes through an `RValue::Cast` to the slot's
+/// type first. The Cast moves the same value (no new allocation, no change of
+/// who drops it); the LLVM backend converts it element by element with the
+/// source element's signedness, the JIT's tuple slots are already 64-bit.
+fn coerce_int_tuple_widths(
+    functions: &mut Vec<MirFunction>,
+    struct_defs: &HashMap<String, Vec<(String, MirType)>>,
+    enum_defs: &HashMap<String, Vec<EnumVariantDef>>,
+) {
+    let sigs: HashMap<String, (Vec<MirType>, MirType)> = functions
+        .iter()
+        .map(|f| (f.name.clone(), (f.params.iter().map(|p| p.ty.clone()).collect(), f.ret_ty.clone())))
+        .collect();
+    let mut widen_fns: Vec<MirFunction> = Vec::new();
+    let mut widen_names: HashMap<(MirType, MirType), String> = HashMap::new();
+
+    for f in functions.iter_mut() {
+        let ret_ty = f.ret_ty.clone();
+        let retypable = array_literal_only_locals(f);
+        let before: Vec<MirType> = f.locals.iter().map(|l| l.ty.clone()).collect();
+        for round in 0..2 {
+        if round == 1 {
+            // A retyped array local changes what its pushes and stores must
+            // be cast to: one more pass, only when something was retyped.
+            let changed = before.iter().zip(&f.locals).any(|(t, l)| *t != l.ty);
+            if !changed {
+                break;
+            }
+        }
+        for bi in 0..f.blocks.len() {
+            let old = std::mem::take(&mut f.blocks[bi].instructions);
+            let mut out: Vec<Instruction> = Vec::with_capacity(old.len());
+            for mut inst in old {
+                match &mut inst {
+                    Instruction::Assign { dest, value } => {
+                        let dest_ty = local_ty_of(&f.locals, *dest);
+                        // 1. Operands against the slot they flow into.
+                        match value {
+                            RValue::Call { func, args } => {
+                                if let Some((params, _)) = sigs.get(func.as_str()) {
+                                    for (a, p) in args.iter_mut().zip(params) {
+                                        *a = fit_int_tuple(&mut f.locals, &mut out, a.clone(), p, &retypable);
+                                    }
+                                } else {
+                                    let at = match func.as_str() {
+                                        "push" | "kryos_array_push" if args.len() == 2 => Some(1),
+                                        "kryos_array_set" | "kryos_map_insert" | "kryos_map_insert_str"
+                                            if args.len() == 3 =>
+                                        {
+                                            Some(2)
+                                        }
+                                        _ => None,
+                                    };
+                                    if let Some(at) = at {
+                                        let want = match &args[0] {
+                                            Operand::Local(id) => match local_ty_of(&f.locals, *id) {
+                                                Some(MirType::Array(e, _)) => Some(*e),
+                                                Some(MirType::Map { value, .. }) => Some(*value),
+                                                _ => None,
+                                            },
+                                            _ => None,
+                                        };
+                                        if let Some(want) = want {
+                                            args[at] = fit_int_tuple(&mut f.locals, &mut out, args[at].clone(), &want, &retypable);
+                                        }
+                                    }
+                                }
+                            }
+                            RValue::CallIndirect { callee, args } => {
+                                if let Operand::Local(c) = callee {
+                                    if let Some(MirType::Function { params, .. }) = local_ty_of(&f.locals, *c) {
+                                        for (a, p) in args.iter_mut().zip(&params) {
+                                            *a = fit_int_tuple(&mut f.locals, &mut out, a.clone(), p, &retypable);
+                                        }
+                                    }
+                                }
+                            }
+                            RValue::Struct { name, fields } => {
+                                if let Some(defs) = struct_defs.get(name.as_str()) {
+                                    for (fname, a) in fields.iter_mut() {
+                                        if let Some((_, want)) = defs.iter().find(|(n, _)| n == fname) {
+                                            *a = fit_int_tuple(&mut f.locals, &mut out, a.clone(), want, &retypable);
+                                        }
+                                    }
+                                }
+                            }
+                            RValue::EnumVariant { enum_name, variant_idx, fields } => {
+                                let variant = enum_defs
+                                    .get(enum_name.as_str())
+                                    .and_then(|vs| vs.get(*variant_idx as usize));
+                                if let Some(v) = variant {
+                                    for (a, want) in fields.iter_mut().zip(&v.fields) {
+                                        *a = fit_int_tuple(&mut f.locals, &mut out, a.clone(), want, &retypable);
+                                    }
+                                }
+                            }
+                            RValue::Tuple(elems) => {
+                                if let Some(MirType::Tuple(es)) = &dest_ty {
+                                    for (a, want) in elems.iter_mut().zip(es) {
+                                        *a = fit_int_tuple(&mut f.locals, &mut out, a.clone(), want, &retypable);
+                                    }
+                                }
+                            }
+                            RValue::Array(elems) => {
+                                if let Some(MirType::Array(e, _)) = &dest_ty {
+                                    for a in elems.iter_mut() {
+                                        *a = fit_int_tuple(&mut f.locals, &mut out, a.clone(), e, &retypable);
+                                    }
+                                }
+                            }
+                            RValue::Map(pairs) => {
+                                if let Some(MirType::Map { key, value: vt }) = &dest_ty {
+                                    for (k, v) in pairs.iter_mut() {
+                                        *k = fit_int_tuple(&mut f.locals, &mut out, k.clone(), key, &retypable);
+                                        *v = fit_int_tuple(&mut f.locals, &mut out, v.clone(), vt, &retypable);
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                        // 2. The produced value against the destination local.
+                        let Some(dest_ty) = dest_ty else {
+                            out.push(inst);
+                            continue;
+                        };
+                        let src_ty = match &*value {
+                            RValue::Use(Operand::Local(id)) => local_ty_of(&f.locals, *id),
+                            RValue::Call { func, .. } => sigs.get(func.as_str()).map(|s| s.1.clone()),
+                            RValue::CallIndirect { callee: Operand::Local(c), .. } => {
+                                match local_ty_of(&f.locals, *c) {
+                                    Some(MirType::Function { ret, .. }) => Some(*ret),
+                                    _ => None,
+                                }
+                            }
+                            RValue::Field { object: Operand::Local(o), field } => {
+                                match local_ty_of(&f.locals, *o) {
+                                    Some(MirType::Struct(n)) => struct_defs.get(&n).and_then(|d| {
+                                        d.iter().find(|(fnm, _)| fnm == field).map(|(_, t)| t.clone())
+                                    }),
+                                    Some(MirType::Tuple(es)) => {
+                                        field.parse::<usize>().ok().and_then(|i| es.get(i).cloned())
+                                    }
+                                    _ => None,
+                                }
+                            }
+                            RValue::Index { object: Operand::Local(o), .. } => {
+                                match local_ty_of(&f.locals, *o) {
+                                    Some(MirType::Array(e, _)) => Some(*e),
+                                    _ => None,
+                                }
+                            }
+                            _ => None,
+                        };
+                        if let (RValue::Use(Operand::Local(id)), Some(src)) = (&*value, &src_ty) {
+                            if array_elem_widths_differ(src, &dest_ty) && retypable.contains(&id.0) {
+                                let id = *id;
+                                fit_int_tuple(&mut f.locals, &mut out, Operand::Local(id), &dest_ty, &retypable);
+                            }
+                        }
+                        if let (RValue::Call { func, .. }, Some(src)) = (&*value, &src_ty) {
+                            if sigs.contains_key(func.as_str()) && array_elem_widths_differ(src, &dest_ty) {
+                                // A call returned `[(i32, i32)]` into a
+                                // `[(i64, i64)]` slot: copy it through a
+                                // converting helper and drop the returned temp.
+                                let key = (src.clone(), dest_ty.clone());
+                                let next = widen_names.len();
+                                let hname = widen_names
+                                    .entry(key.clone())
+                                    .or_insert_with(|| format!("__kryos_widen_tuples_{next}"))
+                                    .clone();
+                                if !widen_fns.iter().any(|w| w.name == hname) {
+                                    widen_fns.push(build_widen_tuples_fn(hname.clone(), &key.0, &key.1));
+                                }
+                                let tmp = LocalId(f.locals.len() as u32);
+                                f.locals.push(MirLocal { id: tmp, name: None, ty: src.clone(), mutable: false });
+                                let dest = *dest;
+                                let produced = std::mem::replace(value, RValue::Use(Operand::Local(tmp)));
+                                out.push(Instruction::Assign { dest: tmp, value: produced });
+                                out.push(Instruction::Assign {
+                                    dest,
+                                    value: RValue::Call { func: hname, args: vec![Operand::Local(tmp)] },
+                                });
+                                out.push(Instruction::Drop { local: tmp });
+                                continue;
+                            }
+                        }
+                        match src_ty {
+                            Some(src) if tuple_widths_differ(&src, &dest_ty) => {
+                                if let RValue::Use(op) = value {
+                                    let op = op.clone();
+                                    *value = RValue::Cast { operand: op, ty: dest_ty };
+                                    out.push(inst);
+                                } else {
+                                    let tmp = LocalId(f.locals.len() as u32);
+                                    f.locals.push(MirLocal { id: tmp, name: None, ty: src, mutable: false });
+                                    let dest = *dest;
+                                    let produced =
+                                        std::mem::replace(value, RValue::Use(Operand::Local(tmp)));
+                                    out.push(Instruction::Assign { dest: tmp, value: produced });
+                                    out.push(Instruction::Assign {
+                                        dest,
+                                        value: RValue::Cast { operand: Operand::Local(tmp), ty: dest_ty },
+                                    });
+                                }
+                            }
+                            _ => out.push(inst),
+                        }
+                    }
+                    Instruction::StoreField { object, field, value } => {
+                        if let Operand::Local(o) = object {
+                            if let Some(MirType::Struct(n)) = local_ty_of(&f.locals, *o) {
+                                let want = struct_defs
+                                    .get(&n)
+                                    .and_then(|d| d.iter().find(|(fnm, _)| fnm == field));
+                                if let Some((_, want)) = want {
+                                    *value = fit_int_tuple(&mut f.locals, &mut out, value.clone(), want, &retypable);
+                                }
+                            }
+                        }
+                        out.push(inst);
+                    }
+                    _ => out.push(inst),
+                }
+            }
+            if let Terminator::Return(Some(op)) = &f.blocks[bi].terminator {
+                let op = op.clone();
+                let fitted = fit_int_tuple(&mut f.locals, &mut out, op, &ret_ty, &retypable);
+                f.blocks[bi].terminator = Terminator::Return(Some(fitted));
+            }
+            f.blocks[bi].instructions = out;
+        }
+        // An array local retyped above has literal elements still at the old
+        // widths (the literal may sit before or after the use that retyped
+        // it): cast them now.
+        if !retypable.is_empty() {
+            for bi in 0..f.blocks.len() {
+                let old = std::mem::take(&mut f.blocks[bi].instructions);
+                let mut out: Vec<Instruction> = Vec::with_capacity(old.len());
+                for mut inst in old {
+                    if let Instruction::Assign { dest, value: RValue::Array(elems) } = &mut inst {
+                        if retypable.contains(&dest.0) {
+                            if let Some(MirType::Array(e, _)) = local_ty_of(&f.locals, *dest) {
+                                for a in elems.iter_mut() {
+                                    *a = fit_int_tuple(&mut f.locals, &mut out, a.clone(), &e, &retypable);
+                                }
+                            }
+                        }
+                    }
+                    out.push(inst);
+                }
+                f.blocks[bi].instructions = out;
+            }
+        }
+        } // round
+    }
+    functions.extend(widen_fns);
 }
 
 /// A closure passed to a user function is borrowed by it and dropped by the

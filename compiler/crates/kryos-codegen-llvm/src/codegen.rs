@@ -10269,7 +10269,10 @@ impl LlvmCodegen {
             let elem_ty = elem_tys[i].clone();
             let slot_ty = slot_tys.get(i).cloned().unwrap_or_else(|| elem_ty.clone());
             let elem_val = if slot_ty != elem_ty {
-                self.coerce_value(&elem_val, &elem_ty, &slot_ty)
+                // An unsigned narrow element ZERO-extends into a wider slot
+                // (u8 200 stays 200 in an `(i64, i64)` slot, not -56).
+                let unsigned = Self::operand_is_unsigned(elem, func);
+                self.coerce_value_ext(&elem_val, &elem_ty, &slot_ty, unsigned)
             } else {
                 elem_val
             };
@@ -10535,6 +10538,46 @@ impl LlvmCodegen {
     // Cast
     // -----------------------------------------------------------------------
 
+    /// Convert an inline tuple aggregate `val` (LLVM type `from_llvm`, MIR type
+    /// `from`) to the same-shape tuple `to` whose integer elements have other
+    /// widths. `None` when the shapes do not line up (the caller falls back).
+    fn coerce_tuple_elems(
+        &mut self,
+        val: &str,
+        from_llvm: &str,
+        to_llvm: &str,
+        from: &MirType,
+        to: &MirType,
+    ) -> Option<String> {
+        let (MirType::Tuple(fe), MirType::Tuple(te)) = (from, to) else { return None };
+        let ff = split_aggregate_fields(from_llvm);
+        let tf = split_aggregate_fields(to_llvm);
+        if fe.len() != te.len() || ff.len() != fe.len() || tf.len() != te.len() {
+            return None;
+        }
+        let mut acc = "undef".to_string();
+        for i in 0..fe.len() {
+            let e = self.next_temp();
+            self.emit_line(&format!("  {e} = extractvalue {from_llvm} {val}, {i}"));
+            let c = if ff[i] == tf[i] {
+                e
+            } else if matches!((&fe[i], &te[i]), (MirType::Tuple(_), MirType::Tuple(_))) {
+                self.coerce_tuple_elems(&e, &ff[i], &tf[i], &fe[i], &te[i])?
+            } else {
+                let unsigned =
+                    matches!(fe[i], MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64);
+                self.coerce_value_ext(&e, &ff[i], &tf[i], unsigned)
+            };
+            let n = self.next_temp();
+            self.emit_line(&format!(
+                "  {n} = insertvalue {to_llvm} {acc}, {} {c}, {i}",
+                tf[i]
+            ));
+            acc = n;
+        }
+        Some(acc)
+    }
+
     fn emit_cast(
         &mut self,
         dest: LocalId,
@@ -10551,6 +10594,29 @@ impl LlvmCodegen {
         // produced  `bitcast i64 X to %Expr`  which LLVM rejects because
         // `%Expr` is forward-declared opaque at the bitcast site.
         let dst_ty = self.sig_ty_to_llvm(target_ty);
+
+        // A tuple moved into a tuple slot of the same shape at other integer
+        // widths (`(i32, i32)` into `(i64, i64)`; MIR makes the move explicit
+        // with this Cast, see `coerce_int_tuple_widths`): convert element by
+        // element, extending by the SOURCE element's signedness.
+        if let (Operand::Local(id), MirType::Tuple(_)) = (operand, target_ty) {
+            let src_mir = func.locals.iter().find(|l| l.id == *id).map(|l| l.ty.clone());
+            if let Some(src_mir @ MirType::Tuple(_)) = src_mir {
+                if src_ty != dst_ty && src_ty.starts_with('{') && dst_ty.starts_with('{') {
+                    if let Some(res) =
+                        self.coerce_tuple_elems(&src_val, &src_ty, &dst_ty, &src_mir, target_ty)
+                    {
+                        if is_mutable {
+                            self.emit_line(&format!("  store {dst_ty} {res}, ptr %_{}.addr", dest.0));
+                        } else {
+                            let name = format!("%_{}", dest.0);
+                            self.emit_identity_copy(&name, &dst_ty, &res);
+                        }
+                        return Ok(());
+                    }
+                }
+            }
+        }
 
         if src_ty == dst_ty {
             if is_mutable {

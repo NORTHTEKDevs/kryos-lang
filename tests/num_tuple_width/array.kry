@@ -1,0 +1,41 @@
+struct H { items: [(i64, i64)] }
+struct M { a: i32 }
+impl M { fn t(self) -> (i32, i32) { return (self.a, self.a + 1) } }
+fn arrf() -> [(i32, i32)] { return [(1, 2), (3, 4)] }
+fn id<T>(x: T) -> T { return x }
+fn sum(xs: [(i64, i64)]) -> i64 {
+    let mut s = 0
+    for x in xs { s = s + x.0 * 10 + x.1 }
+    return s
+}
+fn build() -> [(i64, i64)] {
+    let a: i32 = 7
+    let b: i32 = 8
+    let mut xs = [(a, b)]
+    push(xs, (b, a))
+    return xs
+}
+fn main() {
+    let a: i32 = 5
+    let b: i32 = 6
+    println("{sum([(a, b)])}")
+    let l = [(a, b), (b, a)]
+    println("{sum(l)}")
+    let r: [(i64, i64)] = arrf()
+    println("{r[0].0} {r[1].1}")
+    let bb = build()
+    println("{bb[0].0} {bb[1].0}")
+    let h = H { items: [(a, b)] }
+    println("{h.items[0].1}")
+    let m = M { a: 40 }
+    let w: (i64, i64) = m.t()
+    println("{w.0} {w.1}")
+    let g: (i64, i64) = id(m.t())
+    println("{g.0} {g.1}")
+    let lam = |x: i32| -> (i64, i64) { let y: i32 = x + 1  return (x, y) }
+    let z = lam(9)
+    println("{z.0} {z.1}")
+    let big: (i64, i64) = (5000000000, 6)
+    let nar: (i32, i32) = big
+    println("{nar.0} {nar.1}")
+}
