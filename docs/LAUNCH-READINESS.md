@@ -395,9 +395,8 @@ corrupted" case cannot pass.
 **Items 3, 6, 40c, 41 -- re-confirmed unchanged this session, no new
 findings:**
 
-- **Item 3 (struct-argument leak, ~86MB/1M calls):** still open, still a
-  performance issue not a correctness/security blocker, still 8 ruled-out
-  fix attempts. No change.
+- **Item 3 (struct-argument leak):** CLOSED later (see the top-of-file
+  note); this line is a dated snapshot of an earlier session.
 - **Item 6 (`any` type erasure):** still open, still an ABI-change-required
   design note. The container-shaped variant is still a clean compile-time
   rejection (items 40/40b); the direct-slot `str` case still silently
@@ -595,7 +594,7 @@ externally validated.**
 
 1. **Item 41 - precision cost.** See Section 3(c). Deliberate, quantified, not a bug. Re-evaluated
    2026-08-15 and kept as-is after the narrowing experiment reopened 2 real escapes.
-2. **Item 3 - struct-argument leak, ~86MB per 1M calls.** A struct with heap-bearing fields crossing a
+2. **Item 3 (historical; now CLOSED) - struct-argument leak, was ~86MB per 1M calls.** A struct with heap-bearing fields crossing a
    call boundary leaks; not method-specific (a free function leaks identically). DESIGN NOTE, NOT
    FIXED - 8 distinct fix attempts have been ruled out this repo's history. Performance issue, not a
    correctness or security blocker. Workaround: keep heap data out of structs crossing call
@@ -610,8 +609,8 @@ externally validated.**
 Other documented, non-blocking limitations (STABILITY.md Section 5/6, verified still accurate this session,
 no changes needed): turbofish struct construction unsupported; `panic` not catchable by `try`/`catch`
 (`throw` is, by design); program nesting capped at 256/2048 (deliberate anti-DoS bound, not a
-usability limit any legitimate program approaches); AOT needs a host C toolchain; `kryos fmt` drops
-non-doc comments; the `wasm32` backend is a documented compute-focused subset, not full parity.
+usability limit any legitimate program approaches); AOT needs a host C toolchain; `kryos fmt` skips a file
+rather than drop a comment it cannot re-anchor; the `wasm32` backend is a documented compute-focused subset, not full parity.
 
 Explicitly deferred past 1.0 (HANDOFF.md, still accurate): catchable runtime panics (needs an
 unwinding-strategy design decision); `i128`/`u128` (nonfunctional, and using them is now a clean

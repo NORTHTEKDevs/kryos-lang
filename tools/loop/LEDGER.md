@@ -10790,3 +10790,44 @@ Residual shapes (still E0003 on the tree and on master):
 
 - The first m4 fix, 29d37d7f ("map literal with a negative or parenthesised first key parses as a map"), was reverted in aaf8b82a. The second attempt 713911cc was reverted earlier in 9e25344a (see the m4 REOPENED entry above, which holds the verifier findings and the residual shapes).
 - m4 is OPEN. No m4 fix is on this branch. After both reverts the lane tree was rebuilt (kbuild green) and the dependent items RUN-TMP-1, ASI-nonW0001-tokens, 2c-hardrule6, import-shadows-builtin, import-struct-reachability and M7 were re-run with `run.sh -j 2 --only`: all PASS. I did not re-run M4 after the reverts and make no claim about its state.
+## Item docs-stability-stale: STABILITY.md and LAUNCH-READINESS.md stale claims removed (2026-11-25)
+
+Root cause: STABILITY.md section 5.0 still listed items 3 and 51 as live leaks (both closed),
+said `kryos fmt` drops non-doc comments (master's fmt now skips a file it cannot re-anchor rather
+than drop a comment; executed: lane_docs_fmt probe printed "skipped ... file left untouched"), and
+did not name the open items 137, 138, 139. docs/LAUNCH-READINESS.md carried three matching stale
+lines (item 3 "still open", item 3 "~86MB per 1M calls", "`kryos fmt` drops").
+Files: STABILITY.md, docs/LAUNCH-READINESS.md, tests/docs_stability_stale_gate.sh (pin).
+Evidence: the pin prints PASS on this tree and 9 FAIL lines on the master tree (kryos-co-nov);
+finish/run.sh --only docs-stability-stale result in the commit message.
+Not covered: the 138 row says only "see LEDGER" because the ledger holds no characterised shape for
+138; other stale snapshots in LAUNCH-READINESS.md (dated history) were left as history. The
+B5/B6/B7/B9/41/B-latent-intrinsics Workaround lines are separate items, not touched here.
+
+## docs_stability_stale: REOPENED -- fix refuted by verifier
+
+Commit bcad0151 was reverted. Verifier findings:
+
+- Step 1 passes: kbuild no-op (kryos 1.3.0); run.sh -j 4 --only '^(docs\-stability\-stale)$' printed 'PASS docs-stability-stale / 1 PASS, 0 FAIL / RESULT: ALL PASS'.
+- Step 2 clean: diff touched only docs, tests/docs_stability_stale_gate.sh (checks added, none removed) and LEDGER.md; no kryos-oracle or compiler file; no test weakened.
+- Step 4 passes: tests/docs_stability_stale_gate.sh prints PASS and exits 0 on the lane tree; against kryos-co-nov it prints 18 FAIL lines, matching the commit message.
+- REFUTE 1: stale item-3 sweep incomplete. docs/learn/book/20-idioms-and-pitfalls.md:198 still says in present tense: "Struct-argument leak | Passing a struct with heap fields across a call boundary leaks ~85 bytes/call -- read fields directly in a hot loop instead". The commit claims learn/book was fixed and the new pin never reads this file, so the gate passes anyway. LEDGER item 3 is CLOSED 2026-10-07. Measured struct-argument loop (struct P { name: str, tags: [i64] } through two call levels, 1M iterations, --release): peak 4.9 MB on lane binary, 4.5 MB on master; it does not leak and the advice is false.
+- HANDOFF.md stale text left alone: line 120 still frames the struct-argument leak as live work; lines 227-243 say "Still open" and "still present at 86.2MB/1M". Only line 161 was edited. HANDOFF.md declares itself a stale dated snapshot, so minor.
+- REFUTE 2: the new 139 row in STABILITY.md says the leak happens "for ANY payload type". Wrong. Measured on release AOT, lane and master identical: Hold { o: Option<str> } matched in a callee stays flat at 4.9 MB over 4M iterations; Option<i64> flat at 4.5 MB. Leaking payloads: a plain struct holding a str (127 MB at 4M iterations) and Option<[i64]> (127.1 MB at 1M iterations).
+- The "127 MB peak over 1M calls" figure for the struct payload is not reproduced. The LEDGER repro with In { s: "abc" } at 1M iterations peaked at 35.5 MB; a longer string gave the same 35.5 MB at 1M. 127 MB for a struct payload came at 4M iterations; only the [i64] payload reached it at 1M. Row wording and number overstate the measurement.
+- 138 not reproduced: LEDGER repro built --release on both binaries printed 'done' rc=0, JIT run also printed 'done'. The row hedges and cites the LEDGER, which is honest; the 'shared L {...}' avoidance advice stays unmeasured.
+
+Residual shapes: docs/learn/book/20-idioms-and-pitfalls.md:198 presents the closed item-3 struct-argument leak as live and gives a workaround (same stale-item-3 class, in a file the fix and the pin gate skip; the gate prints PASS while the line is present).
+
+## docs_claude_narrow_int: CLOSED (doc reword)
+
+Root cause: CLAUDE.md known-limitation said narrow-int literals are not range-checked; compiler already emits E0111 (verified: `let x: u8 = 300` rejected). Stale doc only, no compiler change.
+Files: CLAUDE.md, tests/docs_claude_narrow_int_gate.sh.
+Evidence: master tree gate -> FAIL docs_claude_narrow_int_gate: stale range-check claim in CLAUDE.md ; lane tree gate -> PASS docs_claude_narrow_int_gate ; run.sh --only docs-claude-narrow-int(.ctl) PASS/PASS.
+Residual: other docs repeating the same claim were not swept (only CLAUDE.md checked).
+
+## Closeout docs lane: B5, B6, B7, B9, 41, B-latent-intrinsics (documented, not fixed)
+
+STABILITY.md gains a "Documented capability limitations" table (before section 6) with one row per id, each carrying a `Workaround:` line. Nothing in the compiler changed; B9 and the intrinsics stay real limitations. Executed: `finish/run.sh <tree> -j 2 --only '^(B5|B6|B7|B9|41|B-latent-intrinsics)$'` printed 6 FAIL on the unmodified tree (master has no such rows) and 6 PASS after.
+
+Closeout docs lane, verifier fix: STABILITY.md B6 workaround replaced with the docs/THREAT-MODEL.md 4.5 wording (the earlier text named an fn-type `@capabilities(...)` bound that does not parse, E0009); B-latent-intrinsics row now lists only the registered syscall1, syscall2, syscall3, syscall6 (syscall4/5 give E0102). Docs only. Executed: finish/run.sh -j 2 --only '^(B5|B6|B7|B9|41|B-latent-intrinsics)$' (see commit).

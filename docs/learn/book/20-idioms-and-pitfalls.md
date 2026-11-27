@@ -211,9 +211,11 @@ the index, not a replacement for reading the worked example there.
 A few more, real but narrower, exist even without a full worked example
 here:
 
-- **Narrow-int literals aren't range-checked at compile time.** An
-  out-of-range `u8`/`i8`/`u16`/etc. literal truncates silently rather than
-  erroring.
+- **Narrow-int literals are only partly range-checked at compile time.** An
+  out-of-range `u8`/`i8`/`u16`/etc. literal is `E0111` in a `let`
+  initializer, a typed assignment, or a function argument, but truncates
+  silently as a struct field, a `return` value, an array element, or a
+  binop operand (`a + 300` with `a: u8` gives 54).
 - **Shift amount `>=` the operand's bit width is hardware-dependent** (masks
   modulo width on some platforms, doesn't on others) -- keep shift amounts
   strictly less than the operand's width.
