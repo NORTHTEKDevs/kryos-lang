@@ -1,0 +1,15 @@
+// a privileged closure is stored into the second array of a struct's tuple; the block reads an array that was never put in it.
+@capabilities(fs:read)
+fn secret() -> fn() -> str { return || file_read("tests/security/secret_for_closure_launder.txt") }
+fn safe() -> str { return "safe" }
+struct S { t: ([fn() -> str], [fn() -> str]) }
+fn put(s: S, g: fn() -> str) { s.t.1[0] = g }
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let r = secret()
+    let a = [safe]
+    let b = [safe]
+    put(S { t: (a, [safe]) }, r)
+    deny!(fs:read) { for f in b { println("ok: " + f()) } }
+}

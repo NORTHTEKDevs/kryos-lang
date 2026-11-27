@@ -374,11 +374,29 @@ returned value, and the rows of a lambda's annotated parameters.
   own container on composes. A lambda's annotated container parameter has no
   per-call copy: its stores are written into the slot of each argument the
   parameter is bound to, at the moment it is bound.
+- **Container aliasing.** A container is one value however many names it has. When two container
+  types meet in `unify` (an argument against a parameter, a local array against a struct field or an
+  annotated `let`, a call's result against a local, the element type of an array of arrays) the
+  storage var of the destination gets an edge to the storage var of the source (`alias_src`), and a
+  closure VALUE stored into a storage var is stored into every var it reaches along those edges
+  (`store_row`, each (var, row) once). What was stored before an edge existed is carried by it when it
+  is added (`store_log`): a callee's stores are replayed when its reference is typed, which is
+  before the arguments of that call are unified. A closure read out of one container and stored
+  into another is a value flow and ties nothing. An edge never binds the signature var of a
+  declaration other than the one being checked (`is_foreign_sig_var`): what a body makes of its own
+  container parameter (a struct field it fills from it) is replayed at each reference as an edge to
+  that reference's copy of the var (`replay_store_effects`). A `type` alias is its expansion: every
+  use of it gets row vars of its own (`freshen_alias_rows`), so a parameter of an alias type is as
+  polymorphic as the type written out. The result of a call that returns its container parameter,
+  or the container a trait method returns through a bound, a default body or a `dyn`, names the
+  storage var of that parameter's copy (`storage_copy_vars`), so a store through the result is a
+  store into the argument. Cost: a struct field is one row var for the whole program, so a closure
+  stored through the field of one instance is seen through every container that was ever put in
+  that field.
 - Not covered:
   * The `deny!` verdict and the forward references: see 2.7. What 2.7 does not reach is a
-    store made by a lambda that another lambda returns, by a returned lambda that hands the
-    container to a named helper, or by a local lambda with unannotated parameters (the three
-    shapes at the end of THREAT-MODEL 4.1).
+    store made by a local lambda with unannotated parameters (the shape at the end of
+    THREAT-MODEL 4.1).
   * A store inside a lambda into a variable the lambda captured by move is a dead
     store at run time, but the slot is shared, so the program is rejected when the
     privileged closure reaches a `deny!` that reads the variable.
@@ -446,7 +464,9 @@ it) let a privileged closure reach the block in every one of those cases.
   dispatch owner that is referenced is no longer judged on `all` for the blocks that arrive at it
   through a reference; a block written directly in an impl method keeps that rule), and a bound or
   `self` call charges what the candidates charge and returns what they return. A `dyn` call outside
-  a default body keeps the `Unknown` charge and the erased return type.
+  a default body keeps the `Unknown` charge, and the closures it returns are erased; the storage row
+  of a container it returns is kept (`with_value_caps_erased_to_unknown`), tied to what the candidates
+  return.
 - A container inside a tuple / `Option` / `Result` / enum parameter is the caller's container, so a
   store through it is recorded and replayed like a store through a plain array parameter (item 119,
   `storage_rows_in`). The container parameters of the function types in a declaration's RETURN type
@@ -454,8 +474,7 @@ it) let a privileged closure reach the block in every one of those cases.
   lambda it returns, or the named function it names, is the declaration's own effect and is
   replayed at every reference with that reference's arguments, whether the value is called at once,
   handed to a helper, relayed, or kept in a field or an array (item 123a).
-- Not covered: a store made by a lambda that another lambda returns, by a returned lambda that hands
-  the container to a named helper, or by a local lambda whose parameters carry no annotation.
+- Not covered: a store made by a local lambda whose parameters carry no annotation.
 
 ## 3. Subtyping and variance
 

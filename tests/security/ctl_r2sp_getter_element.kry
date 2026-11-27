@@ -1,0 +1,15 @@
+// a getter that returns an element of an array of arrays: the inner array is the one the caller put in.
+@capabilities(fs:read)
+fn secret() -> fn() -> str { return || file_read("tests/security/secret_for_closure_launder.txt") }
+fn safe() -> str { return "safe" }
+fn first(o: [[fn() -> str]]) -> [fn() -> str] { return o[0] }
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let r = safe
+    let fns = [safe]
+    let outer = [fns]
+    let b = first(outer)
+    b[0] = r
+    deny!(fs:read) { for f in fns { println("ok: " + f()) } }
+}

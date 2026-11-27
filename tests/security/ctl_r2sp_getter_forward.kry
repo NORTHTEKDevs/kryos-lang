@@ -1,0 +1,15 @@
+// the helper is declared before the getter it calls (the verdict does not depend on declaration order).
+@capabilities(fs:read)
+fn secret() -> fn() -> str { return || file_read("tests/security/secret_for_closure_launder.txt") }
+fn safe() -> str { return "safe" }
+fn add(a: [fn() -> str], g: fn() -> str) { let b = id(a)
+    b[0] = g }
+fn id(a: [fn() -> str]) -> [fn() -> str] { return a }
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let r = safe
+    let fns = [safe]
+    add(fns, r)
+    deny!(fs:read) { for f in fns { println("ok: " + f()) } }
+}

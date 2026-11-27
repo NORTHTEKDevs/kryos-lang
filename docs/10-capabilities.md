@@ -488,9 +488,14 @@ verdict does not depend on the order the declarations are written in (items 124 
 container sits inside a tuple, an `Option`, a `Result` or an enum (item 119), and
 through a factory result: the container parameters of a function type a declaration
 returns are that declaration's input storage, so a store made through the returned
-lambda or the returned named function is replayed at every reference (item 123a). Still
-open: the same store made by a lambda that another lambda returns, by a returned lambda
-that hands the container to a named helper, or by a local lambda whose parameters carry no
+lambda or the returned named function is replayed at every reference (item 123a). A
+container is one value however many names it has: a closure stored through a struct field
+that holds a container (a tuple field), through an annotated `let`, through an array held in
+another array or a map, through a parameter whose type is a `type` alias, or through the
+result of a call that returns the container it was handed (a getter, also through a generic
+bound, a default body or a `dyn`) reaches the container it came from, and so does a store made
+by a lambda that another lambda returns or by a returned lambda that hands the container to a
+named helper. Still open: the same store made by a local lambda whose parameters carry no
 annotation (docs/THREAT-MODEL.md, end of 4.1). `deny!(fs)`, `deny!(io)` and
 `deny!(all)` are matched against a used `fs:read` by overlap (item 121). Rejected: the `tests/security/attack_deny_*.kry` programs (E0110).
 Accepted: the `tests/security/ctl_deny_*.kry` controls.

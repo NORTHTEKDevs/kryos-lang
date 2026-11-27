@@ -84,6 +84,25 @@ tests/security/ctl_tdb_named_factory_cond.kry
 tests/security/ctl_tdb_method_factory.kry
 tests/security/ctl_tdb_bound_factory.kry
 tests/security/ctl_tdb_factory_relay.kry
+tests/security/attack_r2sp_struct_tuple_inline.kry
+tests/security/attack_r2sp_struct_tuple_relay.kry
+tests/security/attack_r2sp_struct_tuple_builder.kry
+tests/security/attack_r2sp_struct_tuple_dyn.kry
+tests/security/attack_r2sp_struct_tuple_enum.kry
+tests/security/attack_r2sp_getter_free.kry
+tests/security/attack_r2sp_getter_chain.kry
+tests/security/attack_r2sp_getter_forward.kry
+tests/security/attack_r2sp_getter_bound.kry
+tests/security/attack_r2sp_getter_default.kry
+tests/security/attack_r2sp_getter_dyn.kry
+tests/security/ctl_r2sp_struct_tuple_relay.kry
+tests/security/ctl_r2sp_getter_free.kry
+tests/security/ctl_r2sp_getter_default.kry
+tests/security/ctl_r2sp_getter_dyn.kry
+tests/security/ctl_r2sp_getter_forward.kry
+tests/security/attack_r2sp_lambda_nested.kry
+tests/security/attack_r2sp_lambda_delegates.kry
+tests/security/ctl_r2sp_lambda_delegates.kry
 "
 fail=0
 # shellcheck disable=SC2086

@@ -1,0 +1,14 @@
+// a lambda that another lambda returns stores into the container it is called with (the first of the three shapes the factory wave left open): the container parameter of the innermost lambda is tied to the return type of the declaration.
+@capabilities(fs:read)
+fn secret() -> fn() -> str { return || file_read("tests/security/secret_for_closure_launder.txt") }
+fn safe() -> str { return "safe" }
+fn mk3(g: fn() -> str) -> fn() -> fn([fn() -> str]) { return fn() -> fn([fn() -> str]) { return fn(reg: [fn() -> str]) { reg[0] = g } } }
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let r = safe
+    let fns = [safe]
+    let st = mk3(r)()
+    st(fns)
+    deny!(fs:read) { for f in fns { println("ok: " + f()) } }
+}

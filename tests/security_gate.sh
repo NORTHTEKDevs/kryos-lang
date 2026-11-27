@@ -1425,6 +1425,49 @@ R3_ESCAPES="$R3_ESCAPES \
     attack_tdb_bound_factory \
     attack_tdb_factory_relay \
     attack_tdb_factory_param_arg"
+# Finish-line cap:r2-storage-paths (16 rows that still escaped after the factory wave) and the shapes around them: one
+# rule, three places it was missing. A container is one value however many names it has. (1) A `type` alias over a
+# container carried one row var shared by every use, so a parameter of the alias type was never one of its function's own
+# row vars, no call freshened it and the helper's store was never recorded as its effect (`freshen_alias_rows`): an alias is
+# its expansion now. (2) A struct field is ONE row var for the whole program, and a container that flowed into it (the
+# array a caller put in a tuple field, a struct built from a local, an array held in another array or a map) is the same
+# array: a closure stored through the field, or through an annotated `let`, reached only the field's var. (3) The result of
+# a call that returns the container it was handed (a getter, a getter through a trait bound, a default body, a `dyn`) is
+# that container: a store through the result reached only the call's copy of the parameter. Rows now carry
+# `alias_src` edges where two containers meet (`unify` inside an array, set, map, generic argument or `&mut`) and a store
+# of a closure value walks them (`store_row`); a closure copied out of one container into another is a value flow and
+# ties nothing (the precision controls below). The same edge ties the container parameter of a lambda a factory returns
+# (also one that another lambda returns, or that hands the container to a named helper) to the factory's return type, which
+# closes two of the three shapes the factory wave listed as open.
+R3_ESCAPES="$R3_ESCAPES \
+    attack_r2sp_alias_param \
+    attack_r2sp_alias_two_params \
+    attack_r2sp_alias_returned_op \
+    attack_r2sp_alias_trait_sig \
+    attack_r2sp_alias_result_pair \
+    attack_r2sp_struct_tuple_inline \
+    attack_r2sp_struct_tuple_local \
+    attack_r2sp_struct_tuple_direct \
+    attack_r2sp_struct_tuple_relay \
+    attack_r2sp_struct_tuple_builder \
+    attack_r2sp_struct_tuple_dyn \
+    attack_r2sp_struct_tuple_enum \
+    attack_r2sp_struct_tuple_second \
+    attack_r2sp_getter_free \
+    attack_r2sp_getter_main \
+    attack_r2sp_getter_chain \
+    attack_r2sp_getter_forward \
+    attack_r2sp_getter_tuple \
+    attack_r2sp_getter_element \
+    attack_r2sp_getter_bound \
+    attack_r2sp_getter_default \
+    attack_r2sp_getter_dyn \
+    attack_r2sp_getter_dyn_param \
+    attack_r2sp_lambda_nested \
+    attack_r2sp_lambda_delegates \
+    attack_r2sp_local_annotated \
+    attack_r2sp_local_array_of_arrays \
+    attack_r2sp_local_map_of_arrays"
 for esc in $R3_ESCAPES; do
     esc_ok=1
     for mode in "" "--strict-capabilities"; do
@@ -1506,6 +1549,45 @@ R3_CONTROLS="$R3_CONTROLS \
     ctl_tdb_bound_factory \
     ctl_tdb_factory_relay \
     ctl_tdb_factory_param_arg"
+# The twins of the cap:r2-storage-paths pins hand the block only a pure closure and must stay accepted, and the last seven
+# are privileged stores into a container that no block reads (a call's own copy of a parameter, a fresh container, a closure
+# copied between arrays, an alias type used twice): accepted on master and here.
+R3_CONTROLS="$R3_CONTROLS \
+    ctl_r2sp_alias_param \
+    ctl_r2sp_alias_two_params \
+    ctl_r2sp_alias_returned_op \
+    ctl_r2sp_alias_trait_sig \
+    ctl_r2sp_alias_result_pair \
+    ctl_r2sp_struct_tuple_inline \
+    ctl_r2sp_struct_tuple_local \
+    ctl_r2sp_struct_tuple_direct \
+    ctl_r2sp_struct_tuple_relay \
+    ctl_r2sp_struct_tuple_builder \
+    ctl_r2sp_struct_tuple_dyn \
+    ctl_r2sp_struct_tuple_enum \
+    ctl_r2sp_struct_tuple_second \
+    ctl_r2sp_getter_free \
+    ctl_r2sp_getter_main \
+    ctl_r2sp_getter_chain \
+    ctl_r2sp_getter_forward \
+    ctl_r2sp_getter_tuple \
+    ctl_r2sp_getter_element \
+    ctl_r2sp_getter_bound \
+    ctl_r2sp_getter_default \
+    ctl_r2sp_getter_dyn \
+    ctl_r2sp_getter_dyn_param \
+    ctl_r2sp_lambda_nested \
+    ctl_r2sp_lambda_delegates \
+    ctl_r2sp_local_annotated \
+    ctl_r2sp_local_array_of_arrays \
+    ctl_r2sp_local_map_of_arrays \
+    ctl_r2sp_two_arrays_other_read \
+    ctl_r2sp_copy_closure_between_arrays \
+    ctl_r2sp_fresh_container_getter \
+    ctl_r2sp_same_helper_two_arrays \
+    ctl_r2sp_getter_two_arrays \
+    ctl_r2sp_struct_tuple_other_array \
+    ctl_r2sp_alias_two_independent"
 for ctl in $R3_CONTROLS; do
     ctl_ok=1
     for mode in "" "--strict-capabilities"; do

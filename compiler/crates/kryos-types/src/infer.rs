@@ -260,6 +260,39 @@ pub struct InferenceEngine {
     /// checked, and the declaration each own-row var belongs to.
     current_decl: Option<usize>,
     owner_decl: HashMap<CapVarId, usize>,
+    /// True while `unify` is inside a CONTAINER position: an array / set / map
+    /// element, a generic argument of a struct or enum, the target of a `&mut`.
+    /// A function row met there is the STORAGE of that container (the element row
+    /// of the array), not the authority of a closure, and a flow between two such
+    /// rows is two names for one container, see `alias_src`. Parameters and the
+    /// return type of a function type start a new, non-container context.
+    in_container: bool,
+    /// Container aliasing: `v -> sources`, the storage vars of the containers
+    /// that flowed into the container whose storage var is `v` (an argument into a
+    /// parameter, a local array into a struct field, a call's result into a
+    /// local). The containers are one value, so a closure STORED into `v` is stored
+    /// into every one of them: `store_row` carries a store along these edges. A
+    /// flow of a closure value into a slot is not an edge, so a closure copied out
+    /// of one array and stored into another does not tie the two.
+    alias_src: HashMap<CapVarId, Vec<CapVarId>>,
+    /// Every row stored into a storage var that carries (or may later carry)
+    /// aliasing edges, `(var, row)`, kept so that an edge added AFTER the store
+    /// (the store is replayed when the callee's reference is typed, before its
+    /// arguments are unified) still carries it. `store_seen` is the same set for
+    /// lookup, and what ends the walk of a cycle of aliases.
+    store_log: HashMap<CapVarId, Vec<CapRow>>,
+    store_seen: std::collections::HashSet<(CapVarId, CapRow)>,
+    /// The call-site copies of the row vars that stand for the storage of a
+    /// container in a signature (the element row of a container parameter, of a
+    /// container the function returns, of a container parameter of a function
+    /// it returns). Binding such a copy to the callee's row ties it to the
+    /// container the callee read it from.
+    storage_copy_vars: std::collections::HashSet<CapVarId>,
+    /// The polymorphic row vars of every declaration whose body was checked (its
+    /// signature vars, `EffectScope::poly`). A call freshens them, so they are
+    /// never bound: binding one from another declaration's body would hand every
+    /// caller of the declaration a row that is not its own. See `is_foreign_sig_var`.
+    sig_poly_vars: std::collections::HashSet<CapVarId>,
 }
 
 /// One strongly connected component of the declaration reference graph, see
@@ -380,6 +413,12 @@ impl InferenceEngine {
             current_decl: None,
             owner_decl: HashMap::new(),
             cap_epoch: 0,
+            in_container: false,
+            alias_src: HashMap::new(),
+            store_log: HashMap::new(),
+            store_seen: std::collections::HashSet::new(),
+            storage_copy_vars: std::collections::HashSet::new(),
+            sig_poly_vars: std::collections::HashSet::new(),
         }
     }
 
@@ -837,6 +876,7 @@ impl InferenceEngine {
     /// `end_store_effects` keeps what the body stored; `replay_store_effects`
     /// re-applies it at each call with that call's copy of the vars.
     pub fn begin_store_effects(&mut self, poly: &[CapVarId]) {
+        self.sig_poly_vars.extend(poly.iter().copied());
         self.effect_scope = Some(EffectScope {
             poly: poly.iter().copied().collect(),
             touched: Vec::new(),
@@ -1140,7 +1180,32 @@ impl InferenceEngine {
                     }
                 }
             } else {
-                self.bind_cap_var(slot, inst);
+                // The body bound the slot to rows of its own container parameters
+                // (a struct field filled from a parameter): that is the callers'
+                // container flowing into the slot, so the slot is one name for this
+                // reference's copy of it (`add_alias`), whatever is stored through
+                // the slot later reaches that container. What else the row holds is
+                // a closure stored into the slot.
+                let mut stored = CapRow::closed(inst.concrete_bits());
+                let mut flowed: Vec<CapVarId> = Vec::new();
+                for &w in inst.var_ids() {
+                    if self.storage_copy_vars.contains(&w) {
+                        flowed.push(w);
+                    } else {
+                        stored = stored.union(&CapRow::var(w));
+                    }
+                }
+                if flowed.is_empty() {
+                    self.store_row(slot, &inst);
+                } else {
+                    for w in flowed {
+                        self.bind_cap_var(slot, CapRow::var(w));
+                        self.add_alias(slot, w);
+                    }
+                    if !(stored.is_closed() && stored.concrete_bits().is_empty()) {
+                        self.store_row(slot, &stored);
+                    }
+                }
             }
         }
     }
@@ -1250,6 +1315,7 @@ impl InferenceEngine {
         for (var, copy) in pairs {
             if self.cap_substitutions.contains_key(&var) {
                 let row = self.instantiate_row(&CapRow::var(var), &map);
+                self.alias_storage_copy(copy, &row);
                 self.bind_cap_var(copy, row);
             }
         }
@@ -1359,6 +1425,7 @@ impl InferenceEngine {
                 for &(var, copy) in &r.map {
                     if self.cap_substitutions.contains_key(&var) {
                         let row = self.instantiate_row(&CapRow::var(var), &map);
+                        self.alias_storage_copy(copy, &row);
                         self.bind_cap_var(copy, row);
                     }
                 }
@@ -1539,6 +1606,7 @@ impl InferenceEngine {
             } else {
                 self.bind_cap_var(s, row.clone());
             }
+            self.spread_store(s, &row);
         }
     }
 
@@ -1754,6 +1822,15 @@ impl InferenceEngine {
     /// reference) gets a fresh slot bound to it, so widening the slot never
     /// touches the vars the row mentions.
     pub fn generalize_rows(&mut self, ty: &Type, keep_slot_refs: bool) -> Type {
+        self.generalize_rows_in(ty, keep_slot_refs, false)
+    }
+
+    /// `generalize_rows`, told whether `ty` sits inside a container (see
+    /// `in_container`). The fresh slot that replaces the row of a function type
+    /// inside a container is the same storage as the row it replaces, so it is
+    /// tied to it (`add_alias`): a store through the new name reaches the old.
+    /// The fresh slot of a closure VALUE is a copy and is not tied.
+    fn generalize_rows_in(&mut self, ty: &Type, keep_slot_refs: bool, in_container: bool) -> Type {
         if !Self::type_has_fn(ty) {
             return ty.clone();
         }
@@ -1766,8 +1843,8 @@ impl InferenceEngine {
                 // into the parameter type. Replacing it with a fresh slot cuts
                 // that link and the argument's authority never reaches the
                 // body's charge.
-                let ret = Box::new(self.generalize_rows(ret, keep_slot_refs));
-                let caps = self.slot_row_for(caps, keep_slot_refs);
+                let ret = Box::new(self.generalize_rows_in(ret, keep_slot_refs, false));
+                let caps = self.slot_row_for(caps, keep_slot_refs, in_container);
                 Type::Function {
                     params: params.clone(),
                     ret,
@@ -1775,62 +1852,62 @@ impl InferenceEngine {
                 }
             }
             Type::Array { element, size } => Type::Array {
-                element: Box::new(self.generalize_rows(element, keep_slot_refs)),
+                element: Box::new(self.generalize_rows_in(element, keep_slot_refs, true)),
                 size: *size,
             },
             Type::Set { element } => Type::Set {
-                element: Box::new(self.generalize_rows(element, keep_slot_refs)),
+                element: Box::new(self.generalize_rows_in(element, keep_slot_refs, true)),
             },
             Type::Tuple { elements } => Type::Tuple {
                 elements: elements
                     .iter()
-                    .map(|e| self.generalize_rows(e, keep_slot_refs))
+                    .map(|e| self.generalize_rows_in(e, keep_slot_refs, in_container))
                     .collect(),
             },
             Type::Map { key, value } => Type::Map {
-                key: Box::new(self.generalize_rows(key, keep_slot_refs)),
-                value: Box::new(self.generalize_rows(value, keep_slot_refs)),
+                key: Box::new(self.generalize_rows_in(key, keep_slot_refs, true)),
+                value: Box::new(self.generalize_rows_in(value, keep_slot_refs, true)),
             },
             Type::Option { inner } => Type::Option {
-                inner: Box::new(self.generalize_rows(inner, keep_slot_refs)),
+                inner: Box::new(self.generalize_rows_in(inner, keep_slot_refs, in_container)),
             },
             Type::Result { ok, err } => Type::Result {
-                ok: Box::new(self.generalize_rows(ok, keep_slot_refs)),
-                err: Box::new(self.generalize_rows(err, keep_slot_refs)),
+                ok: Box::new(self.generalize_rows_in(ok, keep_slot_refs, in_container)),
+                err: Box::new(self.generalize_rows_in(err, keep_slot_refs, in_container)),
             },
             Type::Struct { name, generics } => Type::Struct {
                 name: name.clone(),
                 generics: generics
                     .iter()
-                    .map(|g| self.generalize_rows(g, keep_slot_refs))
+                    .map(|g| self.generalize_rows_in(g, keep_slot_refs, true))
                     .collect(),
             },
             Type::Enum { name, generics } => Type::Enum {
                 name: name.clone(),
                 generics: generics
                     .iter()
-                    .map(|g| self.generalize_rows(g, keep_slot_refs))
+                    .map(|g| self.generalize_rows_in(g, keep_slot_refs, true))
                     .collect(),
             },
             Type::Reference { inner, mutable } => Type::Reference {
-                inner: Box::new(self.generalize_rows(inner, keep_slot_refs)),
+                inner: Box::new(self.generalize_rows_in(inner, keep_slot_refs, in_container || *mutable)),
                 mutable: *mutable,
             },
             Type::Shared { inner } => Type::Shared {
-                inner: Box::new(self.generalize_rows(inner, keep_slot_refs)),
+                inner: Box::new(self.generalize_rows_in(inner, keep_slot_refs, in_container)),
             },
             Type::Weak { inner } => Type::Weak {
-                inner: Box::new(self.generalize_rows(inner, keep_slot_refs)),
+                inner: Box::new(self.generalize_rows_in(inner, keep_slot_refs, in_container)),
             },
             Type::Pointer { inner, mutable } => Type::Pointer {
-                inner: Box::new(self.generalize_rows(inner, keep_slot_refs)),
+                inner: Box::new(self.generalize_rows_in(inner, keep_slot_refs, in_container || *mutable)),
                 mutable: *mutable,
             },
             other => other.clone(),
         }
     }
 
-    fn slot_row_for(&mut self, row: &CapRow, keep_slot_refs: bool) -> CapRow {
+    fn slot_row_for(&mut self, row: &CapRow, keep_slot_refs: bool, in_container: bool) -> CapRow {
         match row {
             // Terminal: an unresolvable row stays unresolvable.
             CapRow::Unknown => CapRow::Unknown,
@@ -1844,6 +1921,13 @@ impl InferenceEngine {
                 }
                 let slot = self.fresh_slot_cap_var();
                 self.bind_cap_var(slot, row.clone());
+                if in_container {
+                    // The storage of a container, renamed: the same array under a
+                    // new row var, not a copy of what it holds.
+                    for &w in vars {
+                        self.add_alias(slot, w);
+                    }
+                }
                 CapRow::var(slot)
             }
         }
@@ -1893,7 +1977,20 @@ impl InferenceEngine {
         // destination) with `invoke`'s own parameter row (an unbound var of
         // the source), and that var must take the element's row.
         let before = self.resolve_cap_row(c1);
+        let container = self.in_container;
         for &v in c1.var_ids() {
+            if !container {
+                // A closure VALUE flows into the slot `v`: a store. It is a store
+                // into every container `v` is one name for as well (`store_row`).
+                self.store_row(v, c2);
+                continue;
+            }
+            // Two containers meet: they are one value, so a closure stored into
+            // the destination later (or before: `add_alias` replays the log) is
+            // stored into the source as well. The rows below flow as before.
+            for &w in c2.var_ids() {
+                self.add_alias(v, w);
+            }
             if self.input_storage_cap_vars.contains(&v) && self.is_frozen(v) {
                 // A store into a container this body was handed (LEDGER root
                 // R2, item 112): never bind the parameter's storage var.
@@ -1914,6 +2011,109 @@ impl InferenceEngine {
                 if (open || self.lambda_param_cap_vars.contains(&v)) && !self.is_frozen(v) {
                     self.bind_cap_var(v, before.clone());
                 }
+            }
+        }
+    }
+
+    /// A closure VALUE with row `row` is stored into the element storage `v` of a
+    /// container: widen `v`, and every container `v` is one name for (`alias_src`),
+    /// so a store through one name is seen through the others. A call's copy of a
+    /// parameter's storage (`let a = get(h); a[0] = g`), a struct field that holds
+    /// a container the caller built, a local that was bound from either: each is
+    /// the same array as the one it came from, and the row layer used to widen
+    /// only the var the store named.
+    fn store_row(&mut self, v: CapVarId, row: &CapRow) {
+        self.widen_slot(v, row);
+        self.spread_store(v, row);
+    }
+
+    /// Widen one storage var by a stored row. A parameter's storage var of the body
+    /// being checked is recorded instead of bound (the store is the declaration's
+    /// effect, replayed at each call); a var that is bound and is neither a slot nor
+    /// a container name is the declaration's own fact and is left alone.
+    fn widen_slot(&mut self, v: CapVarId, row: &CapRow) {
+        if self.input_storage_cap_vars.contains(&v) && self.is_frozen(v) {
+            if self.lambda_input_cap_vars.contains(&v) {
+                self.record_lambda_store(v, row.clone());
+            } else {
+                self.record_param_store(v, row.clone());
+            }
+            return;
+        }
+        if !self.cap_substitutions.contains_key(&v)
+            || self.slot_cap_vars.contains(&v)
+            || self.alias_src.contains_key(&v)
+        {
+            self.bind_cap_var(v, row.clone());
+        }
+    }
+
+    /// Log the store of `row` into `v` and carry it to the storage `v` aliases,
+    /// each (var, row) once, so a cycle of aliases ends.
+    fn spread_store(&mut self, v: CapVarId, row: &CapRow) {
+        if !self.note_store(v, row) {
+            return;
+        }
+        let mut work: Vec<CapVarId> = self.alias_src.get(&v).cloned().unwrap_or_default();
+        while let Some(x) = work.pop() {
+            if self.is_foreign_sig_var(x) || !self.note_store(x, row) {
+                continue;
+            }
+            self.widen_slot(x, row);
+            if let Some(srcs) = self.alias_src.get(&x) {
+                work.extend(srcs.iter().copied());
+            }
+        }
+    }
+
+    /// A signature var of a declaration other than the one being checked. An alias
+    /// edge made inside a body may name that body's own parameter storage (a struct
+    /// field the body filled from its parameter), and the edge outlives the body: a
+    /// store made later in ANOTHER declaration must not be bound to the parameter's
+    /// var, which every call freshens. The store reaches that parameter's callers
+    /// through the body's summary instead: the flow is replayed at each reference
+    /// as an edge to that reference's copy (`replay_store_effects`).
+    fn is_foreign_sig_var(&self, x: CapVarId) -> bool {
+        self.sig_poly_vars.contains(&x) && !self.is_frozen(x)
+    }
+
+    fn note_store(&mut self, v: CapVarId, row: &CapRow) -> bool {
+        if !self.store_seen.insert((v, row.clone())) {
+            return false;
+        }
+        self.store_log.entry(v).or_default().push(row.clone());
+        true
+    }
+
+    /// The container whose storage var is `v` is the container whose storage var
+    /// is `w`. What was stored into `v` before this edge existed reaches `w` now:
+    /// a store is replayed when the callee's reference is typed, which is before
+    /// the arguments of that call are unified.
+    fn add_alias(&mut self, v: CapVarId, w: CapVarId) {
+        if v == w {
+            return;
+        }
+        let edges = self.alias_src.entry(v).or_default();
+        if edges.contains(&w) {
+            return;
+        }
+        edges.push(w);
+        if self.is_foreign_sig_var(w) {
+            return;
+        }
+        if let Some(rows) = self.store_log.get(&v).cloned() {
+            for r in rows {
+                self.store_row(w, &r);
+            }
+        }
+    }
+
+    /// A call-site copy of a container's storage var is bound to the row the
+    /// callee gave the var: the container it hands out is the one it read.
+    fn alias_storage_copy(&mut self, copy: CapVarId, row: &CapRow) {
+        if self.storage_copy_vars.contains(&copy) {
+            for &w in row.var_ids() {
+                self.add_alias(copy, w);
             }
         }
     }
@@ -2231,6 +2431,22 @@ impl InferenceEngine {
         })
     }
 
+    /// `unify` with the container flag set to `container` for the duration of the
+    /// call (see `in_container`).
+    fn unify_in(
+        &mut self,
+        container: bool,
+        a: &Type,
+        b: &Type,
+        span: Span,
+    ) -> Result<(), Diagnostic> {
+        let saved = self.in_container;
+        self.in_container = container;
+        let r = self.unify(a, b, span);
+        self.in_container = saved;
+        r
+    }
+
     /// Unify two types, making them equal. Returns Ok(()) on success,
     /// or an error diagnostic on type mismatch.
     ///
@@ -2292,7 +2508,7 @@ impl InferenceEngine {
                 // Unify element types. Size mismatches are allowed — different
                 // fixed sizes unify successfully, treating the result as a
                 // dynamic array [T]. No error on [T; N] vs [T; M].
-                self.unify(e1, e2, span)
+                self.unify_in(true, e1, e2, span)
             }
 
             // Tuple: same length, pairwise unification.
@@ -2313,12 +2529,14 @@ impl InferenceEngine {
 
             // Map: key and value types must match.
             (Type::Map { key: k1, value: v1 }, Type::Map { key: k2, value: v2 }) => {
-                self.unify(k1, k2, span)?;
-                self.unify(v1, v2, span)
+                self.unify_in(true, k1, k2, span)?;
+                self.unify_in(true, v1, v2, span)
             }
 
             // Set: element types must match.
-            (Type::Set { element: e1 }, Type::Set { element: e2 }) => self.unify(e1, e2, span),
+            (Type::Set { element: e1 }, Type::Set { element: e2 }) => {
+                self.unify_in(true, e1, e2, span)
+            }
 
             // Option: inner types must match.
             (Type::Option { inner: i1 }, Type::Option { inner: i2 }) => self.unify(i1, i2, span),
@@ -2391,7 +2609,7 @@ impl InferenceEngine {
                 },
             ) if n1 == n2 && g1.len() == g2.len() => {
                 for (t1, t2) in g1.iter().zip(g2.iter()) {
-                    self.unify(t1, t2, span)?;
+                    self.unify_in(true, t1, t2, span)?;
                 }
                 Ok(())
             }
@@ -2408,7 +2626,7 @@ impl InferenceEngine {
                 },
             ) if n1 == n2 && g1.len() == g2.len() => {
                 for (t1, t2) in g1.iter().zip(g2.iter()) {
-                    self.unify(t1, t2, span)?;
+                    self.unify_in(true, t1, t2, span)?;
                 }
                 Ok(())
             }
@@ -2459,14 +2677,14 @@ impl InferenceEngine {
                 self.contravariant = !outer_contravariant;
                 let mut param_result: Result<(), Diagnostic> = Ok(());
                 for (t1, t2) in p1.iter().zip(p2.iter()) {
-                    if let Err(e) = self.unify(t1, t2, span) {
+                    if let Err(e) = self.unify_in(false, t1, t2, span) {
                         param_result = Err(e);
                         break;
                     }
                 }
                 self.contravariant = outer_contravariant;
                 param_result?;
-                self.unify(r1, r2, span)?;
+                self.unify_in(false, r1, r2, span)?;
                 // Capability-row unification (spec §2.3): never a hard
                 // error -- accept/reject for a function TYPE is decided
                 // entirely by params/ret above (Stage 1 adds no new
@@ -2493,7 +2711,7 @@ impl InferenceEngine {
                     inner: i2,
                     mutable: m2,
                 },
-            ) if m1 == m2 => self.unify(i1, i2, span),
+            ) if m1 == m2 => self.unify_in(self.in_container || *m1, i1, i2, span),
 
             // Shared: inner types must match.
             (Type::Shared { inner: i1 }, Type::Shared { inner: i2 }) => self.unify(i1, i2, span),
@@ -2511,7 +2729,7 @@ impl InferenceEngine {
                     inner: i2,
                     mutable: m2,
                 },
-            ) if m1 == m2 => self.unify(i1, i2, span),
+            ) if m1 == m2 => self.unify_in(self.in_container || *m1, i1, i2, span),
 
             // Dynamic trait objects: a concrete struct type can be assigned
             // to `dyn Trait` ONLY when an `impl Trait for Struct` exists —
@@ -2784,6 +3002,20 @@ impl InferenceEngine {
         let mut cap_var_map: HashMap<CapVarId, CapVarId> = HashMap::new();
         for &old_id in &sig.generic_cap_var_ids {
             cap_var_map.insert(old_id, self.fresh_cap_var());
+        }
+        // The copies of the vars that are the storage of a container in the
+        // signature: a container parameter's element row, the row of a container
+        // the function returns, the container parameters of a function it returns.
+        let mut storage: Vec<CapVarId> = Vec::new();
+        for (_, t) in &sig.params {
+            Self::storage_rows_in(t, false, &mut storage);
+        }
+        Self::storage_rows_in(&sig.ret, false, &mut storage);
+        Self::returned_fn_storage_rows(&sig.ret, &mut storage);
+        for old_id in storage {
+            if let Some(&new_id) = cap_var_map.get(&old_id) {
+                self.storage_copy_vars.insert(new_id);
+            }
         }
 
         let params = sig

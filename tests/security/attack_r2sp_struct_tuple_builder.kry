@@ -1,0 +1,15 @@
+// the struct is built by a helper from the array it was handed, and the store is made by another helper: the alias edge is made inside a body whose array is a parameter of that body, so the helper's effect carries the store to the caller's array.
+@capabilities(fs:read)
+fn secret() -> fn() -> str { return || file_read("tests/security/secret_for_closure_launder.txt") }
+fn safe() -> str { return "safe" }
+struct S { t: ([fn() -> str], i64) }
+fn put(s: S, g: fn() -> str) { s.t.0[0] = g }
+fn mid(fns: [fn() -> str], g: fn() -> str) { put(S { t: (fns, 1) }, g) }
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let r = secret()
+    let fns = [safe]
+    mid(fns, r)
+    deny!(fs:read) { for f in fns { println("LEAK: " + f()) } }
+}

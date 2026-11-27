@@ -240,6 +240,10 @@ pub struct TypeChecker {
     /// `self` is typed as the trait (the body is checked once for every
     /// implementer), but it is not a `dyn` value: see `reference_trait_dispatch`.
     trait_default_self: Option<String>,
+    /// The type each non-generic `type` alias resolved to when it was declared.
+    /// An alias is its expansion at every use (`freshen_alias_rows`): the row
+    /// vars written into it are not shared between the uses.
+    type_alias_types: std::collections::HashMap<String, Type>,
 }
 
 /// How much of every per-pass record a checking pass of `check_module` had filed
@@ -304,6 +308,7 @@ impl TypeChecker {
             builtin_cap_var,
             denies_reported: std::collections::HashSet::new(),
             trait_default_self: None,
+            type_alias_types: std::collections::HashMap::new(),
         }
     }
 
@@ -884,6 +889,77 @@ impl TypeChecker {
         false
     }
 
+    /// The resolved type of an alias with a fresh capability-row var for every
+    /// function type in it, collected into `pending_cap_var_ids` like the vars
+    /// `resolve_type_expr` makes for a written `fn(..) -> ..`. The vars the alias
+    /// made when it was declared are one location shared by every use: a
+    /// parameter of the alias type was never one of its function's own row vars,
+    /// so no call freshened it, and a store through it was bound to a var every
+    /// caller saw instead of being recorded as the function's effect.
+    fn freshen_alias_rows(&mut self, ty: &Type) -> Type {
+        if !crate::infer::InferenceEngine::type_has_fn(ty) {
+            return ty.clone();
+        }
+        match ty {
+            Type::Function { params, ret, caps } => {
+                let caps = if caps.is_unknown() {
+                    crate::ty::CapRow::unknown()
+                } else {
+                    let v = self.engine.fresh_cap_var();
+                    self.pending_cap_var_ids.push(v);
+                    crate::ty::CapRow::var(v)
+                };
+                let params = params.iter().map(|p| self.freshen_alias_rows(p)).collect();
+                let ret = Box::new(self.freshen_alias_rows(ret));
+                Type::Function { params, ret, caps }
+            }
+            Type::Array { element, size } => Type::Array {
+                element: Box::new(self.freshen_alias_rows(element)),
+                size: *size,
+            },
+            Type::Set { element } => Type::Set {
+                element: Box::new(self.freshen_alias_rows(element)),
+            },
+            Type::Tuple { elements } => Type::Tuple {
+                elements: elements.iter().map(|e| self.freshen_alias_rows(e)).collect(),
+            },
+            Type::Map { key, value } => Type::Map {
+                key: Box::new(self.freshen_alias_rows(key)),
+                value: Box::new(self.freshen_alias_rows(value)),
+            },
+            Type::Option { inner } => Type::Option {
+                inner: Box::new(self.freshen_alias_rows(inner)),
+            },
+            Type::Result { ok, err } => Type::Result {
+                ok: Box::new(self.freshen_alias_rows(ok)),
+                err: Box::new(self.freshen_alias_rows(err)),
+            },
+            Type::Struct { name, generics } => Type::Struct {
+                name: name.clone(),
+                generics: generics.iter().map(|g| self.freshen_alias_rows(g)).collect(),
+            },
+            Type::Enum { name, generics } => Type::Enum {
+                name: name.clone(),
+                generics: generics.iter().map(|g| self.freshen_alias_rows(g)).collect(),
+            },
+            Type::Reference { inner, mutable } => Type::Reference {
+                inner: Box::new(self.freshen_alias_rows(inner)),
+                mutable: *mutable,
+            },
+            Type::Shared { inner } => Type::Shared {
+                inner: Box::new(self.freshen_alias_rows(inner)),
+            },
+            Type::Weak { inner } => Type::Weak {
+                inner: Box::new(self.freshen_alias_rows(inner)),
+            },
+            Type::Pointer { inner, mutable } => Type::Pointer {
+                inner: Box::new(self.freshen_alias_rows(inner)),
+                mutable: *mutable,
+            },
+            other => other.clone(),
+        }
+    }
+
     pub fn resolve_type_expr(&mut self, te: &TypeExpr) -> Type {
         match te {
             TypeExpr::Simple { name, span } => {
@@ -966,9 +1042,15 @@ impl TypeChecker {
                             name: name.clone(),
                             generics: vec![],
                         }
-                    } else if let Some(ty) = self.env.lookup_var(name) {
+                    } else if let Some(ty) = self.env.lookup_var(name).cloned() {
                         // Type alias or generic parameter registered as a variable.
-                        ty.clone()
+                        // An alias is its expansion: every use gets row vars of its
+                        // own, exactly as if the type had been written out there.
+                        if self.type_alias_types.get(name) == Some(&ty) {
+                            self.freshen_alias_rows(&ty)
+                        } else {
+                            ty
+                        }
                     } else {
                         self.error_with_code(
                             format!("unknown type `{name}`"),
@@ -2312,6 +2394,7 @@ impl TypeChecker {
                     self.env.define_var(name.clone(), Type::Error);
                 } else {
                     let resolved = self.resolve_type_expr(ty);
+                    self.type_alias_types.insert(name.clone(), resolved.clone());
                     // Register as a variable in the type namespace for lookup.
                     self.env.define_var(name.clone(), resolved);
                 }
@@ -6367,7 +6450,12 @@ impl TypeChecker {
                                 return inst_ret;
                             }
                             self.accumulate_caps(&crate::ty::CapRow::unknown());
-                            return sig.ret.with_caps_erased_to_unknown();
+                            // A container handed back is one of the candidates' own
+                            // (each was referenced above with this call's arguments,
+                            // and the storage rows of `inst_ret` are tied to the rows
+                            // they return): its storage row stays, so a store through
+                            // it reaches theirs. A closure handed back is erased.
+                            return inst_ret.with_value_caps_erased_to_unknown();
                         }
                     }
                     self.error(

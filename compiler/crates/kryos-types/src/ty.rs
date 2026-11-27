@@ -600,6 +600,72 @@ impl Type {
         }
     }
 
+    /// Like `with_caps_erased_to_unknown`, except that the row of a function type
+    /// that sits inside a CONTAINER (an array / set / map element, a generic
+    /// argument, the target of a `&mut`) is kept. That row is the storage of the
+    /// container, not the authority of a closure: the container a dispatch hands
+    /// back is one of the candidates' own, so a store through it has to reach
+    /// theirs, and an erased row has no var to carry the store. The closure
+    /// VALUES a dispatch hands back (`fn() -> str`, a function inside a tuple, an
+    /// `Option` or a `Result`) are erased as before.
+    pub fn with_value_caps_erased_to_unknown(&self) -> Type {
+        self.erase_value_caps(false)
+    }
+
+    fn erase_value_caps(&self, in_container: bool) -> Type {
+        match self {
+            Type::Array { element, size } => Type::Array {
+                element: Box::new(element.erase_value_caps(true)),
+                size: *size,
+            },
+            Type::Set { element } => Type::Set {
+                element: Box::new(element.erase_value_caps(true)),
+            },
+            Type::Map { key, value } => Type::Map {
+                key: Box::new(key.erase_value_caps(true)),
+                value: Box::new(value.erase_value_caps(true)),
+            },
+            Type::Tuple { elements } => Type::Tuple {
+                elements: elements.iter().map(|e| e.erase_value_caps(in_container)).collect(),
+            },
+            Type::Option { inner } => Type::Option {
+                inner: Box::new(inner.erase_value_caps(in_container)),
+            },
+            Type::Result { ok, err } => Type::Result {
+                ok: Box::new(ok.erase_value_caps(in_container)),
+                err: Box::new(err.erase_value_caps(in_container)),
+            },
+            Type::Struct { name, generics } => Type::Struct {
+                name: name.clone(),
+                generics: generics.iter().map(|g| g.erase_value_caps(true)).collect(),
+            },
+            Type::Enum { name, generics } => Type::Enum {
+                name: name.clone(),
+                generics: generics.iter().map(|g| g.erase_value_caps(true)).collect(),
+            },
+            Type::Function { params, ret, caps } => Type::Function {
+                params: params.iter().map(|p| p.with_caps_erased_to_unknown()).collect(),
+                ret: Box::new(ret.with_caps_erased_to_unknown()),
+                caps: if in_container { caps.clone() } else { CapRow::unknown() },
+            },
+            Type::Reference { inner, mutable } => Type::Reference {
+                inner: Box::new(inner.erase_value_caps(in_container || *mutable)),
+                mutable: *mutable,
+            },
+            Type::Shared { inner } => Type::Shared {
+                inner: Box::new(inner.erase_value_caps(in_container)),
+            },
+            Type::Weak { inner } => Type::Weak {
+                inner: Box::new(inner.erase_value_caps(in_container)),
+            },
+            Type::Pointer { inner, mutable } => Type::Pointer {
+                inner: Box::new(inner.erase_value_caps(in_container || *mutable)),
+                mutable: *mutable,
+            },
+            other => other.with_caps_erased_to_unknown(),
+        }
+    }
+
     /// Resolve a simple type name string to a concrete Type.
     pub fn from_name(name: &str) -> Option<Type> {
         match name {

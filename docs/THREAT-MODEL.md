@@ -109,7 +109,7 @@ Each guarantee is for source accepted by `kryos check` with the stated mode.
 **None of them is unconditional.** Each holds except for the four
 zero-authority shapes in section 4.5 (B5, B6, B7, B9), of which B9 defeats
 G6 for the stdlib's API surface and B5 defeats G1 and G2 for library entry points,
-and the three shapes beside the corpus named at the end of section 4.1 (each
+and the shape beside the corpus named at the end of section 4.1 (it
 defeats the narrowing of a `deny!` block); the exceptions are repeated under each guarantee. "Default" is `inferred`: no
 flag, no project file. Error codes are those printed by the binary above.
 
@@ -167,8 +167,8 @@ reaching the block through parameters, locals, containers, struct fields, actor
 state, `spawn`, generics, `dyn` and the other shapes in section 2 of
 [10-capabilities.md](10-capabilities.md): gate `tests/security_gate.sh`
 (gate, run for the 1.3.0 revision: PASS, 342 `ok` lines, 0 FAIL) and `tools/loop/escape_status.sh` (260 of 260 repros rejected,
-executed 2026-11-26 on the `closeout/lane-cap` branch). **Exceptions: no row of the 4.1 corpus; the three shapes
-beside it, named at the end of 4.1, defeat `deny!`.** `deny!` does not bound a callee that is handed a closure (N16, B6).
+executed 2026-11-26 on the `closeout/lane-cap` branch). **Exceptions: no row of the 4.1 corpus; the shape
+beside it, named at the end of 4.1, defeats `deny!`.** `deny!` does not bound a callee that is handed a closure (N16, B6).
 
 **G4. `@pure` functions call no gated or impure builtin.**
 Rejected with `E0110` ("`@pure` function cannot call non-pure function
@@ -481,7 +481,7 @@ parameters of the function a declaration returns are that declaration's input st
 shape-layer defects of items 127 to 134 are
 NOT fixed: those programs are rejected only because the row layer now judges the
 `deny!` block, and the same shapes would escape again wherever the row layer is
-blind (the three shapes listed below the table).
+blind (the shape listed below the table).
 
 <!-- known-escapes:begin -->
 | id | repro | shape | root |
@@ -490,15 +490,17 @@ blind (the three shapes listed below the table).
 
 No repro of the corpus is accepted any more: every one of the 260 is rejected in default and strict
 mode (`escape_status.sh`, 2026-11-26). That is a statement about the 260 programs, not a proof about
-unknown ones. Three shapes beside the closed rows are accepted by `kryos check` in default and strict
-mode on this build and leak when run (executed 2026-11-26; in each `main` declares `fs:read` and a
-`deny!(fs:read)` block prints the secret): a store made by a lambda that another lambda returns (a
-factory written as two nested lambdas, `fn mk3(g) -> fn() -> fn([fn() -> str])`), a store made by a
-lambda that a factory returns and that hands the container to a named helper
-(`fn(reg) { put(reg, g) }`), and a store made by a local lambda whose parameters carry no annotation
-(`let op = |reg, g| { reg[0] = g }`); master accepts all three. They are not rows of the corpus: a row
-would make `escape_status.sh` read non-zero, and each is written out in the LEDGER entry of the factory
-wave (`tools/loop/LEDGER.md`, "Close-out cap lane, cap_trait_default_body").
+unknown ones. One shape beside the closed rows is accepted by `kryos check` in default and strict
+mode on this build and leaks when run (executed 2026-11-26; `main` declares `fs:read` and a
+`deny!(fs:read)` block prints the secret): a store made by a local lambda whose parameters carry no
+annotation (`let op = |reg, g| { reg[0] = g }`); master accepts it. It is not a row of the corpus: a row
+would make `escape_status.sh` read non-zero, and it is written out in the LEDGER entry of the factory
+wave (`tools/loop/LEDGER.md`, "Close-out cap lane, cap_trait_default_body"). The other two shapes that
+entry listed, a store made by a lambda that another lambda returns (`fn mk3(g) -> fn() -> fn([fn() -> str])`)
+and a store made by a returned lambda that hands the container to a named helper (`fn(reg) { put(reg, g) }`),
+are rejected on this build (E0110 in both modes, executed 2026-11-26, pinned by
+`tests/security/attack_r2sp_lambda_nested.kry` and `attack_r2sp_lambda_delegates.kry`; master and the
+parent commit accept both and the run prints the secret).
 
 - **Row-layer gaps, closed.** Items 119 and 123a (six rows) were one family: a helper stores a closure
   into a container it was handed and the caller's view of that container was not updated.
@@ -515,6 +517,25 @@ wave (`tools/loop/LEDGER.md`, "Close-out cap lane, cap_trait_default_body").
   `deny!` families, was closed 2026-11-22: the verdict now judges a denied coarse family by overlap,
   `denied_caps_used` in `kryos-types/src/ty.rs`; 122, 123b, 123c, 124 and 125 were closed 2026-11-26:
   see the next bullet.)
+- **Row-layer gaps, closed: a container with more than one name.** The finish-line rows of
+  `cap:r2-storage-paths` that were still accepted after the factory wave (16: `type` aliases,
+  a struct whose tuple field holds the caller's array, and a getter that hands back the container it
+  read) and the shapes next to them were one defect: the row layer treated a flow between two
+  containers as the flow of a closure value, so a closure stored through the second name reached only
+  the var of that name. Executed 2026-11-26 on master `dd637a90` and on the parent commit: `check` accepted
+  in default and strict mode and `kryos run` printed the secret for the 16 rows and for the probes
+  written around them (a store through an annotated `let`, an array held in an array or a map, a struct
+  built from a local, through a method, a relay, a builder, a `dyn` or a generic bound, a getter
+  chain). Closed: rows now carry an edge from the destination to the source wherever two containers meet
+  in `unify`, a store of a closure value walks the edges (`store_row`), a `type` alias gets row vars of
+  its own at every use (`freshen_alias_rows`), and the container a `dyn` call hands back keeps its
+  storage row (the closures it hands back are still erased). Cost, measured: a struct field is one row
+  var for the whole program, so a privileged closure stored through the field of one struct value is
+  seen through every container that was ever put in that field of any value; a program that keeps two
+  struct values with different arrays in one field and reads the array of the one it did not store into
+  inside a `deny!` block is rejected (master accepts it, and for a field of array type the program
+  is safe at run time because a struct literal copies that array: `H { reg: a }` then `h.reg[0] = g`
+  leaves `a` alone, while a tuple field, a parameter and a field assignment share it).
 - **Closed by the residual wave, and what that does and does not mean.** The verdict of a `deny!`
   block no longer depends on declaration order: when the module holds a `deny!` whose row can
   still change, `check_module` checks every body once more in call-graph order (callee before
@@ -527,8 +548,8 @@ wave (`tools/loop/LEDGER.md`, "Close-out cap lane, cap_trait_default_body").
   accept a program the textual pass rejected; the dispatch change is the one that can accept
   more (a call that used to be charged `Unknown` is charged what its candidates charge), and
   a `dyn` call outside a default body keeps the `Unknown` charge. Not covered: a candidate that
-  is reached through a value the checker cannot name and no declaration hands out (the three
-  shapes listed below the table).
+  is reached through a value the checker cannot name and no declaration hands out (the shape
+  listed below the table).
 - **Closed since 1.3.0, and what that does and does not mean.** The R4 wave
   (2026-11-21) made the row layer walk every `select` arm (binder in scope), the
   `timeout` arm and its duration, and the body of a spawned lambda, so the 57
@@ -592,7 +613,7 @@ Both programs are accepted today in default and strict (pinned for
 pinned by `tests/security_gate.sh`, carried). The row layer (R2, R3) is the
 intended way to close the same items without that cost; both waves are merged
 (PR #38 as `732714ab`, PR #39 as `e2fbc46c`) and what remains of the row layer is
-the three shapes beside the corpus at the end of 4.1.
+the shape beside the corpus at the end of 4.1.
 
 ### 4.4 Other limitations verified for this document
 
