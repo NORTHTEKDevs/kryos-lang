@@ -5891,22 +5891,6 @@ impl LlvmCodegen {
                 }
             }
 
-            // ----- Tuple copy-on-write marker (finish item A20): a tuple is an
-            // inline value here, so a write never reaches another holder and
-            // there is nothing to unshare. -----
-            RValue::Call { func: fname, .. }
-                if fname == kryos_mir::ir::TUPLE_COW_FN
-                    || fname == kryos_mir::ir::TUPLE_COW_SLOT_FN
-                    || fname == kryos_mir::ir::TUPLE_COW_ELEM_FN
-                    || fname == kryos_mir::ir::TUPLE_COW_MAP_FN =>
-            {
-                if is_mutable {
-                    self.emit_line(&format!("  store i64 0, ptr %_{}.addr", dest.0));
-                } else {
-                    self.emit_line(&format!("  %_{} = add i64 0, 0", dest.0));
-                }
-            }
-
             // ----- Struct share (one more owner; see kryos_mir::ir::STRUCT_SHARE_FN) -----
             RValue::Call { func: fname, args }
                 if fname == kryos_mir::ir::STRUCT_SHARE_FN && args.len() == 1 =>

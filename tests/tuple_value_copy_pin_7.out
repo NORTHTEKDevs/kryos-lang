@@ -1,6 +1,0 @@
-literal mk=3 mm=12
-literal compound mk2=3 m3=12
-grid g0=2 grid=77
-impure keep=2 ar=55 calls=1
-impure compound ar=56 calls=2
-field path held=3 bx=31

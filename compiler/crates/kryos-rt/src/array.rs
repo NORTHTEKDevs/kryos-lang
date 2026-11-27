@@ -56,56 +56,6 @@ pub unsafe extern "C" fn kryos_tuple_release(t: *mut KryosArray, kinds: i64) {
     kryos_array_free(t);
 }
 
-/// Copy-on-write for a tuple about to be written through one of its holders
-/// (finish item A20). A tuple is a VALUE: `let mut u = t; u.0 = 7` must leave
-/// `t.0` alone. On this backend a tuple is a refcounted KryosArray shared by
-/// every owner, so a write through a shared one (`ref_count > 1`) first moves
-/// the writing holder onto its own copy: a fresh array with every heap element
-/// retained (each owner then releases it once), and the shared original loses
-/// the writer's reference. `kinds` names each element's ownership like
-/// `kryos_tuple_release` but with the extra kinds a copy needs: 1 str,
-/// 2 array / tuple, 3 map, 4 shared arc, 5 struct box; 0 is a scalar.
-/// Returns `t` itself when it is not shared.
-#[no_mangle]
-pub unsafe extern "C" fn kryos_tuple_cow(t: *mut KryosArray, kinds: i64) -> *mut KryosArray {
-    if t.is_null() || rc_atomic(t).load(Ordering::Relaxed) <= 1 {
-        return t;
-    }
-    let c = kryos_array_clone(t);
-    if c.is_null() {
-        return t;
-    }
-    let len = (*c).len.min(16);
-    for i in 0..len {
-        let k = (kinds >> (i * 4)) & 0xF;
-        if k == 0 {
-            continue;
-        }
-        let v = kryos_array_get(c, i);
-        if v == 0 {
-            continue;
-        }
-        match k {
-            1 => {
-                crate::string::kryos_string_retain_opt(v as *mut crate::string::KryosString);
-            }
-            2 => {
-                kryos_array_retain_opt(v as *mut KryosArray);
-            }
-            3 => {
-                crate::map::kryos_map_retain_opt(v);
-            }
-            4 => crate::arc::kryos_arc_retain(v as *mut u8),
-            5 => {
-                crate::alloc::kryos_struct_retain(v as *mut u8);
-            }
-            _ => {}
-        }
-    }
-    rc_atomic(t).fetch_sub(1, Ordering::Relaxed);
-    c
-}
-
 /// Release an array whose elements are TUPLE handles (`kinds` as in
 /// `kryos_tuple_release`): the last reference releases each tuple, then the
 /// array. A closure env's dropper and a struct drop helper use this for a

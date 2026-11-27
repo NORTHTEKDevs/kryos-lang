@@ -6239,15 +6239,7 @@ fn strip_escaping_tuple_drops(
             // returns or stores -- emit_tuple_clone / emit_value_share), and a
             // share takes its own owner: neither is an escape.
             if let Instruction::Assign { value: RValue::Call { func, .. }, .. } = inst {
-                if user_fns.contains(func.as_str())
-                    || func == STRUCT_SHARE_FN
-                    // The copy-on-write of a tuple about to be written
-                    // moves the holder onto its own copy: not an escape.
-                    || func == TUPLE_COW_FN
-                    || func == TUPLE_COW_SLOT_FN
-                    || func == TUPLE_COW_ELEM_FN
-                    || func == TUPLE_COW_MAP_FN
-                {
+                if user_fns.contains(func.as_str()) || func == STRUCT_SHARE_FN {
                     continue;
                 }
             }
@@ -6314,37 +6306,6 @@ fn strip_escaping_tuple_drops(
                     if tuples.contains(&u.0) && !elems.iter().any(|e| matches!(e, Operand::Local(l) if *l == u)) {
                         unowned.insert(u.0);
                         unowned.insert(root(u.0));
-                    }
-                }
-                continue;
-            }
-            // A map literal value that is a tuple the block shared right before
-            // the literal: the map took its own reference (the share), exactly
-            // like an array literal element, so the named tuple keeps its
-            // scope-end release. An unshared tuple is moved into the map.
-            if let Instruction::Assign { value: RValue::Map(entries), .. } = inst {
-                for (k, f) in entries {
-                    if let Operand::Local(kl) = k {
-                        if tuples.contains(&kl.0) {
-                            unowned.insert(kl.0);
-                            unowned.insert(root(kl.0));
-                        }
-                    }
-                    let Operand::Local(v) = f else { continue };
-                    if !tuples.contains(&v.0) {
-                        continue;
-                    }
-                    let shared_before = b.instructions[..ii]
-                        .iter()
-                        .rev()
-                        .take_while(|j| !matches!(j, Instruction::Assign { dest: d2, value: v2 }
-                            if d2 == v && !matches!(v2, RValue::Call { func, .. } if func == STRUCT_SHARE_FN)))
-                        .any(|j| matches!(j, Instruction::Assign { value: RValue::Call { func, args }, .. }
-                            if func == STRUCT_SHARE_FN && args.len() == 1
-                                && matches!(&args[0], Operand::Local(l) if l == v)));
-                    if !shared_before {
-                        unowned.insert(v.0);
-                        unowned.insert(root(v.0));
                     }
                 }
                 continue;
@@ -7181,24 +7142,6 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                     };
                     lower_stmt_inner(ctx, &norm);
                     return;
-                }
-            }
-            // A tuple field write through a path with a side-effecting index
-            // (`ar[idx()].0 = v`): evaluate each such index once, up front, so
-            // the write and its copy-on-write (finish item A20) address the
-            // same element.
-            if let ast::Expr::FieldAccess { object, .. } = target {
-                if matches!(infer_expr_type(ctx, object), MirType::Tuple(_)) {
-                    if let Some(new_target) = hoist_impure_indices(ctx, target) {
-                        let norm = ast::Stmt::Assign {
-                            target: new_target,
-                            op: op.clone(),
-                            value: value.clone(),
-                            span: *span,
-                        };
-                        lower_stmt_inner(ctx, &norm);
-                        return;
-                    }
                 }
             }
             // Reassigning a closure-holding name: later calls must go through
@@ -8551,13 +8494,6 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                         }
                                     }
                                 }
-                            }
-                            // A tuple written through is exclusively owned by
-                            // the writing holder first (finish item A20).
-                            if matches!(infer_expr_type(ctx, object), MirType::Tuple(_)) {
-                                let before = ctx.partial_moved_locals.clone();
-                                unshare_tuple_holder(ctx, object);
-                                ctx.partial_moved_locals = before;
                             }
                             let partial_before_val = ctx.partial_moved_locals.clone();
                             let val_op = lower_expr_to_operand(ctx, value);
@@ -15201,182 +15137,6 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
 // Expression lowering
 // ---------------------------------------------------------------------------
 
-/// Element kinds for the copy-on-write of a tuple of this type: an owned tuple
-/// (the ones whose sharing is reference counted) of at most 16 elements.
-fn tuple_cow_kinds_for(ctx: &LoweringContext, ty: &MirType) -> Option<i64> {
-    if is_owned_tuple_ty(ctx, ty) {
-        tuple_cow_kinds(ty)
-    } else {
-        None
-    }
-}
-
-fn emit_tuple_cow_call(ctx: &mut LoweringContext, func: &str, mut args: Vec<Operand>, kinds: i64) {
-    args.push(Operand::Constant(Constant::Int(kinds)));
-    let sink = ctx.alloc_temp(MirType::I64);
-    ctx.emit(Instruction::Assign {
-        dest: sink,
-        value: RValue::Call { func: func.to_string(), args },
-    });
-}
-
-/// An index expression that can be lowered twice with no visible effect: a
-/// literal, a name, a field of one, arithmetic over those, or `len(..)` of one.
-fn index_expr_is_pure(e: &ast::Expr) -> bool {
-    match e {
-        ast::Expr::IntLiteral { .. } | ast::Expr::StringLiteral { .. } | ast::Expr::Identifier { .. } => true,
-        ast::Expr::FieldAccess { object, .. } => index_expr_is_pure(object),
-        ast::Expr::UnaryOp { operand, .. } => index_expr_is_pure(operand),
-        ast::Expr::BinaryOp { left, right, .. } => index_expr_is_pure(left) && index_expr_is_pure(right),
-        ast::Expr::FnCall { callee, args, .. } => {
-            matches!(callee.as_ref(), ast::Expr::Identifier { name, .. } if name == "len")
-                && args.len() == 1
-                && index_expr_is_pure(&args[0])
-        }
-        _ => false,
-    }
-}
-
-/// Value semantics for a tuple field WRITE (`u.0 = v`, `s.p.0 = v`,
-/// `arr[i].0 = v`; finish item A20). On the Cranelift JIT a tuple is one
-/// refcounted heap array that every owner shares (`let mut u = t`, `push(a, t)`,
-/// `S { p: t }`, `a[i] = t`, ...), so a write through one name was visible
-/// through the others while the LLVM backend, whose tuple is an inline value,
-/// never aliased. Before the write, walk the path ROOT FIRST and make each
-/// holder on it own its tuple exclusively: a tuple that is still shared
-/// (`ref_count > 1`) is replaced in its holder by a copy (see
-/// `TUPLE_COW_FN`); an unshared one is left alone. Root first matters: a write
-/// to `n.1.0` must not read `n.1` out of a tuple `n` that another name still
-/// shares. Returns the operand holding `expr`'s own handle for the next level
-/// down, or None where the path leaves what this can follow (a global, a call
-/// result, a map value, an array reached through a field, a computed index):
-/// those keep the old sharing.
-fn unshare_tuple_holder(ctx: &mut LoweringContext, expr: &ast::Expr) -> Option<Operand> {
-    match expr {
-        ast::Expr::Identifier { name, .. } => {
-            let l = find_local_by_name(ctx, name)?;
-            let ty = ctx.locals.iter().find(|x| x.id == l).map(|x| x.ty.clone())?;
-            // An array / map local is only a collection root of an index path.
-            if !matches!(ty, MirType::Struct(_) | MirType::Tuple(_) | MirType::Array(_, _) | MirType::Map { .. }) {
-                return None;
-            }
-            // A borrowed holder (an alias, a parameter) owns no reference to
-            // give up: it keeps the old sharing.
-            if !ctx.borrowed_locals.contains(&l.0) && !ctx.param_locals.contains(&l.0) {
-                if let Some(k) = tuple_cow_kinds_for(ctx, &ty) {
-                    emit_tuple_cow_call(ctx, TUPLE_COW_FN, vec![Operand::Local(l)], k);
-                }
-            }
-            Some(Operand::Local(l))
-        }
-        ast::Expr::FieldAccess { object: parent, field, .. } => {
-            let holder = unshare_tuple_holder(ctx, parent)?;
-            let ty = infer_expr_type(ctx, expr);
-            if !matches!(ty, MirType::Struct(_) | MirType::Tuple(_) | MirType::Array(_, _) | MirType::Map { .. }) {
-                return None;
-            }
-            if let Some(k) = tuple_cow_kinds_for(ctx, &ty) {
-                emit_tuple_cow_call(
-                    ctx,
-                    TUPLE_COW_SLOT_FN,
-                    vec![holder.clone(), Operand::Constant(Constant::Str(field.clone()))],
-                    k,
-                );
-            }
-            let tmp = ctx.alloc_local(None, ty, true);
-            ctx.emit(Instruction::Assign {
-                dest: tmp,
-                value: RValue::Field { object: holder, field: field.clone() },
-            });
-            Some(Operand::Local(tmp))
-        }
-        ast::Expr::IndexAccess { object: coll, index, .. } => {
-            // The index is lowered again by the write itself, so it must have
-            // no side effect (an impure one was hoisted into a temp by
-            // `hoist_impure_indices` before the write was lowered).
-            if !index_expr_is_pure(index) {
-                return None;
-            }
-            // The collection may itself be a path (`grid[i]`, `bx.items`):
-            // follow it root first so every tuple holder above it is unshared.
-            let arr = unshare_tuple_holder(ctx, coll)?;
-            // An array / map reached through a field or an element is read
-            // with a retain of its own; release it once this level is done.
-            let arr_owned = match (&arr, coll.as_ref()) {
-                (Operand::Local(l), c) if !matches!(c, ast::Expr::Identifier { .. }) => Some(*l),
-                _ => None,
-            };
-            let arr_ty = infer_expr_type(ctx, coll);
-            let mut next = None;
-            if let MirType::Map { value, .. } = &arr_ty {
-                // A map value tuple: unshare it in place; a deeper path through
-                // it keeps the old sharing.
-                if let Some(k) = tuple_cow_kinds_for(ctx, value) {
-                    let key = lower_expr_to_operand(ctx, index);
-                    emit_tuple_cow_call(ctx, TUPLE_COW_MAP_FN, vec![arr.clone(), key], k);
-                }
-            } else if let MirType::Array(elem, _) = &arr_ty {
-                let elem = (**elem).clone();
-                if matches!(elem, MirType::Struct(_) | MirType::Tuple(_) | MirType::Array(_, _) | MirType::Map { .. }) {
-                    let idx = lower_expr_to_operand(ctx, index);
-                    if let Some(k) = tuple_cow_kinds_for(ctx, &elem) {
-                        emit_tuple_cow_call(ctx, TUPLE_COW_ELEM_FN, vec![arr.clone(), idx.clone()], k);
-                    }
-                    let tmp = ctx.alloc_local(None, elem, true);
-                    ctx.emit(Instruction::Assign {
-                        dest: tmp,
-                        value: RValue::Index { object: arr.clone(), index: idx },
-                    });
-                    next = Some(Operand::Local(tmp));
-                }
-            }
-            if let Some(l) = arr_owned {
-                ctx.emit(Instruction::Drop { local: l });
-            }
-            next
-        }
-        _ => None,
-    }
-}
-
-/// Rewrite an assignment target path so every side-effecting index in it is
-/// evaluated exactly once, root first, into a named temp: `ar[idx()].0 = v`
-/// became `__a20_ix = idx(); ar[__a20_ix].0 = v`. The copy-on-write above and
-/// the write itself both lower the path, so an impure index ran twice (or, when
-/// it was left alone, the copy-on-write skipped the path and the holder kept the
-/// old sharing). Returns None when the path has no impure index.
-fn hoist_impure_indices(ctx: &mut LoweringContext, expr: &ast::Expr) -> Option<ast::Expr> {
-    match expr {
-        ast::Expr::FieldAccess { object, field, span } => {
-            let inner = hoist_impure_indices(ctx, object)?;
-            Some(ast::Expr::FieldAccess { object: Box::new(inner), field: field.clone(), span: *span })
-        }
-        ast::Expr::IndexAccess { object, index, span } => {
-            let inner = hoist_impure_indices(ctx, object);
-            if index_expr_is_pure(index) {
-                let obj = inner?;
-                return Some(ast::Expr::IndexAccess { object: Box::new(obj), index: index.clone(), span: *span });
-            }
-            // Root first: a nested impure index in the collection runs before this one.
-            let obj = match inner {
-                Some(o) => o,
-                None => (**object).clone(),
-            };
-            let ity = infer_expr_type(ctx, index);
-            let op = lower_expr_to_operand(ctx, index);
-            let name = format!("__a20_ix{}", ctx.next_local);
-            let l = ctx.alloc_local(Some(name.clone()), ity, false);
-            ctx.emit(Instruction::Assign { dest: l, value: RValue::Use(op) });
-            Some(ast::Expr::IndexAccess {
-                object: Box::new(obj),
-                index: Box::new(ast::Expr::Identifier { name, span: *span }),
-                span: *span,
-            })
-        }
-        _ => None,
-    }
-}
-
 /// Lower `object.field = value` using read-modify-writeback when `object` is
 /// itself a FieldAccess (nested mutation like `o.a.v = 99`). Direct local
 /// targets (base case) emit a plain StoreField exactly as before.
@@ -18842,7 +18602,8 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                     // freed, so `{"a": e}` with a live local `e` freed it
                     // twice.
                     let vty = infer_expr_type(ctx, v);
-                    if is_owned_value_ty(ctx, &vty) && retain_or_move_literal_element(ctx, v, &vop)
+                    if (is_owned_struct_ty(ctx, &vty) || is_owned_enum_ty(ctx, &vty))
+                        && retain_or_move_literal_element(ctx, v, &vop)
                     {
                         let added: Vec<u32> = ctx.partial_moved_locals.difference(&before).copied().collect();
                         for a in added {

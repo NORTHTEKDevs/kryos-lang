@@ -64,67 +64,6 @@ pub struct TraitMethodSig {
 /// retain of each heap leaf of the inline aggregate, WASM to nothing.
 pub const STRUCT_SHARE_FN: &str = "kryos_struct_share";
 
-/// Pseudo-calls that make a tuple WRITE value-correct on the Cranelift JIT
-/// (finish item A20). There a tuple is one refcounted heap array shared by
-/// every owner (`let mut u = t`, `push(arr, t)`, `S { p: t }` all take another
-/// reference to the same array), so a field write through one owner showed
-/// through the others; the AOT tuple is an inline value and never aliased.
-/// Emitted just before a tuple field write, root first, each unshares ONE
-/// holder: when the tuple it holds is shared (`ref_count > 1`) the holder is
-/// moved onto its own copy (`kryos_tuple_cow`). A no-op on the LLVM and WASM
-/// backends, whose tuples are values. The last argument is the element kinds
-/// (`tuple_cow_kinds`).
-///   TUPLE_COW_FN       `[local, kinds]`: a tuple (or a pointer to one) local
-///   TUPLE_COW_SLOT_FN  `[object, "field", kinds]`: the tuple held in a
-///                      tuple / struct field
-///   TUPLE_COW_ELEM_FN  `[array, index, kinds]`: the tuple held in an element
-///   TUPLE_COW_MAP_FN   `[map, key, kinds]`: the tuple held as a map value
-pub const TUPLE_COW_FN: &str = "__kryos_tuple_cow";
-pub const TUPLE_COW_SLOT_FN: &str = "__kryos_tuple_cow_slot";
-pub const TUPLE_COW_ELEM_FN: &str = "__kryos_tuple_cow_elem";
-pub const TUPLE_COW_MAP_FN: &str = "__kryos_tuple_cow_map";
-
-/// Element kinds `kryos_tuple_cow` retains when it copies a tuple (4 bits per
-/// element, element 0 lowest): 1 str, 2 array / tuple, 3 map, 4 shared arc,
-/// 5 struct box, 0 a scalar. None when the tuple holds anything else (an enum,
-/// a closure, a trait object) or is longer than 16: its sharing is not
-/// reference counted, so it is never copied-on-write.
-pub fn tuple_cow_kinds(ty: &MirType) -> Option<i64> {
-    let MirType::Tuple(es) = ty else { return None };
-    if es.is_empty() || es.len() > 16 {
-        return None;
-    }
-    let mut kinds = 0i64;
-    for (i, e) in es.iter().enumerate() {
-        let k = match e {
-            MirType::I8
-            | MirType::I16
-            | MirType::I32
-            | MirType::I64
-            | MirType::U8
-            | MirType::U16
-            | MirType::U32
-            | MirType::U64
-            | MirType::F32
-            | MirType::F64
-            | MirType::Bool
-            | MirType::Char => 0,
-            MirType::Str => 1,
-            MirType::Array(_, _) => 2,
-            MirType::Tuple(_) => {
-                tuple_cow_kinds(e)?;
-                2
-            }
-            MirType::Map { .. } => 3,
-            MirType::Shared(_) => 4,
-            MirType::Struct(n) if owned_struct_registered(n) => 5,
-            _ => return None,
-        };
-        kinds |= k << (i * 4);
-    }
-    Some(kinds)
-}
-
 /// `kryos_array_dup` element kind for an array of tuples. A tuple element is a
 /// refcounted KryosArray on Cranelift (the dup retains it like any array
 /// header, kind 1) but a `kryos_calloc` box on LLVM (an owner-count retain,
