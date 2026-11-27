@@ -11,7 +11,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"; cd "$ROOT"
 K="${KRYOS_BIN:-compiler/target/release/kryos.exe}"; [ -x "$K" ] || K="compiler/target/release/kryos"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 fail=0
-for i in 1 2 3 4 5 6; do
+for i in 1 2 3 4 5 6 7; do
     f="tests/tuple_value_copy_pin_$i.kry"
     want="$(tr -d '\r' < "tests/tuple_value_copy_pin_$i.out")"
     jit="$(timeout 120 "$K" run "$f" 2>&1 | tr -d '\r')"
