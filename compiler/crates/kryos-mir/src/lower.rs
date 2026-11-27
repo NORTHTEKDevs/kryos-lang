@@ -9292,41 +9292,6 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                 // Outside try: store the exception in the thread-local via
                 // kryos_exception_throw and return from this function so the
                 // caller can detect the pending exception and unwind.
-                // This `throw` leaves the function through the Return below, a
-                // path no codegen unwind check sees (that check only runs
-                // after a CALL that left an exception pending). So the throw
-                // releases, exactly as a `return` does, every named local live
-                // on this path and the iterables of the enclosing `for` loops;
-                // the thrown value took its own reference above. The drops
-                // belong to this path only (`dropped_locals` is path-blind).
-                let mut path_drops: Vec<u32> = Vec::new();
-                for i in (0..ctx.locals.len()).rev() {
-                    if ctx.locals[i].name.is_none() {
-                        continue;
-                    }
-                    let local_id = ctx.locals[i].id;
-                    if ctx.param_locals.contains(&local_id.0)
-                        || ctx.borrowed_locals.contains(&local_id.0)
-                        || ctx.dropped_locals.contains(&local_id.0)
-                        || ctx.partial_moved_locals.contains(&local_id.0)
-                        || ctx.hidden_locals.contains(&local_id.0)
-                        // The owned params get their drop just below.
-                        || ctx.owned_param_locals.contains(&local_id)
-                    {
-                        continue;
-                    }
-                    drop_tag(ctx, "throw-stmt-scope-end");
-                    ctx.emit(Instruction::Drop { local: local_id });
-                    ctx.dropped_locals.insert(local_id.0);
-                    path_drops.push(local_id.0);
-                }
-                for id in path_drops {
-                    ctx.dropped_locals.remove(&id);
-                }
-                let iter_drops: Vec<LocalId> = ctx.loop_iter_drops.iter().rev().copied().collect();
-                for it in iter_drops {
-                    ctx.emit(Instruction::Drop { local: it });
-                }
                 // The unwind path releases the named locals but never a param:
                 // the struct / enum params this function owns go here, as a
                 // `return` would release them.

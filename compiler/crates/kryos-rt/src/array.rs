@@ -812,8 +812,6 @@ pub unsafe extern "C" fn kryos_array_free_chain(arr: *mut KryosArray, chain: i64
                     f(h);
                 }
                 5 => crate::arc::kryos_arc_release(h as *mut u8),
-                // A tuple leaf: `leaf_fn` carries its element kinds.
-                6 => kryos_tuple_release(h as *mut KryosArray, leaf_fn),
                 _ => {}
             }
         }

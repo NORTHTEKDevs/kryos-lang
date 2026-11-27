@@ -2130,14 +2130,13 @@ pub fn compile_module_with_options(
                         if array_dup_kind(elem.as_ref()) != 0 {
                             let val = builder.ins().load(types::I64, MemFlags::new(), env_ptr, offset);
                             // `[[T]]`: the rows' own elements go too.
-                            if let Some((chain, leaf, tuple_kinds)) = array_free_chain(elem.as_ref(), &func_ids) {
-                                let leaf_addr = match (tuple_kinds, leaf.and_then(|n| func_ids.get(&n).copied())) {
-                                    (Some(kinds), _) => builder.ins().iconst(types::I64, kinds),
-                                    (None, Some(lid)) => {
+                            if let Some((chain, leaf)) = array_free_chain(elem.as_ref(), &func_ids) {
+                                let leaf_addr = match leaf.and_then(|n| func_ids.get(&n).copied()) {
+                                    Some(lid) => {
                                         let lref = object_module.declare_func_in_func(lid, builder.func);
                                         builder.ins().func_addr(types::I64, lref)
                                     }
-                                    (None, None) => builder.ins().iconst(types::I64, 0),
+                                    None => builder.ins().iconst(types::I64, 0),
                                 };
                                 let cv = builder.ins().iconst(types::I64, chain);
                                 let fid = func_ids["kryos_array_free_chain"];
@@ -9109,15 +9108,12 @@ fn emit_exception_cleanup_drops<M: Module>(
 fn array_free_chain(
     elem: &MirType,
     func_ids: &HashMap<String, FuncId>,
-) -> Option<(i64, Option<String>, Option<i64>)> {
+) -> Option<(i64, Option<String>)> {
     if !matches!(elem, MirType::Array(_, _)) {
         return None;
     }
     let mut chain = 0i64;
     let mut leaf = None;
-    // The tuple kinds of a tuple leaf (chain code 6), handed to the runtime in
-    // place of a leaf drop function.
-    let mut tuple_kinds = None;
     let mut t = elem;
     for level in 0..12 {
         let shift = level * 4;
@@ -9144,11 +9140,6 @@ fn array_free_chain(
                 chain |= 5 << shift;
                 break;
             }
-            MirType::Tuple(tes) if kryos_mir::ir::tuple_array_elem_releasable(t) => {
-                chain |= 6 << shift;
-                tuple_kinds = Some(tuple_release_kinds(tes));
-                break;
-            }
             MirType::Tuple(_) => return None,
             _ => break,
         }
@@ -9156,7 +9147,7 @@ fn array_free_chain(
             return None;
         }
     }
-    Some((chain, leaf, tuple_kinds))
+    Some((chain, leaf))
 }
 
 fn emit_helper_array_field_free<M: Module>(
