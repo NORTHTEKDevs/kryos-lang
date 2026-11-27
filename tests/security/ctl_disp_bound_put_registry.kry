@@ -1,0 +1,15 @@
+// LEDGER item 122 / 123: a call through a trait signature references every candidate: a call through a generic bound reaches an impl that stores its argument in a global.
+@capabilities(fs:read)
+fn secret() -> fn() -> str { return || file_read("tests/security/secret_for_closure_launder.txt") }
+fn safe() -> str { return "safe" }
+let mut REG: [fn() -> str] = []
+trait Mk { fn put(self: Self, f: fn() -> str) }
+struct Evil {}
+impl Mk for Evil { fn put(self: Self, f: fn() -> str) { REG = push(REG, f) } }
+fn viabound<X: Mk>(x: X, f: fn() -> str) { x.put(f) }
+fn show() { let h = || "h"
+  deny!(fs:read) { for h in REG { println("ok: " + h()) } } }
+@capabilities(fs:read)
+fn main() { let r = safe
+  viabound(Evil {}, r)
+  show() }

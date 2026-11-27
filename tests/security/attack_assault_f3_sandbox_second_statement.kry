@@ -1,0 +1,19 @@
+// ASSAULT-F3 attack: the handler runs a read BEFORE its deny! block, so the body is not one deny!
+// block and the caller is still charged the actor's whole ceiling. Main holds no capability, so the
+// call must be REJECTED (E0507) in both modes and the secret is never printed.
+@capabilities(fs:read)
+actor Sand {
+    fn go(self: Sand) {
+        println("ASSAULT-F3-SECOND: " + file_read("tests/security/secret_for_closure_launder.txt"))
+        deny!(fs:read) {
+            println("quiet")
+        }
+    }
+}
+
+@capabilities()
+fn main() {
+    let s = Sand()
+    s.go()
+    sleep(100)
+}

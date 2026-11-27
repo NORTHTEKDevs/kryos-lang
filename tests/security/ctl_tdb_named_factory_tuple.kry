@@ -1,0 +1,16 @@
+// Control of the same shape with a pure closure. LEDGER items 119 and 123: a factory that returns a NAMED function; the function stores into the array held inside a tuple parameter.
+@capabilities(fs:read)
+fn secret() -> fn() -> str { return || file_read("tests/security/secret_for_closure_launder.txt") }
+fn safe() -> str { return "safe" }
+trait Rn { fn go(self: Self, fns: [fn() -> str]) { let f = || "h"
+  deny!(fs:read) { for f in fns { println("ok: " + f()) } } } }
+struct R1 {}
+impl Rn for R1 {}
+fn put_t(p: ([fn() -> str], i64), g: fn() -> str) { p.0[0] = g }
+fn get_op() -> fn(([fn() -> str], i64), fn() -> str) { return put_t }
+@capabilities(fs:read)
+fn main() { let r = secret()
+  let fns = [safe]
+  let op = get_op()
+  op((fns, 1), safe)
+  R1 {}.go(fns) }

@@ -1,0 +1,17 @@
+// ASSAULT-F2 attack: a function that runs its callback inside deny! is checked at its direct call
+// sites. Handed out as a value it would be called where no argument is in view, so naming it
+// anywhere but in call position is REJECTED (E0507) in both modes and the secret is never printed.
+fn run_callback(cb: fn() -> str) {
+    deny!(fs:read) {
+        println("ASSAULT-F2-VALUE: " + cb())
+    }
+}
+
+@capabilities(fs:read)
+fn secret() -> str { return file_read("tests/security/secret_for_closure_launder.txt") }
+
+@capabilities(fs:read)
+fn main() {
+    let go = run_callback
+    go(secret)
+}

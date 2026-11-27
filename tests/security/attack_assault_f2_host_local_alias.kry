@@ -1,0 +1,21 @@
+// ASSAULT-F2 attack: the privileged callback reaches the host through a local variable. Only a named
+// function or a closure literal is accepted for a callback that runs inside a deny! block, so the
+// call is REJECTED (E0507) in both modes and the secret is never printed.
+actor Host {
+    fn run_callback(self: Host, cb: fn() -> str) {
+        deny!(fs:read) {
+            println("ASSAULT-F2-ALIAS: " + cb())
+        }
+    }
+}
+
+@capabilities(fs:read)
+fn secret() -> str { return file_read("tests/security/secret_for_closure_launder.txt") }
+
+@capabilities(fs:read)
+fn main() {
+    let h = Host()
+    let cb = secret
+    h.run_callback(cb)
+    sleep(100)
+}

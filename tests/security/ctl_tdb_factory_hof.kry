@@ -1,0 +1,16 @@
+// LEDGER item 123: the function value a factory returned is handed to a helper that calls it.
+@capabilities(fs:read)
+fn secret() -> fn() -> str { return || file_read("tests/security/secret_for_closure_launder.txt") }
+fn safe() -> str { return "safe" }
+fn mk6(g: fn() -> str) -> fn([fn() -> str]) { return fn(reg: [fn() -> str]) { reg[0] = g } }
+fn apply(op: fn([fn() -> str]), reg: [fn() -> str]) { op(reg) }
+trait Rn { fn go(self: Self, fns: [fn() -> str]) { let f = || "h"
+  deny!(fs:read) { for f in fns { println("ok: " + f()) } } } }
+struct R1 {}
+impl Rn for R1 {}
+@capabilities(fs:read)
+fn main() { let r = safe
+  let fns = [safe]
+  let st = mk6(r)
+  apply(st, fns)
+  R1 {}.go(fns) }

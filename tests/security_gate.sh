@@ -1366,6 +1366,108 @@ R3_ESCAPES="$R3_ESCAPES \
     attack_deny_param_pick_passthrough \
     attack_deny_param_factory_guard \
     attack_deny_late_if_branch_store"
+# Residual wave (items 122, 124, 125): the verdict must not depend on where a helper, a trait
+# default or the reader is declared, and a call through a trait signature (self in a default body,
+# a generic bound, a dyn) references every candidate with the call's arguments. The `resid` programs
+# are the finish-line corpus shapes (forward chains into an actor handler, an impl method, a select
+# arm, a spawn, a ring of 40 helpers, trait defaults, a recursion that swaps its parameters, 100
+# rotated parameters); the `disp` programs are the dispatch shapes.
+R3_ESCAPES="$R3_ESCAPES \
+    attack_resid_actor_handler_fwd \
+    attack_resid_method_global_fwd \
+    attack_resid_select_store_fwd \
+    attack_resid_spawn_store_fwd \
+    attack_resid_ring40_fwd \
+    attack_resid_trait_default_show_before_store \
+    attack_resid_trait_default_selfrec_swap \
+    attack_resid_trait_after_main_default_store \
+    attack_resid_selfrec_swap_global \
+    attack_resid_cycle2_k100 \
+    attack_disp_self_returns_container \
+    attack_disp_self_impl_builds_container \
+    attack_disp_self_two_impls \
+    attack_disp_self_put_registry \
+    attack_disp_bound_put_registry \
+    attack_disp_bound_return_chain \
+    attack_disp_dyn_default_param"
+# Items 119 and 123 (the trait-default-body finish-line rows f11, f12 and g07 and the
+# escape_status.sh rows 119a-119e and 123a). A store through a container held inside a tuple,
+# Option, Result or enum parameter is a store into the caller's container (`storage_rows_in`), and a
+# store made through a function value a declaration hands out (the lambda a factory returns, the
+# named function it names) is the declaration's own effect: the container parameters of a
+# returned function type are input storage like its parameters (`mark_returned_fn_storage`), so the
+# store is filed against the factory and replayed at every reference with that reference's
+# arguments. The `tdb` programs are the finish-line shapes plus the ones around them (a generic
+# bound, a lambda with a tuple parameter, a factory that wraps a factory, a factory result handed to
+# a helper or relayed by one, kept in a struct field or in an array, a closure created inside the
+# factory, a named function picked by a condition, a factory that is a method or a bound method).
+R3_ESCAPES="$R3_ESCAPES \
+    attack_slot_param_container_in_tuple \
+    attack_slot_param_container_in_result \
+    attack_slot_param_array_of_option \
+    attack_slot_param_option_of_nested_array \
+    attack_slot_param_tuple_of_two_arrays \
+    attack_slot_param_fn_value_factory \
+    attack_tdb_put_tuple_free \
+    attack_tdb_put_tuple_default \
+    attack_tdb_put_tuple_bound \
+    attack_tdb_lambda_tuple \
+    attack_tdb_factory_captured \
+    attack_tdb_factory_two_level \
+    attack_tdb_factory_hof \
+    attack_tdb_factory_struct_field \
+    attack_tdb_factory_array_of_ops \
+    attack_tdb_factory_inner_secret \
+    attack_tdb_factory_tuple_lambda \
+    attack_tdb_named_factory_tuple \
+    attack_tdb_named_factory_cond \
+    attack_tdb_method_factory \
+    attack_tdb_bound_factory \
+    attack_tdb_factory_relay \
+    attack_tdb_factory_param_arg"
+# Finish-line cap:r2-storage-paths (16 rows that still escaped after the factory wave) and the shapes around them: one
+# rule, three places it was missing. A container is one value however many names it has. (1) A `type` alias over a
+# container carried one row var shared by every use, so a parameter of the alias type was never one of its function's own
+# row vars, no call freshened it and the helper's store was never recorded as its effect (`freshen_alias_rows`): an alias is
+# its expansion now. (2) A struct field is ONE row var for the whole program, and a container that flowed into it (the
+# array a caller put in a tuple field, a struct built from a local, an array held in another array or a map) is the same
+# array: a closure stored through the field, or through an annotated `let`, reached only the field's var. (3) The result of
+# a call that returns the container it was handed (a getter, a getter through a trait bound, a default body, a `dyn`) is
+# that container: a store through the result reached only the call's copy of the parameter. Rows now carry
+# `alias_src` edges where two containers meet (`unify` inside an array, set, map, generic argument or `&mut`) and a store
+# of a closure value walks them (`store_row`); a closure copied out of one container into another is a value flow and
+# ties nothing (the precision controls below). The same edge ties the container parameter of a lambda a factory returns
+# (also one that another lambda returns, or that hands the container to a named helper) to the factory's return type, which
+# closes two of the three shapes the factory wave listed as open.
+R3_ESCAPES="$R3_ESCAPES \
+    attack_r2sp_alias_param \
+    attack_r2sp_alias_two_params \
+    attack_r2sp_alias_returned_op \
+    attack_r2sp_alias_trait_sig \
+    attack_r2sp_alias_result_pair \
+    attack_r2sp_struct_tuple_inline \
+    attack_r2sp_struct_tuple_local \
+    attack_r2sp_struct_tuple_direct \
+    attack_r2sp_struct_tuple_relay \
+    attack_r2sp_struct_tuple_builder \
+    attack_r2sp_struct_tuple_dyn \
+    attack_r2sp_struct_tuple_enum \
+    attack_r2sp_struct_tuple_second \
+    attack_r2sp_getter_free \
+    attack_r2sp_getter_main \
+    attack_r2sp_getter_chain \
+    attack_r2sp_getter_forward \
+    attack_r2sp_getter_tuple \
+    attack_r2sp_getter_element \
+    attack_r2sp_getter_bound \
+    attack_r2sp_getter_default \
+    attack_r2sp_getter_dyn \
+    attack_r2sp_getter_dyn_param \
+    attack_r2sp_lambda_nested \
+    attack_r2sp_lambda_delegates \
+    attack_r2sp_local_annotated \
+    attack_r2sp_local_array_of_arrays \
+    attack_r2sp_local_map_of_arrays"
 for esc in $R3_ESCAPES; do
     esc_ok=1
     for mode in "" "--strict-capabilities"; do
@@ -1410,6 +1512,82 @@ R3_CONTROLS="ctl_deny_param_wrapper_pure \
     ctl_slot_param_fn_value_map_of_ops_pure \
     ctl_slot_lambda_wrapper_calls_put_pure \
     ctl_deny_plugin_platform_pure"
+# The same shapes with a pure closure: accepted in both modes.
+R3_CONTROLS="$R3_CONTROLS \
+    ctl_resid_actor_handler_fwd \
+    ctl_resid_method_global_fwd \
+    ctl_resid_select_store_fwd \
+    ctl_resid_spawn_store_fwd \
+    ctl_resid_ring40_fwd \
+    ctl_resid_trait_default_show_before_store \
+    ctl_resid_trait_default_selfrec_swap \
+    ctl_resid_trait_after_main_default_store \
+    ctl_resid_selfrec_swap_global \
+    ctl_resid_cycle2_k100 \
+    ctl_disp_self_returns_container \
+    ctl_disp_self_impl_builds_container \
+    ctl_disp_self_two_impls \
+    ctl_disp_self_put_registry \
+    ctl_disp_bound_put_registry \
+    ctl_disp_bound_return_chain \
+    ctl_disp_dyn_default_param"
+R3_CONTROLS="$R3_CONTROLS \
+    ctl_tdb_put_tuple_free \
+    ctl_tdb_put_tuple_default \
+    ctl_tdb_put_tuple_bound \
+    ctl_tdb_lambda_tuple \
+    ctl_tdb_factory_captured \
+    ctl_tdb_factory_two_level \
+    ctl_tdb_factory_hof \
+    ctl_tdb_factory_struct_field \
+    ctl_tdb_factory_array_of_ops \
+    ctl_tdb_factory_inner_secret \
+    ctl_tdb_factory_tuple_lambda \
+    ctl_tdb_named_factory_tuple \
+    ctl_tdb_named_factory_cond \
+    ctl_tdb_method_factory \
+    ctl_tdb_bound_factory \
+    ctl_tdb_factory_relay \
+    ctl_tdb_factory_param_arg"
+# The twins of the cap:r2-storage-paths pins hand the block only a pure closure and must stay accepted, and the last seven
+# are privileged stores into a container that no block reads (a call's own copy of a parameter, a fresh container, a closure
+# copied between arrays, an alias type used twice): accepted on master and here.
+R3_CONTROLS="$R3_CONTROLS \
+    ctl_r2sp_alias_param \
+    ctl_r2sp_alias_two_params \
+    ctl_r2sp_alias_returned_op \
+    ctl_r2sp_alias_trait_sig \
+    ctl_r2sp_alias_result_pair \
+    ctl_r2sp_struct_tuple_inline \
+    ctl_r2sp_struct_tuple_local \
+    ctl_r2sp_struct_tuple_direct \
+    ctl_r2sp_struct_tuple_relay \
+    ctl_r2sp_struct_tuple_builder \
+    ctl_r2sp_struct_tuple_dyn \
+    ctl_r2sp_struct_tuple_enum \
+    ctl_r2sp_struct_tuple_second \
+    ctl_r2sp_getter_free \
+    ctl_r2sp_getter_main \
+    ctl_r2sp_getter_chain \
+    ctl_r2sp_getter_forward \
+    ctl_r2sp_getter_tuple \
+    ctl_r2sp_getter_element \
+    ctl_r2sp_getter_bound \
+    ctl_r2sp_getter_default \
+    ctl_r2sp_getter_dyn \
+    ctl_r2sp_getter_dyn_param \
+    ctl_r2sp_lambda_nested \
+    ctl_r2sp_lambda_delegates \
+    ctl_r2sp_local_annotated \
+    ctl_r2sp_local_array_of_arrays \
+    ctl_r2sp_local_map_of_arrays \
+    ctl_r2sp_two_arrays_other_read \
+    ctl_r2sp_copy_closure_between_arrays \
+    ctl_r2sp_fresh_container_getter \
+    ctl_r2sp_same_helper_two_arrays \
+    ctl_r2sp_getter_two_arrays \
+    ctl_r2sp_struct_tuple_other_array \
+    ctl_r2sp_alias_two_independent"
 for ctl in $R3_CONTROLS; do
     ctl_ok=1
     for mode in "" "--strict-capabilities"; do
@@ -1432,6 +1610,93 @@ for prog in examples/showcase/repo_auditor.kry ecosystem/kryos-tool-broker; do
         fi
     done
     [ $prog_ok -eq 1 ] && echo "  ok   $prog still accepted in default and strict mode"
+done
+
+# Cost of the call-graph-order pass: two functions rotating 100 function-typed parameters need about
+# 100 re-check rounds. Recomputing the strongly connected components of the whole row substitution
+# after every bind made that check take minutes (94 s here, 23 s for the one-function form); the
+# components are now kept up to date incrementally, so it takes about a second. The check must
+# finish (a timeout is a failure) and give the same verdicts.
+for pair in "attack_resid_cycle2_k100:1" "ctl_resid_cycle2_k100:0"; do
+    prog="${pair%%:*}"; want="${pair##*:}"
+    for mode in "" "--strict-capabilities"; do
+        timeout 30 "$K" check $mode "tests/security/$prog.kry" >"$TMP/cost" 2>&1; rc=$?
+        if [ $rc -eq 124 ]; then
+            echo "  FAIL: $prog.kry did not finish \`check $mode\` within 30 s (cost of the rotation pass)"; fail=1
+        elif [ "$want" = 1 ] && [ $rc -eq 0 ]; then
+            echo "  FAIL: $prog.kry passed \`check $mode\`"; fail=1
+        elif [ "$want" = 0 ] && [ $rc -ne 0 ]; then
+            echo "  FAIL: $prog.kry rejected by \`check $mode\`"; tail -3 "$TMP/cost" | sed 's/^/    /'; fail=1
+        else
+            echo "  ok   $prog.kry \`check $mode\` finished in time with the expected verdict"
+        fi
+    done
+done
+
+# The closure-return summary of a function was keyed by its bare name, so two impls that give a
+# method of one name different closures to return (a privileged named function and a pure one, a
+# named function and the parameter handed on) wrote over each other in every round and
+# `kryos check` never returned (finish-line rows trait-default-body-d3f2beae/n04 and n04_ctl;
+# also two inherent impls and two actors). The entries of a shared name are joined now. A timeout is
+# a failure; the attack must still be rejected and the controls accepted.
+for pair in "attack_tdb_two_impls_named_fn:1" "ctl_tdb_two_impls_return_param:0" "ctl_tdb_inherent_impls_return_param:0"; do
+    prog="${pair%%:*}"; want="${pair##*:}"
+    for mode in "" "--strict-capabilities"; do
+        timeout 30 "$K" check $mode "tests/security/$prog.kry" >"$TMP/hang" 2>&1; rc=$?
+        if [ $rc -eq 124 ]; then
+            echo "  FAIL: $prog.kry did not finish \`check $mode\` within 30 s (same-named methods returning different closures)"; fail=1
+        elif [ "$want" = 1 ] && [ $rc -eq 0 ]; then
+            echo "  FAIL: $prog.kry passed \`check $mode\`"; fail=1
+        elif [ "$want" = 0 ] && [ $rc -ne 0 ]; then
+            echo "  FAIL: $prog.kry rejected by \`check $mode\`"; tail -3 "$TMP/hang" | sed 's/^/    /'; fail=1
+        else
+            echo "  ok   $prog.kry \`check $mode\` finished in time with the expected verdict"
+        fi
+    done
+done
+
+# ASSAULT-F1, F2, F3 (LEDGER, "Close-out cap lane, assault_f1_f3"): three programs of capability-safe
+# code that the checker refused, each relaxed for the one shape it was written for. The controls must
+# be accepted in both modes and run; the attacks beside them must stay rejected with E0507 and must
+# never print the secret.
+for ctl in ctl_assault_f1_vault_stores_callback:ASSAULT-F1-OK \
+           ctl_assault_f1_vault_declared_ceiling:ASSAULT-F1-DECLARED-OK \
+           ctl_assault_f2_host_callback_in_deny:ASSAULT-F2-OK \
+           ctl_assault_f2_fn_callback_other_capability:ASSAULT-F2-FN-OK \
+           ctl_assault_f3_sandbox_actor:ASSAULT-F3-OK \
+           ctl_assault_f3_sandbox_fn:ASSAULT-F3-FN-OK; do
+    prog="${ctl%%:*}"; marker="${ctl##*:}"
+    ctl_ok=1
+    for mode in "" "--strict-capabilities"; do
+        if ! "$K" check $mode "tests/security/$prog.kry" >"$TMP/af" 2>&1; then
+            echo "  FAIL: $prog.kry rejected by \`check $mode\` (over-rejection of capability-safe code):"
+            tail -3 "$TMP/af" | sed 's/^/    /'; ctl_ok=0; fail=1
+        fi
+    done
+    if ! "$K" run "tests/security/$prog.kry" 2>&1 | grep -q "$marker"; then
+        echo "  FAIL: $prog.kry did not print $marker under \`run\`"; ctl_ok=0; fail=1
+    fi
+    [ $ctl_ok -eq 1 ] && echo "  ok   $prog.kry accepted in both modes and prints its marker"
+done
+for esc in attack_assault_f1_vault_privileged_callback attack_assault_f1_vault_privileged_lambda \
+           attack_assault_f1_vault_shadowed_param attack_assault_f1_vault_second_writer \
+           attack_assault_f2_host_privileged_callback attack_assault_f2_host_privileged_lambda \
+           attack_assault_f2_host_local_alias attack_assault_f2_fn_as_value \
+           attack_assault_f2_host_forwarded_param attack_assault_f2_host_coarse_family \
+           attack_assault_f3_sandbox_second_statement attack_assault_f3_sandbox_helper_read; do
+    esc_ok=1
+    for mode in "" "--strict-capabilities"; do
+        if "$K" check $mode "tests/security/$esc.kry" >"$TMP/af" 2>&1; then
+            echo "  FAIL: $esc.kry passed \`check $mode\`"; esc_ok=0; fail=1
+        elif ! grep -q "E0507" "$TMP/af"; then
+            echo "  FAIL: $esc.kry rejected by \`check $mode\`, but not with E0507:"
+            tail -3 "$TMP/af" | sed 's/^/    /'; esc_ok=0; fail=1
+        fi
+        if "$K" run $mode "tests/security/$esc.kry" 2>&1 | grep -q "TOPSECRET"; then
+            echo "  FAIL: $esc.kry printed the secret under \`run $mode\`"; esc_ok=0; fail=1
+        fi
+    done
+    [ $esc_ok -eq 1 ] && echo "  ok   $esc.kry rejected in both modes with E0507"
 done
 
 [ $fail -eq 0 ] && echo "security-gate: PASS" || echo "security-gate: FAIL"

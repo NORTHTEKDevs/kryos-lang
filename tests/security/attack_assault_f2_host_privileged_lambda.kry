@@ -1,0 +1,12 @@
+// ASSAULT-F2 attack: the same call with a closure literal that reads a protected file. Must be
+// REJECTED (E0507) in both modes and must never print the secret.
+fn run_callback(cb: fn() -> str) {
+    deny!(fs:read) {
+        println("ASSAULT-F2-LAMBDA: " + cb())
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    run_callback(|| file_read("tests/security/secret_for_closure_launder.txt"))
+}

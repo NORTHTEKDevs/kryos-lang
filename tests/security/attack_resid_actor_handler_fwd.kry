@@ -1,0 +1,29 @@
+// LEDGER items 122, 124, 125 (residual wave): an actor handler hands the closure to a helper chain declared below it.
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+fn safe() -> str {
+    return "safe"
+}
+
+actor Worker {
+    fn run(self, f: fn() -> str) {
+        helper_a(f)
+    }
+}
+@capabilities(fs:read)
+fn main() {
+    let r = secret()
+    let w = Worker()
+    deny!(fs:read) {
+        w.run(r)
+        sleep(200)
+    }
+}
+fn helper_a(f: fn() -> str) {
+    helper_b(f)
+}
+fn helper_b(f: fn() -> str) {
+    println("LEAK: " + f())
+}

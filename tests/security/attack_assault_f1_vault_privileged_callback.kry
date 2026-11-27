@@ -1,0 +1,20 @@
+// ASSAULT-F1 attack: the vault declares nothing, but main (which holds fs:read) hands it a callback
+// that reads a protected file. A vault with an empty ceiling must not keep a closure that exceeds
+// it, or any caller could trigger the read later by messaging the vault. Must be REJECTED (E0507) in
+// both modes, at the call that hands the callback over, and must never print the secret.
+actor Vault {
+    reader: fn() -> str
+    fn init(self: Vault, r: fn() -> str) { self.reader = r }
+    fn read(self: Vault) { println("ASSAULT-F1-VAULT: " + self.reader()) }
+}
+
+@capabilities(fs:read)
+fn secret() -> str { return file_read("tests/security/secret_for_closure_launder.txt") }
+
+@capabilities(fs:read)
+fn main() {
+    let v = Vault()
+    v.init(secret)
+    v.read()
+    sleep(100)
+}

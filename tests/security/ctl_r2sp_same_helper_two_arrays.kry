@@ -1,0 +1,15 @@
+// one helper called for two arrays, the privileged closure stored into the first: each call has its own copy of the parameter.
+@capabilities(fs:read)
+fn secret() -> fn() -> str { return || file_read("tests/security/secret_for_closure_launder.txt") }
+fn safe() -> str { return "safe" }
+fn put(a: [fn() -> str], g: fn() -> str) { a[0] = g }
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let r = secret()
+    let a1 = [safe]
+    let a2 = [safe]
+    put(a1, r)
+    put(a2, safe)
+    deny!(fs:read) { for f in a2 { println("ok: " + f()) } }
+}

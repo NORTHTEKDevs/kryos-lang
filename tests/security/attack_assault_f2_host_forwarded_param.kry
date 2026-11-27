@@ -1,0 +1,22 @@
+// ASSAULT-F2 attack: a relay forwards its own parameter to the host. The relay's argument is a
+// parameter, not a named function or a literal, so what it carries is not known where it is handed
+// to the host. Must be REJECTED (E0507) in both modes and must never print the secret.
+actor Host {
+    fn run_callback(self: Host, cb: fn() -> str) {
+        deny!(fs:read) {
+            println("ASSAULT-F2-RELAY: " + cb())
+        }
+    }
+}
+
+fn relay(h: Host, cb: fn() -> str) { h.run_callback(cb) }
+
+@capabilities(fs:read)
+fn secret() -> str { return file_read("tests/security/secret_for_closure_launder.txt") }
+
+@capabilities(fs:read)
+fn main() {
+    let h = Host()
+    relay(h, secret)
+    sleep(100)
+}

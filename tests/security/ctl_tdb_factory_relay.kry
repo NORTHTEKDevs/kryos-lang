@@ -1,0 +1,16 @@
+// Control of the same shape with a pure closure. LEDGER item 123: the function value a factory returned is handed on by a helper that returns its parameter.
+@capabilities(fs:read)
+fn secret() -> fn() -> str { return || file_read("tests/security/secret_for_closure_launder.txt") }
+fn safe() -> str { return "safe" }
+trait Rn { fn go(self: Self, fns: [fn() -> str]) { let f = || "h"
+  deny!(fs:read) { for f in fns { println("ok: " + f()) } } } }
+struct R1 {}
+impl Rn for R1 {}
+fn mk(g: fn() -> str) -> fn([fn() -> str]) { return fn(reg: [fn() -> str]) { reg[0] = g } }
+fn id(op: fn([fn() -> str])) -> fn([fn() -> str]) { return op }
+@capabilities(fs:read)
+fn main() { let r = secret()
+  let fns = [safe]
+  let st = id(mk(safe))
+  st(fns)
+  R1 {}.go(fns) }

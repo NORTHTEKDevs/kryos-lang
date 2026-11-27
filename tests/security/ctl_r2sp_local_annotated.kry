@@ -1,0 +1,13 @@
+// no call at all: a second name for an array, written as an annotated `let`, is stored into and the block reads the first name.
+@capabilities(fs:read)
+fn secret() -> fn() -> str { return || file_read("tests/security/secret_for_closure_launder.txt") }
+fn safe() -> str { return "safe" }
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let r = safe
+    let fns = [safe]
+    let a: [fn() -> str] = fns
+    a[0] = r
+    deny!(fs:read) { for f in fns { println("ok: " + f()) } }
+}

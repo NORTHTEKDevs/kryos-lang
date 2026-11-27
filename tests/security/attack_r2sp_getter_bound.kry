@@ -1,0 +1,17 @@
+// finish-line cap:r2-storage-paths-dd09d926/g04_f05_trait_getter_no_default: the array is read back through a required trait method called through a generic bound.
+@capabilities(fs:read)
+fn secret() -> fn() -> str { return || file_read("tests/security/secret_for_closure_launder.txt") }
+fn safe() -> str { return "safe" }
+trait Reg { fn get(self: Self) -> [fn() -> str] }
+struct Holder { reg: [fn() -> str] }
+impl Reg for Holder { fn get(self: Holder) -> [fn() -> str] { return self.reg } }
+fn add<A: Reg>(x: A, g: fn() -> str) { let a = x.get()
+    a[0] = g }
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let r = secret()
+    let h = Holder { reg: [safe] }
+    add(h, r)
+    deny!(fs:read) { for f in h.reg { println("LEAK: " + f()) } }
+}

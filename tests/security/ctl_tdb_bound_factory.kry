@@ -1,0 +1,18 @@
+// Control of the same shape with a pure closure. LEDGER item 123: the factory is a trait method reached through a generic bound (main holds all, so only the row layer judges the deny! block).
+@capabilities(fs:read)
+fn secret() -> fn() -> str { return || file_read("tests/security/secret_for_closure_launder.txt") }
+fn safe() -> str { return "safe" }
+trait Rn { fn go(self: Self, fns: [fn() -> str]) { let f = || "h"
+  deny!(fs:read) { for f in fns { println("ok: " + f()) } } } }
+struct R1 {}
+impl Rn for R1 {}
+trait Mk { fn mk(self: Self, g: fn() -> str) -> fn([fn() -> str]) }
+struct M3 {}
+impl Mk for M3 { fn mk(self: M3, g: fn() -> str) -> fn([fn() -> str]) { return fn(reg: [fn() -> str]) { reg[0] = g } } }
+fn use_mk<T: Mk>(t: T, g: fn() -> str) -> fn([fn() -> str]) { return t.mk(g) }
+@capabilities(all)
+fn main() { let r = secret()
+  let fns = [safe]
+  let st = use_mk(M3 {}, safe)
+  st(fns)
+  R1 {}.go(fns) }

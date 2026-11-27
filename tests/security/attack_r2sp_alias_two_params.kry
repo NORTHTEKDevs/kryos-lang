@@ -1,0 +1,15 @@
+// a `type` alias used for two parameters of one helper: each use has row vars of its own, as if the type had been written out, so a store into the second reaches the second array the caller passed.
+@capabilities(fs:read)
+fn secret() -> fn() -> str { return || file_read("tests/security/secret_for_closure_launder.txt") }
+fn safe() -> str { return "safe" }
+type Reg = [fn() -> str]
+fn put(a: Reg, b: Reg, g: fn() -> str) { b[0] = g }
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let r = secret()
+    let a = [safe]
+    let b = [safe]
+    put(a, b, r)
+    deny!(fs:read) { for f in b { println("LEAK: " + f()) } }
+}

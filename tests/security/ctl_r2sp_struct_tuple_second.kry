@@ -1,0 +1,15 @@
+// the struct holds two arrays and the helper stores into the second: the store reaches the second array the caller built, and the block reads that one.
+@capabilities(fs:read)
+fn secret() -> fn() -> str { return || file_read("tests/security/secret_for_closure_launder.txt") }
+fn safe() -> str { return "safe" }
+struct S { t: ([fn() -> str], [fn() -> str]) }
+fn put(s: S, g: fn() -> str) { s.t.1[0] = g }
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let r = safe
+    let a = [safe]
+    let b = [safe]
+    put(S { t: (a, b) }, r)
+    deny!(fs:read) { for f in b { println("ok: " + f()) } }
+}

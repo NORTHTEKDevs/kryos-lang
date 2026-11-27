@@ -40,7 +40,7 @@ searches that were run", and the searches were run by the same people who wrote
 the checker.
 
 "Known" has two precise meanings here. Section 4.1 is the escape corpus: 260
-repros listed by name in `tools/loop/escape_status.sh`, 22 of them still accepted (80 on 1.3.0; the 57 rows of items 126 to 134 were closed by the R4 wave of 2026-11-21, row 121 by the coarse-family wave of 2026-11-22).
+repros listed by name in `tools/loop/escape_status.sh`, none of them still accepted (80 on 1.3.0; the 57 rows of items 126 to 134 were closed by the R4 wave of 2026-11-21, row 121 by the coarse-family wave of 2026-11-22, the remaining 22 by the residual and factory waves of 2026-11-26).
 Section 4.5 lists accepted zero-authority shapes (B5, B6, B7 and B9) that are
 not in that corpus; five more (B1 to B4 and B8) were listed in the first version
 of this document and are closed in this build (PR #40). Both tables are checked
@@ -106,11 +106,11 @@ stdlib directory, the registry, or the host.
 ## 2. What capabilities DO guarantee
 
 Each guarantee is for source accepted by `kryos check` with the stated mode.
-**None of them is unconditional.** Each holds except for the 80 accepted
-escapes in section 4.1 (each defeats the narrowing of a `deny!` block) and the
-four zero-authority shapes in section 4.5 (B5, B6, B7, B9), of which B9 defeats
-G6 for the stdlib's API surface and B5 defeats G1 and G2 for library entry points;
-the exceptions are repeated under each guarantee. "Default" is `inferred`: no
+**None of them is unconditional.** Each holds except for the four
+zero-authority shapes in section 4.5 (B5, B6, B7, B9), of which B9 defeats
+G6 for the stdlib's API surface and B5 defeats G1 and G2 for library entry points,
+and the shape beside the corpus named at the end of section 4.1 (it
+defeats the narrowing of a `deny!` block); the exceptions are repeated under each guarantee. "Default" is `inferred`: no
 flag, no project file. Error codes are those printed by the binary above.
 
 **G1. A gated builtin needs its capability, where it is called.**
@@ -166,9 +166,9 @@ permissive for the direct case (claims.tsv G3-deny-direct-*). For closures
 reaching the block through parameters, locals, containers, struct fields, actor
 state, `spawn`, generics, `dyn` and the other shapes in section 2 of
 [10-capabilities.md](10-capabilities.md): gate `tests/security_gate.sh`
-(gate, run for the 1.3.0 revision: PASS, 342 `ok` lines, 0 FAIL) and `tools/loop/escape_status.sh` (238 of 260 repros rejected,
-executed 2026-11-22 on the `closeout/cap` branch). **Exceptions: the 22 rows in 4.1, all of which defeat
-`deny!`.** `deny!` does not bound a callee that is handed a closure (N16, B6).
+(gate, run for the 1.3.0 revision: PASS, 342 `ok` lines, 0 FAIL) and `tools/loop/escape_status.sh` (260 of 260 repros rejected,
+executed 2026-11-26 on the `closeout/lane-cap` branch). **Exceptions: no row of the 4.1 corpus; the shape
+beside it, named at the end of 4.1, defeats `deny!`.** `deny!` does not bound a callee that is handed a closure (N16, B6).
 
 **G4. `@pure` functions call no gated or impure builtin.**
 Rejected with `E0110` ("`@pure` function cannot call non-pure function
@@ -457,9 +457,11 @@ header: "DELEGATION, not an escape").
 
 ### 4.1 Capability escapes known and still accepted
 
-Measured 2026-11-21 with `bash tools/loop/escape_status.sh` on the in-place build
-of the R4 wave's branch (`closeout/cap`): **`STILL ESCAPING: 22    now-rejected: 238    missing: 0`**, 260
-repros (on the 1.3.0 build of 2026-11-02 the same corpus read 80 / 180; the 57 rows of items 126 to 134 and row 121 are the difference). Each row below is a program that `kryos check` accepts in default **and**
+Measured 2026-11-26 with `bash tools/loop/escape_status.sh` on the in-place build
+of the lane-cap branch (`closeout/lane-cap`): **`STILL ESCAPING: 0    now-rejected: 260    missing: 0`**, 260
+repros (on the 1.3.0 build of 2026-11-02 the same corpus read 80 / 180; the 57 rows of items 126 to 134, row 121, row 122, the two
+dispatch rows 123b and 123c, the 13 rows of items 124 and 125, the five rows of item 119 and row 123a are the difference). A row of the table
+below would be a program that `kryos check` accepts in default **and**
 `--strict-capabilities` mode and whose `kryos run` printed the secret (executed;
 `tools/loop/check-escapes-documented.sh` re-runs every row and fails if one is no
 longer accepted in either mode, if its run prints no leak marker, or if this
@@ -469,53 +471,85 @@ first version (64, 72, 77a, 77b, 112, 114) are closed: PR #39 closed 64, 72, 77a
 rows) were open on master before this revision. This revision records the other
 70 rows (items 124 to 134) on master. The R4 wave (2026-11-21) closed 57 of
 them, items 126 to 134, by making the row layer walk every `select` arm and every
-spawned lambda (LEDGER items 126 to 134 and the R4 wave entry at the top); the 13
-rows of items 124 and 125 remain. The shape-layer defects of items 127 to 134 are
+spawned lambda (LEDGER items 126 to 134 and the R4 wave entry at the top); the
+residual wave (2026-11-26) closed the 13 rows of items 124 and 125 (the verdict no longer
+depends on declaration order), item 122 (the body of a trait default method is checked) and
+rows 123b and 123c (a call through a generic bound or a `dyn` references every method it can
+reach); the factory wave of the same day closed the five rows of item 119 (a container inside a
+tuple, `Option`, `Result` or enum parameter is the caller's container) and row 123a (the container
+parameters of the function a declaration returns are that declaration's input storage). The
+shape-layer defects of items 127 to 134 are
 NOT fixed: those programs are rejected only because the row layer now judges the
 `deny!` block, and the same shapes would escape again wherever the row layer is
-blind (item 122, the forward-reference rows of items 124 and 125).
+blind (the shape listed below the table).
 
 <!-- known-escapes:begin -->
 | id | repro | shape | root |
 |---|---|---|---|
-| 119a | tests/security/attack_slot_param_container_in_tuple.kry | a callee stores a closure into a container held inside a tuple parameter | R2 |
-| 119b | tests/security/attack_slot_param_container_in_result.kry | the same with the container inside a Result parameter | R2 |
-| 119c | tests/security/attack_slot_param_array_of_option.kry | the same with an array of Option closures (a[0] = Some(g)) | R2 |
-| 119d | tests/security/attack_slot_param_option_of_nested_array.kry | the same with an Option holding a nested array | R2 |
-| 119e | tests/security/attack_slot_param_tuple_of_two_arrays.kry | the same with a tuple of two arrays, the store going to the second | R2 |
-| 122 | tests/security/attack_deny_trait_default_method_unchecked.kry | the body of a trait default method is never checked, so a deny! block in it is never judged | R4 (missing walk) |
-| 123a | tests/security/attack_slot_param_fn_value_factory.kry | a store helper reached through a factory that returns the helper as a function value | R2 |
-| 123b | tests/security/attack_slot_param_trait_bound_dispatch.kry | a store helper reached through a generic function with a trait bound | R2 |
-| 123c | tests/security/attack_slot_dyn_registrar_store.kry | a store helper reached through dyn dispatch | R2 |
-| 124a | tests/security/attack_fwd_param_chain_invoke_in_deny.kry | `tool(r)` inside deny! copies its parameter and hands it to `invoke`, declared below `tool` | F (forward reference) |
-| 124b | tests/security/attack_fwd_param_chain_container_in_deny.kry | the same chain for an array of closures: `tool(fns)` hands it to `run_first` | F (forward reference) |
-| 124c | tests/security/attack_fwd_param_chain_method_in_deny.kry | the same chain through an impl method, then a free function | F (forward reference) |
-| 124d | tests/security/attack_fwd_param_chain_actor_in_deny.kry | the same chain through an actor handler, then a free function | F (forward reference) |
-| 124e | tests/security/attack_fwd_rev_hotparam_forward_via_local_alias.kry | a pinned program (a parameter forwarded through a local alias) with its helpers declared in the reverse order | F (forward reference) |
-| 124f | tests/security/attack_fwd_rev_slot_param_helper_chain.kry | a pinned program (a two-helper store chain) with the caller declared above its callee | F (forward reference) |
-| 124g | tests/security/attack_fwd_mainfirst_verify_actor_to_actor_message.kry | a pinned program (a closure sent from actor to actor) with `main` declared first | F (forward reference) |
-| 125a | tests/security/attack_fwd_store_relay_two_hop.kry | `h1` relays to `h2`, declared below it, which pushes the closure into the caller's array | F (forward reference) |
-| 125b | tests/security/attack_fwd_store_relay_global_slot.kry | the same relay into a global array read by a function declared above `main` | F (forward reference) |
-| 125c | tests/security/attack_fwd_store_relay_method.kry | the same relay through impl methods (`add` calls `put`) | F (forward reference) |
-| 125d | tests/security/attack_fwd_builder_relay_returns_container.kry | `guard(b1(r))` where `b1` relays to `b2`, which returns `[safe, x]` | F (forward reference) |
-| 125e | tests/security/attack_fwd_fill_relay_struct_field_after_main.kry | a struct field filled through `fill1` then `fill2`, both declared after `main` | F (forward reference) |
-| 125f | tests/security/attack_fwd_fill_relay_struct_field_before_main.kry | the same with both helpers declared before `main` | F (forward reference) |
 <!-- known-escapes:end -->
 
-What the 22 have in common, as observed in the 22 repros (not a proof about
-unknown ones): in every repro the program holds the capability (`main` declares
-`fs:read` and builds or receives the privileged closure itself), and what fails
-is the **narrowing**: the privileged closure runs where `deny!` says it must not.
-None of the 22 makes an unannotated, zero-authority program read a file
-(section 4.5 lists shapes that do). They are all row-layer gaps.
+No repro of the corpus is accepted any more: every one of the 260 is rejected in default and strict
+mode (`escape_status.sh`, 2026-11-26). That is a statement about the 260 programs, not a proof about
+unknown ones. One shape beside the closed rows is accepted by `kryos check` in default and strict
+mode on this build and leaks when run (executed 2026-11-26; `main` declares `fs:read` and a
+`deny!(fs:read)` block prints the secret): a store made by a local lambda whose parameters carry no
+annotation (`let op = |reg, g| { reg[0] = g }`); master accepts it. It is not a row of the corpus: a row
+would make `escape_status.sh` read non-zero, and it is written out in the LEDGER entry of the factory
+wave (`tools/loop/LEDGER.md`, "Close-out cap lane, cap_trait_default_body"). The other two shapes that
+entry listed, a store made by a lambda that another lambda returns (`fn mk3(g) -> fn() -> fn([fn() -> str])`)
+and a store made by a returned lambda that hands the container to a named helper (`fn(reg) { put(reg, g) }`),
+are rejected on this build (E0110 in both modes, executed 2026-11-26, pinned by
+`tests/security/attack_r2sp_lambda_nested.kry` and `attack_r2sp_lambda_delegates.kry`; master and the
+parent commit accept both and the run prints the secret).
 
-- **Row-layer gaps, 22 rows.** Items 119 and 123 (eight rows) are one mechanism:
-  a helper stores a closure into a container it was handed and the caller's view
-  of that container is not updated. 122 is the body
-  of a trait default method (121, coarse `deny!` families, was closed 2026-11-22: the verdict now judges a denied
-  coarse family by overlap, `denied_caps_used` in `kryos-types/src/ty.rs`). 124 and 125 (13 rows) are forward references: a
-  function declared above the callee it hands a closure to, or a store made by a
-  callee declared below its caller.
+- **Row-layer gaps, closed.** Items 119 and 123a (six rows) were one family: a helper stores a closure
+  into a container it was handed and the caller's view of that container was not updated.
+  `storage_rows_in` (`kryos-types/src/infer.rs`) did not walk a tuple, an `Option`, a `Result` or an
+  enum parameter, so the store was bound to the parameter's own row instead of recorded and no call
+  replayed it into the caller's container (119, five rows); and the container parameters of a function
+  value that a declaration RETURNS were not input storage of that declaration, so a store made through a
+  returned lambda or a returned named function was filed against nothing and the call through the value
+  a factory handed back never saw it (123a, and the finish-line rows trait-default-body-edaefeca/f11,
+  f12 and g07). Closed 2026-11-26: `storage_rows_in` walks every type constructor that can hold a
+  container, and `mark_returned_fn_storage` marks the container parameters of the function types in a
+  declaration's return type as that declaration's input storage, so such a store is recorded as the
+  declaration's effect and replayed at every reference with that reference's arguments. (121, coarse
+  `deny!` families, was closed 2026-11-22: the verdict now judges a denied coarse family by overlap,
+  `denied_caps_used` in `kryos-types/src/ty.rs`; 122, 123b, 123c, 124 and 125 were closed 2026-11-26:
+  see the next bullet.)
+- **Row-layer gaps, closed: a container with more than one name.** The finish-line rows of
+  `cap:r2-storage-paths` that were still accepted after the factory wave (16: `type` aliases,
+  a struct whose tuple field holds the caller's array, and a getter that hands back the container it
+  read) and the shapes next to them were one defect: the row layer treated a flow between two
+  containers as the flow of a closure value, so a closure stored through the second name reached only
+  the var of that name. Executed 2026-11-26 on master `dd637a90` and on the parent commit: `check` accepted
+  in default and strict mode and `kryos run` printed the secret for the 16 rows and for the probes
+  written around them (a store through an annotated `let`, an array held in an array or a map, a struct
+  built from a local, through a method, a relay, a builder, a `dyn` or a generic bound, a getter
+  chain). Closed: rows now carry an edge from the destination to the source wherever two containers meet
+  in `unify`, a store of a closure value walks the edges (`store_row`), a `type` alias gets row vars of
+  its own at every use (`freshen_alias_rows`), and the container a `dyn` call hands back keeps its
+  storage row (the closures it hands back are still erased). Cost, measured: a struct field is one row
+  var for the whole program, so a privileged closure stored through the field of one struct value is
+  seen through every container that was ever put in that field of any value; a program that keeps two
+  struct values with different arrays in one field and reads the array of the one it did not store into
+  inside a `deny!` block is rejected (master accepts it, and for a field of array type the program
+  is safe at run time because a struct literal copies that array: `H { reg: a }` then `h.reg[0] = g`
+  leaves `a` alone, while a tuple field, a parameter and a field assignment share it).
+- **Closed by the residual wave, and what that does and does not mean.** The verdict of a `deny!`
+  block no longer depends on declaration order: when the module holds a `deny!` whose row can
+  still change, `check_module` checks every body once more in call-graph order (callee before
+  caller, a cycle re-checked until a round settles nothing new, `callee_first_order` in
+  `kryos-types/src/infer.rs`) with the result thrown away, so the reporting pass sees every
+  callee's summary built. A reference to a method through a trait signature (a generic bound, a `dyn`,
+  `self` in a default body) now references the default body and every impl method with the
+  call's arguments (`reference_trait_dispatch`), so their stores are replayed and their `deny!`
+  blocks are judged on what the call passes. The pass has no output of its own, so it cannot
+  accept a program the textual pass rejected; the dispatch change is the one that can accept
+  more (a call that used to be charged `Unknown` is charged what its candidates charge), and
+  a `dyn` call outside a default body keeps the `Unknown` charge. Not covered: a candidate that
+  is reached through a value the checker cannot name and no declaration hands out (the shape
+  listed below the table).
 - **Closed since 1.3.0, and what that does and does not mean.** The R4 wave
   (2026-11-21) made the row layer walk every `select` arm (binder in scope), the
   `timeout` arm and its duration, and the body of a spawned lambda, so the 57
@@ -536,31 +570,8 @@ A variant of a 119 or 123 repro that hands the closure to a callee declared
 that is delegation (N16, B6), not another escape: a callee's declaration never
 bounded a closure it was handed, so it has no row here.
 
-Per escape, what not to rely on, and the workaround. The only general
-workaround is not to use `deny!` or a callee's declaration as the boundary
-against code you did not write. The per-shape advice below only avoids the shape;
-it does not make the check sound.
-
-- **119a-e** (LEDGER item 119, root R2). Do not rely on `deny!` when a helper
-  stores a closure into an array that sits inside a tuple, `Option`, `Result` or
-  enum parameter. The flat form (`fn put(reg: [fn() -> str], g)` with `reg[0] = g`)
-  is rejected on this build (row 112). Pass the container itself, not a wrapper
-  around it, or have the helper return the new container and assign it at the
-  call site (not executed for these shapes).
-- **122** (item 122, root R4). Do not put a `deny!` block in the default method of
-  a trait; put it in an `impl` method, which is checked (the second half is not
-  executed). A type error in a default method body is also accepted (section 4.4).
-- **123a-c** (item 123, root R2). Do not rely on `deny!` when the store helper is
-  reached through a function returned by a factory, a trait-bound generic or a
-  `dyn` value.
-- **124a-g, 125a-f** (items 124 and 125, root F, forward references). Do not
-  rely on `deny!` across a chain of helpers declared out of dependency order: a
-  function declared above the callee it hands a closure to, or a callee declared
-  below its caller that stores into the caller's container. Declaring every
-  callee above its caller avoids the shape: the dependency-order twins of the
-  first four 124 probes and of all six 125 probes are rejected (LEDGER items 124
-  and 125, measured on master `e2fbc46c` by the wave that recorded them; not
-  re-executed for this revision).
+No escape of the corpus is left, so there is no per-escape workaround to list. The general advice stands:
+do not use `deny!` or a callee's declaration as the boundary against code you did not write.
 ### 4.2 Precision cost: legitimate programs that need `@capabilities(all)`
 
 Failing closed has a price (LEDGER item 41, deliberate, not fixed). Reading a
@@ -583,6 +594,17 @@ the workaround is a more specific signature or `@capabilities(all)` on the
 dispatcher, with the cascade that `tools/loop/ESCAPE-ROUTING.md` measured for
 annotating stdlib dispatchers.
 
+Three further over-rejections of capability-safe code (ASSAULT round 1, findings F1 to F3) were closed
+on 2026-11-27 (gate: the ASSAULT-F1, F2, F3 section of `tests/security_gate.sh`, run for this revision,
+PASS). An actor that keeps a callback in a state field and invokes it from another handler is accepted
+when every write of the field is a message parameter and every closure handed over fits the actor's
+declared capabilities. A function or handler that runs a callback parameter inside `deny!` is accepted
+when each caller passes a named function or a closure literal that does not carry the denied
+capability. An actor whose handler is one `deny!` block is charged to its callers for what the
+narrowing leaves, not for its declared ceiling. Each rule covers the one shape it was written for: a
+callback held in a local, forwarded through a relay or read out of a container still needs the older
+workaround (invariants 25 to 27 of [capability-soundness.md](capability-soundness.md)).
+
 ### 4.3 Deferred alternate roots R6 and R7
 
 Two closures of the shape layer's fail-open defaults were prototyped and not
@@ -602,7 +624,7 @@ Both programs are accepted today in default and strict (pinned for
 pinned by `tests/security_gate.sh`, carried). The row layer (R2, R3) is the
 intended way to close the same items without that cost; both waves are merged
 (PR #38 as `732714ab`, PR #39 as `e2fbc46c`) and what remains of the row layer is
-items 119, 122 and 123 (4.1).
+the shape beside the corpus at the end of 4.1.
 
 ### 4.4 Other limitations verified for this document
 
@@ -632,15 +654,14 @@ items 119, 122 and 123 (4.1).
   symbols (the self-hosted compiler's runtime does) would give a zero-capability
   program raw memory and syscalls, and the Rust toolchain's checker would still
   accept it. The other nine names were not executed.
-- **The `deny!` blocks in the body of a trait default method are not judged**
-  (LEDGER item 122, root of escape 122). The body IS type-checked since
-  closeout/lane-swa: `let x: i64 = "not an int"` in one is rejected E0100 in
-  default and strict (pinned: claims.tsv S44-trait-default-body-checked-default,
-  -strict), but the walk runs on a capability state that is given back, so a
-  `deny!` there is still not judged (escape 122, open).
-  The capability checker does charge such a body: a default method calling
-  `env_get` made its caller need `process` (executed 2026-11-02 on a scratch
-  program, `E0507` in default and `E0505` in strict; not committed).
+- **The body of a trait default method is type-checked and its `deny!` blocks are judged**
+  (LEDGER item 122, closed 2026-11-26). `let x: i64 = "not an int"` in one is rejected,
+  E0100 in default and strict (claims.tsv S44-trait-default-body-checked-default, -strict;
+  master accepted it and ran it, printing a raw pointer). The body is checked once, with
+  `self` typed as the trait; a call through `self` references the default body and every impl
+  method with the call's arguments. A direct `deny!` block in an impl method that still depends
+  on one of its parameter rows is judged on `all` as before (a call through the trait does
+  not name the impl), so the same block in a default is more precise than in an impl.
 
 ### 4.5 Accepted zero-authority shapes outside the escape corpus
 

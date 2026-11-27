@@ -1,0 +1,13 @@
+// a closure read out of one array and stored into another is a value flow, not an alias: the privileged store into the second array does not reach the first.
+@capabilities(fs:read)
+fn secret() -> fn() -> str { return || file_read("tests/security/secret_for_closure_launder.txt") }
+fn safe() -> str { return "safe" }
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let r = secret()
+    let a = [safe]
+    let b = [a[0]]
+    b[0] = r
+    deny!(fs:read) { for f in a { println("ok: " + f()) } }
+}

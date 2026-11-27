@@ -1,0 +1,16 @@
+// a getter that calls a getter, the caller declared after both.
+@capabilities(fs:read)
+fn secret() -> fn() -> str { return || file_read("tests/security/secret_for_closure_launder.txt") }
+fn safe() -> str { return "safe" }
+fn id1(a: [fn() -> str]) -> [fn() -> str] { return a }
+fn id2(a: [fn() -> str]) -> [fn() -> str] { return id1(a) }
+fn add(a: [fn() -> str], g: fn() -> str) { let b = id2(a)
+    b[0] = g }
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let r = secret()
+    let fns = [safe]
+    add(fns, r)
+    deny!(fs:read) { for f in fns { println("LEAK: " + f()) } }
+}

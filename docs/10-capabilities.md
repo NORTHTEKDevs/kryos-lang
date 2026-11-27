@@ -113,7 +113,12 @@
 >    boundary currently being checked, and any deferred-charge decision
 >    checks whether a `deny!` has pushed the live scope DEEPER than that
 >    depth since - if so, the deferral is unsound and `Capability::All` is
->    required instead of empty. (A companion field,
+>    required instead of empty. (The one exception is a parameter a function
+>    uses only as the callee of a direct call, with a call inside the
+>    `deny!`: the denial is checked at every call site instead, which must
+>    pass a named function or a closure literal that does not carry the
+>    denied capability, invariant 25 of `docs/capability-soundness.md`.)
+>    (A companion field,
 >    `transparent_lambda_params`/`structural_lambda_eval_depth`, keeps this
 >    scope check from firing on the UNRELATED, purely structural
 >    self-classification `resolve_closure_caps` performs on a fresh lambda
@@ -476,16 +481,28 @@ reference's argument: `outer(reader)` is rejected at the `deny!` inside `outer` 
 on (a relay, a recursion, a method chain) passes the obligation on. Three costs,
 all deliberate: the verdict does not depend on the order of the declarations (a
 privileged `Plugin { run: .. }` literal below a `deny!` that reads another registry
-of `Plugin`s now counts, exactly as it did when it sat above); a block inside a
+of `Plugin`s now counts, exactly as it did when it sat above); a block directly in a
 method of a trait impl that depends on one of its parameters is judged on `all`,
-because a generic bound or a `dyn` reaches the method through the trait; and a
-function nothing references is not judged on its parameters (it cannot run). Still
-open: the body of a trait default method is never checked (LEDGER item 122), and a
-helper that stores a closure into a container it was handed is not followed through
-a factory result, a generic trait bound or a `dyn` (item 123), or when the container
-sits inside a tuple, an `Option`, a `Result` or an enum (item 119); `deny!(fs)`,
-`deny!(io)` and `deny!(all)` are not matched against a used `fs:read` by this layer
-(item 121). Rejected: the `tests/security/attack_deny_*.kry` programs (E0110).
+because a call through the trait does not name the impl; and a
+function nothing references is not judged on its parameters (it cannot run). The
+body of a trait default method is checked (LEDGER item 122); a call through a trait
+signature (a generic bound, a `dyn`, `self` in a default body) references the default
+body and every impl method with its arguments (item 123, rows 123b and 123c); and the
+verdict does not depend on the order the declarations are written in (items 124 and
+125). A helper that stores a closure into a container it was handed is followed when the
+container sits inside a tuple, an `Option`, a `Result` or an enum (item 119), and
+through a factory result: the container parameters of a function type a declaration
+returns are that declaration's input storage, so a store made through the returned
+lambda or the returned named function is replayed at every reference (item 123a). A
+container is one value however many names it has: a closure stored through a struct field
+that holds a container (a tuple field), through an annotated `let`, through an array held in
+another array or a map, through a parameter whose type is a `type` alias, or through the
+result of a call that returns the container it was handed (a getter, also through a generic
+bound, a default body or a `dyn`) reaches the container it came from, and so does a store made
+by a lambda that another lambda returns or by a returned lambda that hands the container to a
+named helper. Still open: the same store made by a local lambda whose parameters carry no
+annotation (docs/THREAT-MODEL.md, end of 4.1). `deny!(fs)`, `deny!(io)` and
+`deny!(all)` are matched against a used `fs:read` by overlap (item 121). Rejected: the `tests/security/attack_deny_*.kry` programs (E0110).
 Accepted: the `tests/security/ctl_deny_*.kry` controls.
 
 See `tests/security/cap_escape_closure_launder_local_struct_field.kry`,

@@ -1,0 +1,16 @@
+// ASSAULT-F1 attack: the same hand-over with a closure literal instead of a named function. The
+// literal reads a protected file, the vault declares no capability. Must be REJECTED (E0507) in both
+// modes and must never print the secret.
+actor Vault {
+    reader: fn() -> str
+    fn init(self: Vault, r: fn() -> str) { self.reader = r }
+    fn read(self: Vault) { println("ASSAULT-F1-LAMBDA: " + self.reader()) }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let v = Vault()
+    v.init(|| file_read("tests/security/secret_for_closure_launder.txt"))
+    v.read()
+    sleep(100)
+}

@@ -1,0 +1,17 @@
+// a helper stores into the array it gets from a `dyn` parameter.
+@capabilities(fs:read)
+fn secret() -> fn() -> str { return || file_read("tests/security/secret_for_closure_launder.txt") }
+fn safe() -> str { return "safe" }
+trait Reg { fn get(self: Self) -> [fn() -> str] }
+struct Holder { reg: [fn() -> str] }
+impl Reg for Holder { fn get(self: Holder) -> [fn() -> str] { return self.reg } }
+fn fill(d: dyn Reg, g: fn() -> str) { let a = d.get()
+    a[0] = g }
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let r = safe
+    let h = Holder { reg: [safe] }
+    fill(h, r)
+    deny!(fs:read) { for f in h.reg { println("ok: " + f()) } }
+}

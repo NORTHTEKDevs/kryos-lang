@@ -1,0 +1,13 @@
+// LEDGER item 122 / 123: a call through a trait signature references every candidate: a call through self in a default body returns what the impl returns.
+@capabilities(fs:read)
+fn secret() -> fn() -> str { return || file_read("tests/security/secret_for_closure_launder.txt") }
+fn safe() -> str { return "safe" }
+trait Rd { fn mk(self: Self, fns: [fn() -> str]) -> [fn() -> str]
+  fn run(self: Self, fns: [fn() -> str]) { let f = || "h"
+    let ys = self.mk(fns)
+    deny!(fs:read) { for f in ys { println("ok: " + f()) } } } }
+struct S1 {}
+impl Rd for S1 { fn mk(self: Self, fns: [fn() -> str]) -> [fn() -> str] { return fns } }
+@capabilities(fs:read)
+fn main() { let r = safe
+  S1 {}.run([safe, r]) }

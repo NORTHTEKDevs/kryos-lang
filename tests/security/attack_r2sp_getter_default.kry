@@ -1,0 +1,20 @@
+// finish-line cap:r2-storage-paths-dd09d926/f05_default_stores_via_getter: the store is made by the default body of a trait method, through a required method that returns the array.
+@capabilities(fs:read)
+fn secret() -> fn() -> str { return || file_read("tests/security/secret_for_closure_launder.txt") }
+fn safe() -> str { return "safe" }
+trait Reg {
+    fn get(self: Self) -> [fn() -> str]
+    fn add(self: Self, g: fn() -> str) { let a = self.get()
+        a[0] = g }
+}
+struct Holder { reg: [fn() -> str] }
+impl Reg for Holder { fn get(self: Holder) -> [fn() -> str] { return self.reg } }
+fn use_it<A: Reg>(a: A, g: fn() -> str) { a.add(g) }
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let r = secret()
+    let h = Holder { reg: [safe] }
+    use_it(h, r)
+    deny!(fs:read) { for f in h.reg { println("LEAK: " + f()) } }
+}

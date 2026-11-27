@@ -1,0 +1,20 @@
+// finish-line cap:r2-storage-paths-dd09d926/f16_alias_in_trait_sig: the alias is the parameter type of a trait method, its default body and the impl, reached through a generic bound.
+@capabilities(fs:read)
+fn secret() -> fn() -> str { return || file_read("tests/security/secret_for_closure_launder.txt") }
+fn safe() -> str { return "safe" }
+type Reg = [fn() -> str]
+trait Adder {
+    fn add(self: Self, a: Reg, g: fn() -> str)
+    fn add2(self: Self, a: Reg, g: fn() -> str) { self.add(a, g) }
+}
+struct D {}
+impl Adder for D { fn add(self: D, a: Reg, g: fn() -> str) { a[0] = g } }
+fn use_it<A: Adder>(x: A, a: Reg, g: fn() -> str) { x.add2(a, g) }
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let r = safe
+    let fns = [safe]
+    use_it(D {}, fns, r)
+    deny!(fs:read) { for f in fns { println("ok: " + f()) } }
+}

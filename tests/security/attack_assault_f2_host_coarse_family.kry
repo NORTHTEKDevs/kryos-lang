@@ -1,0 +1,20 @@
+// ASSAULT-F2 attack: the host denies the coarse family `io`, the callback needs fs:read. A sub-
+// capability overlaps its coarse family, so the callback carries what the block denies. Must be
+// REJECTED (E0507) in both modes and must never print the secret.
+actor Host {
+    fn run_callback(self: Host, cb: fn() -> str) {
+        deny!(io) {
+            println("ASSAULT-F2-COARSE: " + cb())
+        }
+    }
+}
+
+@capabilities(fs:read)
+fn secret() -> str { return file_read("tests/security/secret_for_closure_launder.txt") }
+
+@capabilities(fs:read)
+fn main() {
+    let h = Host()
+    h.run_callback(secret)
+    sleep(100)
+}

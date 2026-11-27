@@ -1,0 +1,14 @@
+// a privileged closure is stored into one array and the block reads another: a call's copy of the parameter is the array that call passed, and nothing else.
+@capabilities(fs:read)
+fn secret() -> fn() -> str { return || file_read("tests/security/secret_for_closure_launder.txt") }
+fn safe() -> str { return "safe" }
+fn put(a: [fn() -> str], g: fn() -> str) { a[0] = g }
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let r = secret()
+    let a = [safe]
+    let b = [safe]
+    put(a, r)
+    deny!(fs:read) { for f in b { println("ok: " + f()) } }
+}

@@ -1,0 +1,38 @@
+// LEDGER items 122, 124, 125 (residual wave): the store sits in a select arm and its helper is declared below.
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+fn safe() -> str {
+    return "safe"
+}
+let mut REG: [fn() -> str] = []
+@capabilities(fs:read)
+fn main() {
+    let r = safe
+    let ch = chan()
+    send(ch, 1)
+    select {
+        v ch => {
+            s_a(r)
+        }
+        timeout 50 => {
+            println("t")
+        }
+    }
+    show()
+}
+fn show() {
+    let f = || "harmless"
+    deny!(fs:read) {
+        for f in REG {
+            println("LEAK: " + f())
+        }
+    }
+}
+fn s_a(f: fn() -> str) {
+    s_b(f)
+}
+fn s_b(f: fn() -> str) {
+    REG = push(REG, f)
+}

@@ -1,0 +1,22 @@
+// ASSAULT-F1 control: a vault that DECLARES fs:read may keep a callback that reads a file, because
+// the callback fits the vault's declared capabilities and whoever messages the vault must hold
+// them too. Accepted in both modes. The program never prints the file, only a marker.
+@capabilities(fs:read)
+actor Vault {
+    reader: fn() -> str
+    fn init(self: Vault, r: fn() -> str) { self.reader = r }
+    fn read(self: Vault) {
+        if len(self.reader()) > 0 { println("ASSAULT-F1-DECLARED-OK") }
+    }
+}
+
+@capabilities(fs:read)
+fn secret() -> str { return file_read("tests/security/secret_for_closure_launder.txt") }
+
+@capabilities(fs:read)
+fn main() {
+    let v = Vault()
+    v.init(secret)
+    v.read()
+    sleep(100)
+}

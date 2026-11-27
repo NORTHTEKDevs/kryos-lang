@@ -1,0 +1,33 @@
+// LEDGER items 122, 124, 125 (residual wave): a trait default method (declared after main) stores through a helper.
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+fn safe() -> str {
+    return "safe"
+}
+struct Plugin {
+    run: fn() -> str,
+}
+@capabilities(fs:read)
+fn main() {
+    let r = secret()
+    let x = R1 {}
+    let mut reg: [Plugin] = []
+    reg = x.add(reg, safe)
+    deny!(fs:read) {
+        for q in reg {
+            println("LEAK: " + q.run())
+        }
+    }
+}
+trait Adder {
+    fn add(self: Self, reg: [Plugin], f: fn() -> str) -> [Plugin] {
+        return push2(reg, f)
+    }
+}
+struct R1 {}
+impl Adder for R1 {}
+fn push2(reg: [Plugin], f: fn() -> str) -> [Plugin] {
+    return push(reg, Plugin { run: f })
+}
