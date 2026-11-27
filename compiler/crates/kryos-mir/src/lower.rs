@@ -355,9 +355,6 @@ pub struct LoweringContext {
     /// defaulted to `List___i64` while the chained `.push("a")` wanted
     /// `List___str`: JIT printed raw pointers, AOT failed the build.
     pending_let_expected: Option<MirType>,
-    /// Element type of the array a `let` annotation or `return` expects, taken by
-    /// the next ArrayLiteral so tuple elements get coerce_tuple_int_widths.
-    pending_arr_elem_ty: Option<MirType>,
     /// Set by `Stmt::Return` immediately before lowering a directly-returned
     /// Lambda literal, when the ENCLOSING function's return type
     /// (`current_ret_ty`) is a concrete `Function` type of matching arity.
@@ -573,7 +570,6 @@ impl LoweringContext {
             pending_let_share: false,
             pending_let_fn_retain: false,
             pending_let_expected: None,
-            pending_arr_elem_ty: None,
             pending_lambda_ret_hint: None,
         }
     }
@@ -6197,23 +6193,8 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                         ctx.emit(Instruction::Drop { local: slot });
                     }
                     RValue::Use(wrapped)
-                } else if ty.is_some() && tuple_int_widths_differ(&infer_expr_type(ctx, expr), &mir_ty) {
-                    // `let t: (i64, i64) = mk()` with `mk() -> (i32, i32)`:
-                    // rebuild at the annotated widths.
-                    let op = lower_expr_to_operand(ctx, expr);
-                    match coerce_tuple_int_widths_inner(ctx, op, &mir_ty, true) {
-                        Ok(op) => RValue::Use(op),
-                        Err(rv) => rv,
-                    }
                 } else {
-                    if let (MirType::Array(et, _), ast::Expr::ArrayLiteral { .. }) = (&mir_ty, expr) {
-                        if matches!(**et, MirType::Tuple(_)) {
-                            ctx.pending_arr_elem_ty = Some((**et).clone());
-                        }
-                    }
-                    let rv = lower_expr_to_rvalue(ctx, expr);
-                    ctx.pending_arr_elem_ty = None;
-                    rv
+                    lower_expr_to_rvalue(ctx, expr)
                 };
                 let reads_element = matches!(
                     expr,
@@ -8546,14 +8527,8 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
             let ret_block_mark = ctx.next_block;
             let ret_locals_mark = ctx.locals.len();
             let ret_partial_moved_before = ctx.partial_moved_locals.clone();
-            if let (Some(ast::Expr::ArrayLiteral { .. }), MirType::Array(et, _)) = (value.as_ref(), &ret_ty) {
-                if matches!(**et, MirType::Tuple(_)) {
-                    ctx.pending_arr_elem_ty = Some((**et).clone());
-                }
-            }
             let mut operand = value.as_ref().map(|e| {
                 let op = lower_expr_to_operand(ctx, e);
-                ctx.pending_arr_elem_ty = None;
                 coerce_to_dyn_if_needed(ctx, op, &ret_ty, e)
             });
             // A closure field read: the struct drop releases function
@@ -8595,12 +8570,6 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                         operand = Some(Operand::Local(copy));
                     }
                 }
-            }
-            // An all-integer tuple returned into a tuple of other integer
-            // widths is rebuilt at the declared widths (see
-            // coerce_tuple_int_widths).
-            if let Some(op) = operand.clone() {
-                operand = Some(coerce_tuple_int_widths(ctx, op, &ret_ty));
             }
             // Returning a param directly hands the caller a handle it will
             // treat as owned; retain so the caller's release does not free
@@ -14688,90 +14657,6 @@ fn coerce_to_dyn_if_needed(
     operand
 }
 
-fn is_int_mir_ty(t: &MirType) -> bool {
-    matches!(
-        t,
-        MirType::I8
-            | MirType::I16
-            | MirType::I32
-            | MirType::I64
-            | MirType::U8
-            | MirType::U16
-            | MirType::U32
-            | MirType::U64
-    )
-}
-
-/// A tuple of integers flowing into a tuple slot of a different integer width
-/// (`fn f() -> (i64, i64) { let a: i32 = 1 ... return (a, b) }`, `let t: (i64,
-/// i64) = mk()` with `mk() -> (i32, i32)`, `[mk()]` into `[(i64, i64)]`): the
-/// checker accepts the widening per element, but the value kept its own
-/// aggregate layout, so the slot read it back as the wrong width (AOT: zeros
-/// or garbage, or an LLVM build error). Rebuild the tuple element by element
-/// with an explicit cast per differing element. Only all-integer tuples of the
-/// same arity are rebuilt; anything else is returned untouched.
-fn tuple_int_widths_differ(have: &MirType, want: &MirType) -> bool {
-    let (MirType::Tuple(h), MirType::Tuple(w)) = (have, want) else { return false };
-    h.len() == w.len() && h != w && h.iter().chain(w.iter()).all(is_int_mir_ty)
-}
-
-fn coerce_tuple_int_widths(
-    ctx: &mut LoweringContext,
-    operand: Operand,
-    target_ty: &MirType,
-) -> Operand {
-    match coerce_tuple_int_widths_inner(ctx, operand, target_ty, false) {
-        Ok(op) => op,
-        Err(_) => unreachable!(),
-    }
-}
-
-/// `Ok(operand)` normally; with `as_rvalue` and a rebuild, `Err(rvalue)` of the
-/// fresh tuple. An unchanged operand is `Ok` either way.
-fn coerce_tuple_int_widths_inner(
-    ctx: &mut LoweringContext,
-    operand: Operand,
-    target_ty: &MirType,
-    as_rvalue: bool,
-) -> Result<Operand, RValue> {
-    let MirType::Tuple(want) = target_ty else { return Ok(operand) };
-    let Operand::Local(src) = &operand else { return Ok(operand) };
-    let Some(have_ty) = ctx.locals.iter().find(|l| l.id == *src).map(|l| l.ty.clone()) else {
-        return Ok(operand);
-    };
-    if !tuple_int_widths_differ(&have_ty, target_ty) {
-        return Ok(operand);
-    }
-    let MirType::Tuple(have) = have_ty else { return Ok(operand) };
-    let src = *src;
-    let mut ops = Vec::new();
-    for (i, (h, w)) in have.iter().zip(want.iter()).enumerate() {
-        let t = ctx.alloc_temp(h.clone());
-        ctx.emit(Instruction::Assign {
-            dest: t,
-            value: RValue::Field { object: Operand::Local(src), field: i.to_string() },
-        });
-        if h == w {
-            ops.push(Operand::Local(t));
-        } else {
-            let c = ctx.alloc_temp(w.clone());
-            ctx.emit(Instruction::Assign {
-                dest: c,
-                value: RValue::Cast { operand: Operand::Local(t), ty: w.clone() },
-            });
-            ops.push(Operand::Local(c));
-        }
-    }
-    // `as_rvalue`: hand the fresh tuple back as a `let` initializer (a `Use` of
-    // a temp would be treated as an alias read and shared once too often).
-    if as_rvalue {
-        return Err(RValue::Tuple(ops));
-    }
-    let dst = ctx.alloc_temp(target_ty.clone());
-    ctx.emit(Instruction::Assign { dest: dst, value: RValue::Tuple(ops) });
-    Ok(Operand::Local(dst))
-}
-
 fn lower_expr_to_operand(ctx: &mut LoweringContext, expr: &ast::Expr) -> Operand {
     match expr {
         ast::Expr::IntLiteral { value, .. } => Operand::Constant(Constant::Int(*value)),
@@ -16379,7 +16264,6 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
         }
 
         ast::Expr::ArrayLiteral { elements, .. } => {
-            let want_elem = ctx.pending_arr_elem_ty.take();
             let ops: Vec<Operand> = elements
                 .iter()
                 .map(|e| {
@@ -16392,10 +16276,7 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                             ctx.partial_moved_locals.remove(&a);
                         }
                     }
-                    match &want_elem {
-                        Some(w) => coerce_tuple_int_widths(ctx, op, w),
-                        None => op,
-                    }
+                    op
                 })
                 .collect();
             RValue::Array(ops)
