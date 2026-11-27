@@ -1867,6 +1867,69 @@ want_reject str_tail_of_any_map_fn '
 fn pick() -> map<str, any> { {"k": "hi"} }
 fn main() { let m = pick()
   println(to_string(m["k"])) }'
+want_reject str_into_user_enum_any_payload '
+enum Box { Item(any), Empty }
+fn main() {
+    let b = Box::Item("hi")
+    match b {
+        Box::Item(v) => println(to_string(v)),
+        Box::Empty => println("empty"),
+    }
+}'
+want_reject str_into_generic_struct_at_any '
+struct W<T> { v: T }
+fn main() {
+    let w: W<any> = W { v: "hi" }
+    println(to_string(w.v))
+}'
+want_reject str_into_generic_struct_any_param '
+struct W<T> { v: T }
+fn f(w: W<any>) { println(to_string(w.v)) }
+fn main() { f(W { v: "hi" }) }'
+want_reject str_into_generic_enum_at_any '
+enum Bx<T> { Item(T), Empty }
+fn main() {
+    let b: Bx<any> = Bx::Item("hi")
+    match b {
+        Bx::Item(v) => println(to_string(v)),
+        Bx::Empty => println("empty")
+    }
+}'
+want_reject str_returned_as_option_any '
+use std::option::{Option, Some, None}
+fn mk() -> Option<any> { return Some("hi") }
+fn main() {
+    match mk() {
+        Some(v) => println(to_string(v)),
+        None() => println("none"),
+    }
+}'
+want_reject str_through_generic_into_any_param '
+fn show(a: any) { println(to_string(a)) }
+fn conv<T>(s: T) { show(s) }
+fn main() { conv("hi") }'
+want_reject str_through_generic_into_let_mut_any '
+fn conv<T>(s: T) {
+    let mut x: any = s
+    println(to_string(x))
+}
+fn main() { conv("hi") }'
+want_reject str_through_generic_chain_into_any '
+fn show(a: any) { println(to_string(a)) }
+fn conv<T>(s: T) { mid(s) }
+fn mid<U>(u: U) { show(u) }
+fn main() { conv("x") }'
+want_pass generic_any_sink_with_int_and_generic_any_let_str '
+fn show(a: any) { println(to_string(a)) }
+fn conv<T>(s: T) { show(s) }
+fn render<T>(s: T) -> str {
+    let x: any = s
+    return to_string(x)
+}
+fn main() {
+    conv(5)
+    println(render("hi"))
+}'
 want_pass typed_closures_fields_and_tails_still_work '
 fn mk() -> fn() -> str { fn() { "hi" } }
 fn run(f: fn() -> str) -> str { f() }

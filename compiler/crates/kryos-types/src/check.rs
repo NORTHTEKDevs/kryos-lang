@@ -201,6 +201,18 @@ pub struct TypeChecker {
     /// The tail is never unified against the declared return type, so a `str`
     /// tail of a `-> any` fn needs its own check (`Stmt::Expr`).
     fn_tail_value_spans: std::collections::HashSet<Span>,
+    /// LEDGER item 6 (fifth pass): `(generic fn, generic param index)` pairs
+    /// whose type parameter flows, inside the body, into an `any` slot (a
+    /// `let mut`, an `any` parameter, a return, ...). A generic body is checked
+    /// once with `T` unbound, so a `str` bound to `T` at a CALL SITE is invisible
+    /// there; these summaries let the call site reject it.
+    generic_any_sinks: std::collections::HashSet<(String, usize)>,
+    /// `(caller, caller generic idx) -> (callee, callee generic idx)`: a generic
+    /// fn handing its own type parameter to another generic fn (closed to a
+    /// fixpoint at the end of the module).
+    generic_any_edges: Vec<((String, usize), (String, usize))>,
+    /// Call sites that bound a generic parameter to `str`: `(callee, idx, span)`.
+    generic_str_calls: Vec<(String, usize, Span)>,
 
     // ── Capability-typed fn values (Stage 1: representation + inference,
     // no enforcement -- docs/capability-effects-spec.md) ──────────────
@@ -334,6 +346,9 @@ impl TypeChecker {
             any_annotated_params: std::collections::HashSet::new(),
             any_str_safe_params: std::collections::HashSet::new(),
             fn_tail_value_spans: std::collections::HashSet::new(),
+            generic_any_sinks: std::collections::HashSet::new(),
+            generic_any_edges: Vec::new(),
+            generic_str_calls: Vec::new(),
             pending_cap_var_ids: Vec::new(),
             cap_accum_stack: Vec::new(),
             current_actor_fn_state_fields: std::collections::HashSet::new(),
@@ -751,29 +766,10 @@ impl TypeChecker {
         // (`let x: any = <bool>`) at `Stmt::Let`. Only CONTAINER positions are
         // unambiguous: nothing polymorphic is typed `[any]`/`map<_, any>`, so
         // a concrete `Bool`/`F64` landing inside one is always the item-40 bug.
-        let nested = match (&p, &a) {
-            (Type::Array { element: pe, .. }, Type::Array { element: ae, .. }) => {
-                Self::untagged_scalar_into_any(pe, ae)
-            }
-            (Type::Set { element: pe }, Type::Set { element: ae }) => {
-                Self::untagged_scalar_into_any(pe, ae)
-            }
-            (Type::Option { inner: pi }, Type::Option { inner: ai }) => {
-                Self::untagged_scalar_into_any(pi, ai)
-            }
-            (Type::Tuple { elements: pv }, Type::Tuple { elements: av }) => pv
-                .iter()
-                .zip(av.iter())
-                .find_map(|(x, y)| Self::untagged_scalar_into_any(x, y)),
-            (Type::Map { key: pk, value: pv }, Type::Map { key: ak, value: av }) => {
-                Self::untagged_scalar_into_any(pk, ak)
-                    .or_else(|| Self::untagged_scalar_into_any(pv, av))
-            }
-            (Type::Result { ok: po, err: pe }, Type::Result { ok: ao, err: ae }) => {
-                Self::untagged_scalar_into_any(po, ao)
-                    .or_else(|| Self::untagged_scalar_into_any(pe, ae))
-            }
-            _ => None,
+        let nested = if matches!(p, Type::Error) {
+            None
+        } else {
+            Self::untagged_scalar_into_any(&p, &a)
         };
         if let Some(bad) = nested {
             let msg = if bad == Type::Str {
@@ -815,6 +811,116 @@ impl TypeChecker {
         safe > 0 && safe == total
     }
 
+    /// LEDGER item 6 (num lane, fifth pass): a value handed to an enum
+    /// variant constructor whose declared payload type is (or contains) `any`.
+    /// The stdlib bridge enums `Result`/`Option` carry an `any` payload by
+    /// design (typed through `stdlib_bridge_generics`), so only other enums are
+    /// checked.
+    fn reject_variant_payload_into_any(&mut self, enum_name: &str, payload_ty: &Type, arg_ty: &Type, span: Span) {
+        if enum_name == "Result" || enum_name == "Option" {
+            return;
+        }
+        self.reject_str_into_any_slot(payload_ty, arg_ty, span, "an enum variant payload");
+        self.reject_untagged_scalar_into_any(payload_ty, arg_ty, span);
+    }
+
+    /// `(current fn, generic param index)` when `var` (resolved) is one of the
+    /// type-parameter variables of the generic fn whose body is being checked.
+    fn current_generic_param(&self, var: u32) -> Option<(String, usize)> {
+        let f = self.current_function_name.as_ref()?;
+        let sig = self.env.lookup_function(f)?;
+        sig.generic_var_ids
+            .iter()
+            .position(|g| matches!(self.engine.resolve(&Type::Var(*g)), Type::Var(r) if r == var))
+            .map(|i| (f.clone(), i))
+    }
+
+    /// The type `arg` has at the position where the template parameter type
+    /// `tmpl` mentions the generic variable `gid` (parallel structural walk).
+    fn bound_generic(&self, tmpl: &Type, arg: &Type, gid: u32) -> Option<Type> {
+        let t = self.engine.resolve(tmpl);
+        let a = self.engine.resolve(arg);
+        if let Type::Var(v) = &t {
+            if matches!(self.engine.resolve(&Type::Var(gid)), Type::Var(r) if r == *v) {
+                return Some(a);
+            }
+        }
+        match (&t, &a) {
+            (Type::Array { element: te, .. }, Type::Array { element: ae, .. })
+            | (Type::Set { element: te }, Type::Set { element: ae })
+            | (Type::Option { inner: te }, Type::Option { inner: ae }) => self.bound_generic(te, ae, gid),
+            (Type::Tuple { elements: tv }, Type::Tuple { elements: av }) => tv
+                .iter()
+                .zip(av.iter())
+                .find_map(|(x, y)| self.bound_generic(x, y, gid)),
+            (Type::Map { key: tk, value: tv }, Type::Map { key: ak, value: av }) => {
+                self.bound_generic(tk, ak, gid).or_else(|| self.bound_generic(tv, av, gid))
+            }
+            (Type::Result { ok: to, err: te }, Type::Result { ok: ao, err: ae }) => {
+                self.bound_generic(to, ao, gid).or_else(|| self.bound_generic(te, ae, gid))
+            }
+            (Type::Struct { name: tn, generics: tg }, Type::Struct { name: an, generics: ag })
+            | (Type::Enum { name: tn, generics: tg }, Type::Enum { name: an, generics: ag })
+                if tn == an && tg.len() == ag.len() =>
+            {
+                tg.iter().zip(ag.iter()).find_map(|(x, y)| self.bound_generic(x, y, gid))
+            }
+            _ => None,
+        }
+    }
+
+    /// LEDGER item 6 (fifth pass): a call to the generic fn `callee` whose
+    /// argument `i` binds one of its type parameters to `str`, or to a type
+    /// parameter of the generic fn being checked (a hand-off).
+    fn note_generic_call_arg(&mut self, callee: &str, i: usize, arg_ty: &Type, span: Span) {
+        let Some(sig) = self.env.lookup_function(callee).cloned() else { return };
+        if sig.generic_var_ids.is_empty() {
+            return;
+        }
+        let Some((_, tmpl)) = sig.params.get(i) else { return };
+        for (j, gid) in sig.generic_var_ids.iter().enumerate() {
+            match self.bound_generic(tmpl, arg_ty, *gid) {
+                Some(Type::Str) => self.generic_str_calls.push((callee.to_string(), j, span)),
+                Some(Type::Var(v)) => {
+                    if let Some(from) = self.current_generic_param(v) {
+                        self.generic_any_edges.push((from, (callee.to_string(), j)));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// LEDGER item 6 (fifth pass): close the generic-summary graph and reject
+    /// every call site that bound a sink type parameter to `str`.
+    fn report_generic_str_sinks(&mut self) {
+        loop {
+            let mut grew = false;
+            for (from, to) in self.generic_any_edges.clone() {
+                if self.generic_any_sinks.contains(&to) && self.generic_any_sinks.insert(from) {
+                    grew = true;
+                }
+            }
+            if !grew {
+                break;
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        for (callee, j, span) in self.generic_str_calls.clone() {
+            if self.generic_any_sinks.contains(&(callee.clone(), j)) && seen.insert(span) {
+                self.error_with_code(
+                    format!(
+                        "cannot bind a generic parameter of `{callee}` to `str` -- its body stores a value of that type in an `any` slot, and `any` is erased to a bare i64 at runtime with no type tag, so reading it back (`to_string`, `println`, interpolation) prints a raw pointer instead of the text. Keep the value in its generic type instead of erasing it to `any`"
+                    ),
+                    span,
+                    kryos_errors::codes::E0110,
+                );
+            }
+        }
+        self.generic_str_calls.clear();
+        self.generic_any_edges.clear();
+    }
+
     /// LEDGER item 6 (num lane): a `str` stored into a TOP-LEVEL `any` slot
     /// (a function/method parameter, a `mut` binding, an assignment target, a
     /// return, a struct field). `any` carries no runtime tag, so the slot is a
@@ -825,6 +931,13 @@ impl TypeChecker {
     /// Fires only on a CONCRETE `str` value meeting the `any` sentinel, so an
     /// upstream type error (`Type::Error` on the value side) adds no noise.
     fn reject_str_into_any_slot(&mut self, slot_ty: &Type, val_ty: &Type, span: Span, what: &str) {
+        if self.engine.resolve(slot_ty) == Type::Error {
+            if let Type::Var(id) = self.engine.resolve(val_ty) {
+                if let Some(key) = self.current_generic_param(id) {
+                    self.generic_any_sinks.insert(key);
+                }
+            }
+        }
         if self.engine.resolve(slot_ty) == Type::Error && self.engine.resolve(val_ty) == Type::Str {
             self.error_with_code(
                 format!(
@@ -885,6 +998,36 @@ impl TypeChecker {
                 },
             ) => Self::untagged_scalar_into_any(po, ao)
                 .or_else(|| Self::untagged_scalar_into_any(pe, ae)),
+            // The constructor-built bridge enums (`Some(x)` is
+            // `Enum{Option,[T]}`, `Ok(x)` is `Enum{Result,[T,E]}`, see
+            // `stdlib_bridge_generics`) meeting the builtin `Option<..>` /
+            // `Result<..>` slot type.
+            (Type::Option { inner: pi }, Type::Enum { name: an, generics: ag })
+                if an == "Option" && ag.len() == 1 =>
+            {
+                Self::untagged_scalar_into_any(pi, &ag[0])
+            }
+            (Type::Result { ok: po, err: pe }, Type::Enum { name: an, generics: ag })
+                if an == "Result" && ag.len() == 2 =>
+            {
+                Self::untagged_scalar_into_any(po, &ag[0])
+                    .or_else(|| Self::untagged_scalar_into_any(pe, &ag[1]))
+            }
+            // LEDGER item 6 (num lane, fifth pass): a user generic instantiated
+            // at `any` (`W<any>`, `Box<any>`) erases whatever the concrete
+            // instantiation (`W<str>`) holds at that argument position, exactly
+            // like a container element.
+            (
+                Type::Struct { name: pn, generics: pg },
+                Type::Struct { name: an, generics: ag },
+            )
+            | (
+                Type::Enum { name: pn, generics: pg },
+                Type::Enum { name: an, generics: ag },
+            ) if pn == an && pg.len() == ag.len() => pg
+                .iter()
+                .zip(ag.iter())
+                .find_map(|(x, y)| Self::untagged_scalar_into_any(x, y)),
             // LEDGER item 6 (num lane, fourth pass): a function VALUE whose
             // declared return type is `any` (`fn() -> any`, `fn(i64) -> [any]`)
             // yields whatever the concrete closure yields, so the closure's
@@ -1814,6 +1957,8 @@ impl TypeChecker {
                 );
             }
         }
+
+        self.report_generic_str_sinks();
 
         // Every `deny!` block is judged on the row its body was charged, and the
         // row mentions vars that only a later declaration, a later store or a
@@ -6292,6 +6437,7 @@ impl TypeChecker {
                                     } else {
                                         self.engine.instantiate(expected_ty, &var_map)
                                     };
+                                    self.reject_variant_payload_into_any(&edef.name, &expected_instantiated, &arg_ty, arg.span());
                                     if let Err(diag) =
                                         self.engine.unify(&expected_instantiated, &arg_ty, *span)
                                     {
@@ -6544,6 +6690,9 @@ impl TypeChecker {
                                     {
                                         self.reject_str_into_any_slot(param_ty, &arg_ty, arg.span(), "a parameter");
                                     }
+                                }
+                                if let Some(ref cn) = callee_name_str {
+                                    self.note_generic_call_arg(cn, i, &arg_ty, arg.span());
                                 }
                                 // LEDGER item 6: a fn-VALUE callee (a `fn(any)` parameter
                                 // or local) has no name-keyed table entry, but its `any`
@@ -6993,6 +7142,7 @@ impl TypeChecker {
                                 } else {
                                     self.engine.instantiate(expected_ty, &var_map)
                                 };
+                                self.reject_variant_payload_into_any(tname, &expected_instantiated, &arg_ty, arg.span());
                                 if let Err(diag) =
                                     self.engine
                                         .unify(&expected_instantiated, &arg_ty, arg.span())
@@ -7283,6 +7433,7 @@ impl TypeChecker {
                             } else {
                                 self.engine.instantiate(expected_ty, &var_map)
                             };
+                            self.reject_variant_payload_into_any(type_name, &expected_instantiated, &arg_ty, arg.span());
                             if let Err(diag) =
                                 self.engine
                                     .unify(&expected_instantiated, &arg_ty, arg.span())

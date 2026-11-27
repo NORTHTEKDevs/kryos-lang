@@ -1,0 +1,24 @@
+// Conformance (num lane, LEDGER item 6, fifth pass): an IMMUTABLE
+// `let x: any = s` where `s: T` is a generic parameter keeps the
+// instantiation's concrete type. A generic body is checked once with `T`
+// unbound, so the checker cannot see the `str`; the MIR lowering refines the
+// binding at monomorphization. On the previous tree the JIT printed a raw
+// pointer (and the AOT build failed in clang).
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn render<T>(s: T) -> str {
+    let x: any = s
+    let y: any = x
+    return to_string(y)
+}
+
+fn main() {
+    expect(render("hi") == "hi", "a str through a generic any-annotated let")
+    expect(render(42) == "42", "an int through the same generic")
+    println(render("hi"))
+}
