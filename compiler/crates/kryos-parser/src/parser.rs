@@ -231,6 +231,60 @@ impl Parser {
         false
     }
 
+    /// At a `<`: is its balanced `<...>` group made only of type-shaped
+    /// tokens and followed directly by `{`? That is `Name<Targs>{ ... }`, a
+    /// struct literal with explicit generic arguments, never a comparison.
+    /// Returns the index of the closing `>` (or `>>`).
+    fn generic_args_before_brace(&self) -> Option<usize> {
+        let mut depth = 0usize;
+        let mut brackets = 0usize;
+        let mut i = self.pos;
+        while i < self.tokens.len() {
+            match self.tokens[i].kind {
+                TokenKind::LBracket => brackets += 1,
+                TokenKind::RBracket => brackets = brackets.saturating_sub(1),
+                TokenKind::Lt => depth += 1,
+                TokenKind::Gt | TokenKind::Shr => {
+                    let n = if self.tokens[i].kind == TokenKind::Shr { 2 } else { 1 };
+                    if depth < n {
+                        return None;
+                    }
+                    depth -= n;
+                    if depth == 0 {
+                        return matches!(
+                            self.tokens.get(i + 1).map(|t| t.kind),
+                            Some(TokenKind::LBrace)
+                        )
+                        .then_some(i);
+                    }
+                }
+                TokenKind::Ident
+                | TokenKind::TypeIdent
+                | TokenKind::Comma
+                | TokenKind::ColonColon
+                | TokenKind::LParen
+                | TokenKind::RParen
+                | TokenKind::Amp
+                | TokenKind::Mut
+                | TokenKind::Star
+                | TokenKind::Question
+                | TokenKind::Bang
+                | TokenKind::Arrow
+                | TokenKind::Fn
+                | TokenKind::Dyn
+                | TokenKind::Shared
+                | TokenKind::Weak
+                | TokenKind::Chan
+                | TokenKind::Integer => {}
+                // `[T; 3]`: a `;` is type-shaped only inside brackets.
+                TokenKind::Semicolon if brackets > 0 => {}
+                _ => return None,
+            }
+            i += 1;
+        }
+        None
+    }
+
     fn at_end(&self) -> bool {
         self.peek_kind() == TokenKind::Eof
     }
@@ -2892,6 +2946,25 @@ impl Parser {
                 // second grammar production competing for `Name { ... }`.
                 if self.check(TokenKind::LBrace) && !self.no_struct_literal {
                     return self.parse_struct_literal(name, start);
+                }
+
+                // `Name<Targs>{ ... }`: explicit generic arguments on a struct
+                // literal. There is no AST slot for them, and without this the
+                // `<`/`>` parse as comparisons and the type names surface as
+                // three misleading "undefined variable" errors. Name the form
+                // once, then parse the literal so nothing cascades.
+                if self.check(TokenKind::Lt) && !self.no_struct_literal {
+                    if let Some(close) = self.generic_args_before_brace() {
+                        let span = self.peek().span.merge(self.tokens[close].span);
+                        self.error(
+                            format!(
+                                "explicit generic arguments (turbofish) on a struct literal are not supported: `{name}<...>{{ ... }}`"
+                            ),
+                            span,
+                        );
+                        self.pos = close + 1;
+                        return self.parse_struct_literal(name, start);
+                    }
                 }
 
                 // Check for static method call: `Type::method(args)`

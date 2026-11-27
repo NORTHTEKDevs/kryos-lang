@@ -1,0 +1,10 @@
+// swa closure guard: an UNANNOTATED binding of `to_array(r)` stays rejected
+// (E0110) even though a use of the call's value (`for`, an index, a formatter)
+// is typed from the argument's `Result<T, E>`. The error names the annotation.
+use std::result::{Result, Ok, Err, to_array}
+
+fn main() {
+  let r: Result<str, str> = Ok("hi")
+  let a = to_array(r)
+  println(a[0])
+}

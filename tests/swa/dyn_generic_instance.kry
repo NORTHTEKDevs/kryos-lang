@@ -1,0 +1,33 @@
+// swa a8: a `dyn Trait` built from a monomorphized generic struct (`Box<str>`,
+// `Box<f64>`, `Pair<str, f64>`) must dispatch to a per-instance method copy;
+// the shared erased copy read every generic field as an i64 (raw pointer / float bits).
+trait Show { fn show(self) -> str
+             fn twice(self) -> str }
+struct Box<T> { v: T }
+impl<T> Show for Box<T> {
+    fn show(self) -> str { return "{self.v}" }
+    fn twice(self) -> str { return "{self.v}{self.v}" }
+}
+struct Pair<A, B> { a: A, b: B }
+impl<A, B> Show for Pair<A, B> {
+    fn show(self: Self) -> str { return "{self.a}/{self.b}" }
+    fn twice(self: Self) -> str { return "{self.b}/{self.a}" }
+}
+fn go(s: dyn Show) {
+    println(s.show())
+    println(s.twice())
+}
+fn main() {
+    let a = Box { v: "hello" }
+    let b = Box { v: 2.5 }
+    let c = Box { v: 7 }
+    let p = Pair { a: "k", b: 1.5 }
+    let d1: dyn Show = a
+    let d2: dyn Show = b
+    println(d1.show())
+    println(d2.twice())
+    go(c)
+    go(p)
+    go(a)
+    go(b)
+}

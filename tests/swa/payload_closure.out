@@ -1,0 +1,14 @@
+Ok("x")
+Some("a")
+Err("bad")
+Ok("a")
+Ok("pl")
+Some(Some(1))
+t
+a
+b
+none
+hix
+hi!
+2.5
+2

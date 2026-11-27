@@ -99,6 +99,12 @@ pub struct LoweringContext {
     /// mismatched on the strict LLVM AOT backend (Cranelift JIT tolerated it
     /// since it only checks byte-size, not nominal struct type).
     generic_impl_fn_templates: HashMap<(String, String), GenericImplFnTemplate>,
+    /// (base struct, trait) of every `impl<T> Trait for Base<T>`: a `dyn Trait`
+    /// built from a monomorphized instance (`Base___str`) needs its own
+    /// vtable of per-instance method copies (see `ensure_dyn_instance_vtables`).
+    generic_trait_impls: std::collections::HashSet<(String, String)>,
+    /// (monomorphized struct, trait) pairs a `MakeTraitObject` was emitted for.
+    pending_dyn_instances: Vec<(String, String)>,
     /// Generic struct templates: struct_name -> (generic_params, AST struct decl fields).
     generic_struct_templates: HashMap<String, GenericStructTemplate>,
     /// Mangled monomorphized name -> the concrete type args it was built
@@ -535,6 +541,8 @@ impl LoweringContext {
             impl_map: HashMap::new(),
             generic_templates: HashMap::new(),
             generic_impl_fn_templates: HashMap::new(),
+            generic_trait_impls: std::collections::HashSet::new(),
+            pending_dyn_instances: Vec::new(),
             generic_struct_templates: HashMap::new(),
             mono_instance_args: HashMap::new(),
             impl_method_generic_info: HashMap::new(),
@@ -1863,7 +1871,11 @@ pub fn lower_module_with_lambda_params(
                                     (target.clone(), name.clone()),
                                     GenericImplFnTemplate {
                                         generic_params: impl_generic_names.clone(),
-                                        params: params.clone(),
+                                        params: generic_self_param_typed(
+                                            params,
+                                            target,
+                                            &impl_generic_names,
+                                        ),
                                         ret_ty: ret_ty.clone(),
                                         body: body.clone(),
                                         has_self,
@@ -2036,6 +2048,10 @@ pub fn lower_module_with_lambda_params(
                     };
                     ctx.impl_map
                         .insert((target.clone(), trait_name.clone()), mangled_names);
+                    if !impl_generics.is_empty() {
+                        ctx.generic_trait_impls
+                            .insert((target.clone(), trait_name.clone()));
+                    }
                 }
 
                 ctx.current_self_type = prev_self;
@@ -2517,6 +2533,11 @@ pub fn lower_module_with_lambda_params(
     for (actor_name, handlers) in &ctx.actor_defs {
         functions.push(generate_actor_dispatch(actor_name, handlers));
     }
+
+    // A `dyn Trait` built from a monomorphized generic instance gets its own
+    // vtable of per-instance method copies (fixpoint: a copied body may build
+    // another trait object).
+    ensure_dyn_instance_vtables(&mut ctx);
 
     // Collect monomorphized specializations generated during lowering.
     functions.append(&mut ctx.monomorphized_functions);
@@ -7566,6 +7587,7 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                         value: rvalue,
                                     });
                                     let owns_data = dyn_owns_data(ctx, &concrete_type);
+                                    note_dyn_instance(ctx, &concrete_type, &trait_name);
                                     rvalue = RValue::MakeTraitObject {
                                         value: Operand::Local(struct_tmp),
                                         concrete_type,
@@ -7895,7 +7917,104 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             // inserted `coll[k] = {}` recurses through here --
                             // and the key is simple, so re-evaluating either
                             // is harmless.
-                            if let ast::Expr::IndexAccess { object: coll, index: k, span: sp } = object.as_ref() {
+                            // A key that is not a plain variable / literal (`m[key()]["y"] = 5`,
+                            // `m[a + 1]["y"] = 5`) was never auto-filled: the missing
+                            // outer slot made the write land in a throwaway map. Bind
+                            // each such key of the place chain to a hidden `let` once
+                            // (left to right, the order they ran in), then lower the
+                            // rewritten place -- re-evaluating it for the existence
+                            // test and the fill is then harmless.
+                            let hoisted_target: Option<(ast::Expr, ast::Expr)> = (|| {
+                                let ast::Expr::IndexAccess { object: coll, index: k, span: sp } = object.as_ref() else {
+                                    return None;
+                                };
+                                let outer_is_map = matches!(
+                                    infer_expr_type(ctx, coll),
+                                    MirType::Map { value, .. } if matches!(*value, MirType::Map { .. })
+                                );
+                                if !outer_is_map {
+                                    return None;
+                                }
+                                fn is_simple(e: &ast::Expr) -> bool {
+                                    matches!(
+                                        e,
+                                        ast::Expr::Identifier { .. }
+                                            | ast::Expr::StringLiteral { .. }
+                                            | ast::Expr::IntLiteral { .. }
+                                    )
+                                }
+                                fn place_root_ok(e: &ast::Expr) -> bool {
+                                    match e {
+                                        ast::Expr::Identifier { .. } => true,
+                                        ast::Expr::FieldAccess { object, .. } => place_root_ok(object),
+                                        ast::Expr::IndexAccess { object, .. } => place_root_ok(object),
+                                        _ => false,
+                                    }
+                                }
+                                fn needs_hoist(e: &ast::Expr) -> bool {
+                                    match e {
+                                        ast::Expr::FieldAccess { object, .. } => needs_hoist(object),
+                                        ast::Expr::IndexAccess { object, index, .. } => {
+                                            needs_hoist(object) || !is_simple(index)
+                                        }
+                                        _ => false,
+                                    }
+                                }
+                                if !place_root_ok(coll) || !(needs_hoist(coll) || !is_simple(k)) {
+                                    return None;
+                                }
+                                fn hoist(ctx: &mut LoweringContext, e: &ast::Expr) -> ast::Expr {
+                                    match e {
+                                        ast::Expr::FieldAccess { object, field, span } => ast::Expr::FieldAccess {
+                                            object: Box::new(hoist(ctx, object)),
+                                            field: field.clone(),
+                                            span: *span,
+                                        },
+                                        ast::Expr::IndexAccess { object, index, span } => {
+                                            let object = hoist(ctx, object);
+                                            let index = hoist_key(ctx, index);
+                                            ast::Expr::IndexAccess {
+                                                object: Box::new(object),
+                                                index: Box::new(index),
+                                                span: *span,
+                                            }
+                                        }
+                                        _ => e.clone(),
+                                    }
+                                }
+                                fn hoist_key(ctx: &mut LoweringContext, k: &ast::Expr) -> ast::Expr {
+                                    if is_simple(k) {
+                                        return k.clone();
+                                    }
+                                    let span = k.span();
+                                    let hidden = format!("__idxkey_{}", ctx.locals.len());
+                                    lower_stmt(
+                                        ctx,
+                                        &ast::Stmt::Let {
+                                            name: hidden.clone(),
+                                            mutable: false,
+                                            ty: None,
+                                            value: Some(k.clone()),
+                                            pattern: None,
+                                            span,
+                                        },
+                                    );
+                                    ast::Expr::Identifier { name: hidden, span }
+                                }
+                                let coll_h = hoist(ctx, coll);
+                                let k_h = hoist_key(ctx, k);
+                                let obj_h = ast::Expr::IndexAccess {
+                                    object: Box::new(coll_h),
+                                    index: Box::new(k_h),
+                                    span: *sp,
+                                };
+                                Some((obj_h, (**index).clone()))
+                            })();
+                            let (object, index) = match &hoisted_target {
+                                Some((o, i)) => (o, i),
+                                None => (&**object, &**index),
+                            };
+                            if let ast::Expr::IndexAccess { object: coll, index: k, span: sp } = object {
                                 fn simple(e: &ast::Expr) -> bool {
                                     matches!(
                                         e,
@@ -7935,7 +8054,7 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                         },
                                         then_block: ast::Block {
                                             stmts: vec![ast::Stmt::Assign {
-                                                target: object.as_ref().clone(),
+                                                target: object.clone(),
                                                 op: ast::AssignOp::Assign,
                                                 value: ast::Expr::MapLiteral { entries: Vec::new(), span: sp },
                                                 span: sp,
@@ -14932,10 +15051,16 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
         ast::Expr::RangeExpr { .. } => MirType::I64,
 
         ast::Expr::MatchExpr { subject, arms, .. } => {
+            if let Some(t) = exported_subject_type(ctx, expr) {
+                return t;
+            }
             infer_match_result_type(ctx, subject, arms)
         }
 
         ast::Expr::IfExpr { then_branch, else_branch, .. } => {
+            if let Some(t) = exported_subject_type(ctx, expr) {
+                return t;
+            }
             // Type from the first branch that PRODUCES a value; a divergent
             // (throw/return) branch yields no type and is skipped. This MUST
             // match the if-expression lowering (which uses the same
@@ -14962,6 +15087,9 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
         }
 
         ast::Expr::Block { block, .. } | ast::Expr::UnsafeBlock { body: block, .. } => {
+            if let Some(t) = exported_subject_type(ctx, expr) {
+                return t;
+            }
             // A block expression's value is its last expression. Falling to
             // the Void catch-all typed `let x = { 40 + 2 }` (and the
             // `unsafe { ... }` form) as a void slot -- a `store void` codegen
@@ -15193,6 +15321,95 @@ fn lower_nested_field_assign(
 /// the struct (see `RValue::MakeTraitObject::owns_data`)? Exactly the structs
 /// whose values are shared by STRUCT_SHARE_FN: for any other the source value
 /// keeps the old never-dropped behavior (and so is never dropped by MIR).
+/// Give a `self` param of a generic-impl template the type `Target<G..>`.
+/// `self`, `self: Self` and `self: Target` all lower to the bare struct name,
+/// which `extract_type_bindings` cannot bind the impl generics from, so every
+/// receiver was monomorphized at the erased i64 (a `str` / `f64` field then
+/// printed as a raw pointer / the bits of the float).
+fn generic_self_param_typed(
+    params: &[ast::Param],
+    target: &str,
+    impl_generic_names: &[String],
+) -> Vec<ast::Param> {
+    params
+        .iter()
+        .map(|p| {
+            let bare = match &p.ty {
+                None => true,
+                Some(ast::TypeExpr::Simple { name, .. }) => name == "Self" || name == target,
+                _ => false,
+            };
+            if p.name == "self" && bare && !impl_generic_names.is_empty() {
+                let span = p.span;
+                ast::Param {
+                    name: p.name.clone(),
+                    ty: Some(ast::TypeExpr::Generic {
+                        name: target.to_string(),
+                        args: impl_generic_names
+                            .iter()
+                            .map(|g| ast::TypeExpr::Simple { name: g.clone(), span })
+                            .collect(),
+                        span,
+                    }),
+                    default: p.default.clone(),
+                    span: p.span,
+                }
+            } else {
+                p.clone()
+            }
+        })
+        .collect()
+}
+
+/// Record that a trait object was built from `concrete` (a monomorphized
+/// generic struct) so `ensure_dyn_instance_vtables` registers its vtable.
+fn note_dyn_instance(ctx: &mut LoweringContext, concrete: &str, trait_name: &str) {
+    if ctx.mono_instance_args.contains_key(concrete) {
+        ctx.pending_dyn_instances
+            .push((concrete.to_string(), trait_name.to_string()));
+    }
+}
+
+/// For every `(Base___args, Trait)` a trait object was built from, register
+/// `impl_map[(Base___args, Trait)]` = the trait's methods, each a per-instance
+/// monomorphized copy when the impl method is a template (its body operates on
+/// `self`), else the erased shared copy. Without it the codegen falls back to
+/// the erased `Base__method` for every instance, whose generic-typed fields
+/// are i64 (a `Box<str>` field printed as a pointer through `dyn`).
+fn ensure_dyn_instance_vtables(ctx: &mut LoweringContext) {
+    let mut done: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+    while let Some((concrete, trait_name)) = ctx.pending_dyn_instances.pop() {
+        if !done.insert((concrete.clone(), trait_name.clone())) {
+            continue;
+        }
+        let Some(base) = concrete.split("___").next().map(str::to_string) else {
+            continue;
+        };
+        if base == concrete || !ctx.generic_trait_impls.contains(&(base.clone(), trait_name.clone())) {
+            continue;
+        }
+        let Some(base_names) = ctx.impl_map.get(&(base.clone(), trait_name.clone())).cloned() else {
+            continue;
+        };
+        let recv = MirType::Struct(concrete.clone());
+        let prefix = format!("{base}__");
+        let mut names = Vec::new();
+        for n in &base_names {
+            let method = n.strip_prefix(prefix.as_str()).unwrap_or(n).to_string();
+            let templated = ctx
+                .generic_impl_fn_templates
+                .get(&(base.clone(), method.clone()))
+                .is_some_and(|t| t.has_self);
+            if templated {
+                names.push(monomorphize_impl_fn(ctx, &base, &method, &[], Some(&recv)));
+            } else {
+                names.push(n.clone());
+            }
+        }
+        ctx.impl_map.insert((concrete, trait_name), names);
+    }
+}
+
 fn dyn_owns_data(ctx: &LoweringContext, concrete: &str) -> bool {
     is_owned_struct_ty(ctx, &MirType::Struct(concrete.to_string()))
 }
@@ -15207,6 +15424,7 @@ fn coerce_to_dyn_if_needed(
         if let MirType::Struct(ref concrete_type) = infer_expr_type(ctx, source_expr) {
             let tmp = ctx.alloc_temp(MirType::DynTrait(trait_name.clone()));
             let owns_data = dyn_owns_data(ctx, concrete_type);
+            note_dyn_instance(ctx, concrete_type, trait_name);
             ctx.emit(Instruction::Assign {
                 dest: tmp,
                 value: RValue::MakeTraitObject {
@@ -15754,6 +15972,37 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                     };
                     return lower_expr_to_rvalue(ctx, &rewritten);
                 }
+            }
+
+            // `println(r)` of a `Result` / `Option` VALUE printed the handle of the
+            // enum as a number on both backends (the backends stringify only
+            // scalars). Print its string form instead, exactly what
+            // `println(to_string(r))` prints.
+            if matches!(func_name.as_str(), "println" | "print" | "eprintln" | "eprint")
+                && args.len() == 1
+                && matches!(
+                    infer_expr_type(ctx, &args[0]),
+                    MirType::Enum(ref n)
+                        if n == "Result" || n == "Option"
+                            || n.starts_with("Result___") || n.starts_with("Option___")
+                )
+            {
+                // Synthesized nodes get a span no source expression has: the
+                // exported-type map is keyed by (start, end), so the argument's own
+                // span would read its type back as the type of the `to_string(..)`
+                // call and re-enter this rewrite forever.
+                let span = kryos_errors::Span::new(0, u32::MAX - 9, u32::MAX - 8);
+                let shown = ast::Expr::FnCall {
+                    callee: Box::new(ast::Expr::Identifier { name: "to_string".to_string(), span }),
+                    args: vec![args[0].clone()],
+                    span,
+                };
+                let rewritten = ast::Expr::FnCall {
+                    callee: callee.clone(),
+                    args: vec![shown],
+                    span,
+                };
+                return lower_expr_to_rvalue(ctx, &rewritten);
             }
 
             // `to_string(aggregate)` has no string representation and printed a
@@ -16317,6 +16566,7 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                                 // Emit MakeTraitObject to wrap the struct into a fat pointer.
                                 let tmp = ctx.alloc_temp(MirType::DynTrait(trait_name.clone()));
                                 let owns_data = dyn_owns_data(ctx, concrete_type);
+                                note_dyn_instance(ctx, concrete_type, trait_name);
                                 ctx.emit(Instruction::Assign {
                                     dest: tmp,
                                     value: RValue::MakeTraitObject {
@@ -21409,15 +21659,6 @@ fn infer_generic_variant_instance(
 /// any other expression and for a module that declares its own enum named
 /// `Result` / `Option`.
 fn exported_subject_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> Option<MirType> {
-    fn mentions_instance(t: &MirType) -> bool {
-        match t {
-            MirType::Enum(n) => n.starts_with("Result___") || n.starts_with("Option___"),
-            MirType::Array(e, _) | MirType::Shared(e) | MirType::Ptr(e) => mentions_instance(e),
-            MirType::Tuple(es) => es.iter().any(mentions_instance),
-            MirType::Map { key, value } => mentions_instance(key) || mentions_instance(value),
-            _ => false,
-        }
-    }
     let builtin_shape = ["Result", "Option"].iter().all(|n| {
         ctx.enum_defs
             .get(*n)
@@ -21426,9 +21667,10 @@ fn exported_subject_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> Option<
     if !builtin_shape {
         return None;
     }
-    let te = ctx.let_types.get(&expr.span()).cloned()?;
-    let exported = ctx.resolve_type(&te);
-    mentions_instance(&exported).then_some(exported)
+    let sp = expr.span();
+    let key = kryos_errors::Span::new(kryos_types::TypeChecker::EXPR_TYPE_FILE, sp.start, sp.end);
+    let te = ctx.let_types.get(&key).cloned()?;
+    Some(ctx.resolve_type(&te))
 }
 
 fn monomorphize_enum(ctx: &mut LoweringContext, enum_name: &str, type_args: &[MirType]) -> String {
@@ -22489,6 +22731,7 @@ fn lower_generic_fn_call(
                 if let MirType::Struct(ref concrete_type) = infer_expr_type(ctx, a) {
                     let tmp = ctx.alloc_temp(MirType::DynTrait(trait_name.clone()));
                     let owns_data = dyn_owns_data(ctx, concrete_type);
+                    note_dyn_instance(ctx, concrete_type, trait_name);
                     ctx.emit(Instruction::Assign {
                         dest: tmp,
                         value: RValue::MakeTraitObject {

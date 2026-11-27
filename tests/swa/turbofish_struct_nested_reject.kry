@@ -1,0 +1,5 @@
+struct Box<T> { v: T }
+fn main() {
+    let b = Box<Box<int>>{ v: Box{ v: 1 } }
+    println("{b.v.v}")
+}
