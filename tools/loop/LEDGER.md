@@ -12082,3 +12082,71 @@ Changes are in kryos-oracle/finish (gen/build_items.py, gen/inv_items.py, items.
   - **Still a bug row:** ASSAULT-F6 is default-mode `conflation.kry` accepted plus its JIT run. Method capability tables are keyed by bare method name, so PlainFormatter.run is charged SecretLoader.run's fs:read.
   - **New guard row:** ASSAULT-F6.dyn requires dyn_factory to stay rejected in both modes, with the strict check reporting only the real exfil call.
   - **Moved to finish/excluded.txt as unsound:** `ASSAULT-F6:strict-conflation`, because strict mode correctly rejects the unannotated SecretLoader.run, and the row's own control f6ctl is rejected at the same line. Also `ASSAULT-F6:dyn-default-line48`, because lines 48 and 50 are the same call on the same static type and differ only in a literal given to the factory.
+
+## a14 (round 3): a mutable global holding a struct / tuple / enum / Option never released its old value on overwrite (2026-11-27, branch closeout/r2-mem)
+
+Item A14 (`jit|aot leaks.kry glob_struct_reassign | glob_tuple_reassign | glob_enum_reassign | glob_opt_reassign`, peak commit +84MB at n 250000 -> 1000000).
+Rounds 1 (a0ff2892) and 2 (dc7e8a98) were refuted by the verifier and reverted (cd7b77f7, 1f0b4b50). This is the third attempt; the root cause the
+verifier named for round 2 is addressed directly rather than by another per-shape special case.
+
+Root cause (lower.rs, plain assignment to a mutable global): `kryos_global_set` is a raw i64 slot store, and only str / array / map globals released
+the old value. A struct / enum / tuple global owns exactly one reference of its value, so every overwrite orphaned the old box and its fields. The
+release itself is a one-line rule; what failed twice was deciding who owns the NEW value. Rounds 1 and 2 classified the right-hand side from the
+hidden result local of an `if` / `match` (`owned_slot_src` / `struct_value_owned`), but that local's ownership differs per branch: a literal or call
+hands it a reference, a named local is shared into it, and a READ OF A NAMED PLACE (`h.g`) is an alias that partially moves its source. No single
+consumer-side rule fits a mix, so `GS = if c { h.g } else { Gin{..} }` / `match` (verifier: 117MB AOT / 193MB JIT at 1M, the same on master) kept leaking.
+
+The rule now (one rule, MIR only, no backend change):
+- An owned struct / enum / tuple global assigned from an `if` / `match` / block value is lowered as one assignment PER BRANCH (`assign_per_branch`,
+  the same desugar `return_per_branch` uses for a returned branch value): `G = if c { a } else { b }` is `if c { G = a } else { G = b }`, nested tails
+  recurse because each branch assignment re-enters this rule. There is no hidden result local, so every branch value is classified on its own.
+- Plain assignment, per value: a fresh owned result (literal, variant, `None`, call result, closure call, fresh clone) moves in; an alias takes its own
+  reference first (a bare local or global name, a read of a named place `G = h.g` / `xs[i]`, a map element, any `Use(named or non-fresh temp)`), exactly
+  as `let y = <same expr>` does. The source keeps its owner and its drop; the read's partial-move mark is undone (`assign_rhs_owns_read`, the helper the
+  local-variable path now shares, extracted unchanged).
+- The old value is read back as a raw i64 handle AFTER the right-hand side ran (a callee that reassigned the global does not leave a stale snapshot) and
+  released through `Instruction::DropIfNe`; when the new value took its own reference it is released unconditionally (Cranelift can store the same box).
+  `G = G` is a no-op.
+- The two consumers of a bare global read that took no reference of their own and so freed memory the slot still held once the slot releases:
+  `Some(G)` / `W.Has(G)` / `Ok(G)` (`suppress_enum_field_arg_drops`) and `s.f = G` (field assignment, both the owned-root and the aliased-root path)
+  now share it. Every other consumer was probed, see below.
+
+Files: compiler/crates/kryos-mir/src/lower.rs; tests/mem/global_aggregate_leak.kry, tests/mem_global_aggregate_gate.sh (23 modes, 46 rows).
+
+Evidence (executed):
+- finish line `--only '^(A14|A14\.ctl)$'`: `PASS A14`, 1 PASS 0 FAIL, RESULT: ALL PASS.
+- tests/mem_global_aggregate_gate.sh (1M iterations, JIT and AOT, ceiling 24MB, answer 7888890 checked): this tree PASS, all 46 rows 4-5MB. The master
+  binary (KRYOS_BIN=kryos-co-nov) FAILs 44 of 46 rows (glob_struct AOT 110MB / JIT 102MB; the verifier's shapes glob_if_field AOT 223MB / JIT 360MB,
+  glob_match_field 221MB / 360MB); control 4MB on both. Modes: the round 1/2 set plus glob_if_field, glob_match_field, glob_if_named, glob_if_glob,
+  glob_if_nested (three-way if / elif / else with a field read, a fresh value and a global), glob_if_block, glob_mapread, glob_tup_if, glob_enum_if, glob_try.
+- Allocation balance (KRYOS_ALLOC_STATS box live, 1000 iterations; "live" must stay at the count of initial globals): 106 scratch programs on the JIT and
+  the AOT, each overwriting a global from one shape, all constant (no growth) and KRYOS_FREE_DIAG reporting 0 double frees / use-after-free:
+  sources (field, param field, `h.g` in `if` / `match` / elif / block / guard / nested / two named places, named local, global, map element, array
+  element, pop, closure call, user call, shared deref `*sh`, `None` / unit variant in a branch, try / catch around a throwing branch, `return` in a
+  branch, tuple field, enum, Option, `(Gin, i64)` tuple) and the fifteen consumers of a bare global read before an overwrite (`let x = G`, push, array
+  / tuple / struct literal, call arg, `return G`, `idg(G)`, closure capture, map insert, element set, `GS2 = G`, `Some(G)`, `b.g = G`, match subject,
+  swap). Output of every program is byte-identical to master's.
+- Regression: finish `--only '^mem:'` 387 PASS / 1 FAIL (v137_uaf, the frozen-total defective fixture, unchanged). Feature scan
+  `^(A[0-9]+|A[0-9]+\.ctl|leakmode.*|copy-assign-leak.*|13[5-9].*|137.*|M[0-9]|B[0-9]|41|6|122-typecheck|libm-constfold)$` 75 PASS / 12 FAIL; the 12
+  are 6, A4, A5, A20, M4, A17, leakmode:throw_locals, leakmode:clo_nested_tuple_arr and the four copy-assign-leak rows: other lanes' items and the
+  reverted lane fixes, and the same 12 FAIL with the same reasons on the kryos-integ binary of the same HEAD (A14 also fails there; A10-A16, A18, A19,
+  135-139 PASS here, 137-perf x0.665 of master).
+  Gates PASS: mem_balance, mem_shared_rule, no_double_free, backend_divergence_pins, builtin_borrow_mir, jit_symbols, mem_struct_arg, mem_loop, mem_tuple,
+  mem_struct_array_overwrite, mem_enum_{array_push,overwrite,arg,nested,recursive,recursive_call,str_push}, mem_field_assign_temp, mem_struct_field_read,
+  mem_pop_stmt, mem_json_handle, mem_shadow_builtin, mem_string_interp, mem_shared_field_store, mem_whole_subject, mem_tuple_payload,
+  mem_tuple_struct_arr, mem_closure_tail, mem_element_read, mem_tuple_field_overwrite (its field_global row, which failed on the tree because of the
+  reverted A14, now passes), minilisp 22/22, stdlib_compile 66/66, selfhost_wholeprogram, concurrency_smoke, match_exhaustiveness, run_examples,
+  wasm_differential 66/66, ecosystem_check 259/259, conformance 129/129. type_soundness: 4 probes FAIL (to_array E0110 holes), 9 on master, unchanged
+  by this change (not run on the integ binary). Not run: mem_agg_ops_gate (36 minutes), cargo test (lane rule).
+- 39 repo programs that declare a top-level `let mut` (tests, examples, ecosystem; the task_api server skipped) print the same under this tree as under the
+  kryos-integ binary built from the same HEAD (0 diffs); no closeout_targets.txt line.
+
+RESIDUAL (executed, NOT closed, NOT claimed)
+- A `@copy` struct global overwritten in a loop (`G = Cp { a: i, b: 2 }`) leaks its box per assignment (live grows 1:1 on the JIT and AOT). That is the
+  open copy-assign-leak family (`@copy` drop is a no-op, same as a local); not touched.
+- Structs / enums / tuples the backends cannot share (`is_owned_value_ty` false) keep the old behaviour: the old value of such a global is not released.
+  None of the aggregate shapes probed in scratch other than `@copy` (nested struct, array / Option / tuple fields, struct-in-enum, recursive enum, tuple of struct,
+  nested tuple, Option of tuple, Result) fell into it on either backend.
+- The LOCAL-variable form `loc = if c { h.g } else { Gin{..} }` / `match` (not a global) still leaks on the JIT (live grows 2.5 boxes per iteration);
+  the local assignment path was only refactored (the owns_read predicate is shared), not changed.
+- A `spawn` / actor thread reading a global while another overwrites it is not synchronised with the release (as for the str / array / map globals).
