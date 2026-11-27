@@ -3875,8 +3875,29 @@ impl CapabilityChecker {
         Self::collect_actor_handler_bodies(decls, &mut fns);
         let mut result: HashMap<String, ClosureCapsResult> = HashMap::new();
 
+        // `fns` names an impl method by its bare name, so the `mk` of `impl Mk
+        // for A` and the `mk` of `impl Mk for B` are two bodies of ONE entry.
+        // Each used to overwrite the other: two bodies that return different
+        // closures made `changed` true in every round and `kryos check` never
+        // returned (finish-line rows trait-default-body-d3f2beae/n04 and
+        // n04_ctl: one impl returns a privileged named function, the other a
+        // pure one). The entry of a shared name is the JOIN of its bodies,
+        // written once per round; a name with one body is written as before.
+        let mut bodies_of: HashMap<&str, usize> = HashMap::new();
+        for (name, ..) in &fns {
+            *bodies_of.entry(name.as_str()).or_insert(0) += 1;
+        }
+        // The rows are monotone over a finite lattice, so this settles by itself;
+        // the bound is a backstop sized past a chain of callees declared in
+        // reverse order. Hitting it means no fixed point exists for what is left
+        // to settle, so every entry is answered `Unknown` (the fail-closed
+        // answer a missing entry gets too) instead of the check hanging.
+        let round_limit = 2 * fns.len() + 64;
+        let mut rounds = 0usize;
+
         loop {
             let mut changed = false;
+            let mut joined: HashMap<&str, ClosureCapsResult> = HashMap::new();
             for (name, _annotated, body, params) in &fns {
                 if !matches!(self.fn_ret_ty.get(name), Some(TypeExpr::Function { .. })) {
                     continue;
@@ -3903,13 +3924,32 @@ impl CapabilityChecker {
                     });
                 }
                 if let Some(r) = combined {
-                    if result.get(name) != Some(&r) {
+                    if bodies_of[name.as_str()] > 1 {
+                        let j = match joined.remove(name.as_str()) {
+                            Some(prev) => Self::merge_closure_caps(prev, r),
+                            None => r,
+                        };
+                        joined.insert(name.as_str(), j);
+                    } else if result.get(name) != Some(&r) {
                         result.insert(name.clone(), r);
                         changed = true;
                     }
                 }
             }
+            for (name, r) in joined {
+                if result.get(name) != Some(&r) {
+                    result.insert(name.to_string(), r);
+                    changed = true;
+                }
+            }
             if !changed {
+                break;
+            }
+            rounds += 1;
+            if rounds >= round_limit {
+                for r in result.values_mut() {
+                    *r = ClosureCapsResult::Unknown;
+                }
                 break;
             }
         }

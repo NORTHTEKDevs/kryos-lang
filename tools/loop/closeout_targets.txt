@@ -1,1 +1,7 @@
 tests/threat_model/s44_trait_default_body_unchecked.kry  # 122: master accepted a type error in a trait default method body (`let x: i64 = "not an int"`) and ran it, printing a raw pointer; the body is checked now and the program is rejected, E0100
+tests/security/attack_slot_param_container_in_tuple.kry  # 119a: master accepted a helper that stores a privileged closure into the array held inside a tuple parameter and ran it, printing the secret file past a deny!(fs:read) block; the store is followed now and the program is rejected, E0110
+tests/security/attack_slot_param_container_in_result.kry  # 119b: the same through a Result parameter; master ran it and printed the secret, it is rejected now (E0110)
+tests/security/attack_slot_param_array_of_option.kry  # 119c: the same through an array of Option closures; master ran it and printed the secret, it is rejected now (E0110)
+tests/security/attack_slot_param_option_of_nested_array.kry  # 119d: the same through an Option holding a nested array; master ran it and printed the secret, it is rejected now (E0110)
+tests/security/attack_slot_param_tuple_of_two_arrays.kry  # 119e: the same through a tuple of two arrays, the store going to the second; master ran it and printed the secret, it is rejected now (E0110)
+tests/security/attack_slot_param_fn_value_factory.kry  # 123a: master accepted a store helper handed out by a factory as a function value and ran it, printing the secret file past a deny!(fs:read) block; the factory carries the helper's store now and the program is rejected, E0110

@@ -2729,6 +2729,7 @@ impl TypeChecker {
                     // A container the body was handed is the CALLER's storage.
                     let param_tys: Vec<Type> = s.params.iter().map(|(_, t)| t.clone()).collect();
                     self.engine.mark_input_storage(&param_tys);
+                    self.engine.mark_returned_fn_storage(&s.ret);
                 }
                 self.cap_accum_stack.push(crate::ty::CapRow::empty());
                 self.check_block(body);
@@ -2862,6 +2863,7 @@ impl TypeChecker {
                         let param_tys: Vec<Type> =
                             hs.params.iter().map(|(_, t)| t.clone()).collect();
                         self.engine.mark_input_storage(&param_tys);
+                        self.engine.mark_returned_fn_storage(&hs.ret);
                     }
                     self.cap_accum_stack.push(crate::ty::CapRow::empty());
                     self.check_block(&h.body);
@@ -3182,6 +3184,7 @@ impl TypeChecker {
                             let param_tys: Vec<Type> =
                                 sig.params.iter().map(|(_, t)| t.clone()).collect();
                             self.engine.mark_input_storage(&param_tys);
+                            self.engine.mark_returned_fn_storage(&sig.ret);
                             self.cap_accum_stack.push(crate::ty::CapRow::empty());
                             self.check_block(body);
                             let method_caps = self
@@ -3295,6 +3298,7 @@ impl TypeChecker {
                         let param_tys: Vec<Type> =
                             sig.params.iter().map(|(_, t)| t.clone()).collect();
                         self.engine.mark_input_storage(&param_tys);
+                        self.engine.mark_returned_fn_storage(&sig.ret);
                     } else {
                         for param in m_params {
                             if param.name == "self" {

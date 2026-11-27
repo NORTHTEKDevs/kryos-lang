@@ -1,0 +1,17 @@
+// LEDGER item 123: an inherent impl method is the factory (main holds all, so only the row layer judges the deny! block).
+@capabilities(fs:read)
+fn secret() -> fn() -> str { return || file_read("tests/security/secret_for_closure_launder.txt") }
+fn safe() -> str { return "safe" }
+trait Rn { fn go(self: Self, fns: [fn() -> str]) { let f = || "h"
+  deny!(fs:read) { for f in fns { println("LEAK: " + f()) } } } }
+struct R1 {}
+impl Rn for R1 {}
+struct M2 {}
+impl M2 { fn mk(self: M2, g: fn() -> str) -> fn([fn() -> str]) { return fn(reg: [fn() -> str]) { reg[0] = g } } }
+@capabilities(all)
+fn main() { let r = secret()
+  let fns = [safe]
+  let m = M2 {}
+  let st = m.mk(r)
+  st(fns)
+  R1 {}.go(fns) }

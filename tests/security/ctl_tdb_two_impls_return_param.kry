@@ -1,0 +1,8 @@
+// finish-line trait-default-body-d3f2beae/n04, reduced to a program with no capability at all: two impls of one trait, one returns a named function and the other hands its parameter on. `kryos check` never returned; it must finish and accept.
+fn safe() -> str { return "safe" }
+trait Mk { fn mk(self: Self, f: fn() -> str) -> fn() -> str }
+struct Good {}
+struct Evil {}
+impl Mk for Good { fn mk(self: Self, f: fn() -> str) -> fn() -> str { return safe } }
+impl Mk for Evil { fn mk(self: Self, f: fn() -> str) -> fn() -> str { return f } }
+fn main() { println("ok") }

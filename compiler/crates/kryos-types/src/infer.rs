@@ -1557,6 +1557,64 @@ impl InferenceEngine {
         }
     }
 
+    /// The function values a declaration RETURNS have container parameters of
+    /// their own (`fn mk(g: fn() -> str) -> fn([fn() -> str])`, a factory), and the
+    /// declaration's body stores into them through the value it hands out: the
+    /// body of a lambda it returns, or the declaration it names. Every reference
+    /// to the declaration freshens the signature vars of its return type, so the
+    /// function value a caller holds has a parameter var nothing was ever filed
+    /// against. Mark those vars as the storage of containers the declaration was
+    /// HANDED, exactly like its own parameters (`mark_input_storage`): a store
+    /// that reaches one is recorded as the declaration's effect and replayed at
+    /// every reference with that reference's arguments.
+    pub fn mark_returned_fn_storage(&mut self, ret: &Type) {
+        let mut vars: Vec<CapVarId> = Vec::new();
+        Self::returned_fn_storage_rows(ret, &mut vars);
+        for v in vars {
+            self.slot_cap_vars.insert(v);
+            self.input_storage_cap_vars.insert(v);
+        }
+    }
+
+    /// The storage rows of the parameters of every function type inside `ty`.
+    fn returned_fn_storage_rows(ty: &Type, out: &mut Vec<CapVarId>) {
+        match ty {
+            Type::Function { params, ret, .. } => {
+                for p in params {
+                    Self::storage_rows_in(p, false, out);
+                }
+                Self::returned_fn_storage_rows(ret, out);
+            }
+            Type::Array { element, .. } | Type::Set { element } => {
+                Self::returned_fn_storage_rows(element, out)
+            }
+            Type::Tuple { elements } => {
+                for e in elements {
+                    Self::returned_fn_storage_rows(e, out);
+                }
+            }
+            Type::Map { key, value } => {
+                Self::returned_fn_storage_rows(key, out);
+                Self::returned_fn_storage_rows(value, out);
+            }
+            Type::Option { inner }
+            | Type::Reference { inner, .. }
+            | Type::Shared { inner }
+            | Type::Weak { inner }
+            | Type::Pointer { inner, .. } => Self::returned_fn_storage_rows(inner, out),
+            Type::Result { ok, err } => {
+                Self::returned_fn_storage_rows(ok, out);
+                Self::returned_fn_storage_rows(err, out);
+            }
+            Type::Struct { generics, .. } | Type::Enum { generics, .. } => {
+                for g in generics {
+                    Self::returned_fn_storage_rows(g, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn storage_rows_in(ty: &Type, in_container: bool, out: &mut Vec<CapVarId>) {
         match ty {
             Type::Function { caps, .. } => {
@@ -1571,10 +1629,26 @@ impl InferenceEngine {
                 Self::storage_rows_in(key, true, out);
                 Self::storage_rows_in(value, true, out);
             }
-            Type::Struct { generics, .. } => {
+            Type::Struct { generics, .. } | Type::Enum { generics, .. } => {
                 for g in generics {
                     Self::storage_rows_in(g, true, out);
                 }
+            }
+            // A tuple, an Option or a Result is not storage itself, it holds
+            // values: a container inside one is still the caller's container, so
+            // a store through `p.0[i] = g` is a store into it (LEDGER item 119).
+            // Skipping them left such a parameter's rows unmarked, the body's
+            // store was bound to the parameter's own var instead of recorded, and
+            // no call replayed it into the array the caller built.
+            Type::Tuple { elements } => {
+                for e in elements {
+                    Self::storage_rows_in(e, in_container, out);
+                }
+            }
+            Type::Option { inner } => Self::storage_rows_in(inner, in_container, out),
+            Type::Result { ok, err } => {
+                Self::storage_rows_in(ok, in_container, out);
+                Self::storage_rows_in(err, in_container, out);
             }
             Type::Reference { inner, mutable } | Type::Pointer { inner, mutable } => {
                 Self::storage_rows_in(inner, in_container || *mutable, out)

@@ -1,0 +1,15 @@
+// LEDGER item 123: the closure is an argument of the returned function, not captured by the factory.
+@capabilities(fs:read)
+fn secret() -> fn() -> str { return || file_read("tests/security/secret_for_closure_launder.txt") }
+fn safe() -> str { return "safe" }
+trait Rn { fn go(self: Self, fns: [fn() -> str]) { let f = || "h"
+  deny!(fs:read) { for f in fns { println("LEAK: " + f()) } } } }
+struct R1 {}
+impl Rn for R1 {}
+fn mk() -> fn([fn() -> str], fn() -> str) { return fn(reg: [fn() -> str], g: fn() -> str) { reg[0] = g } }
+@capabilities(fs:read)
+fn main() { let r = secret()
+  let fns = [safe]
+  let st = mk()
+  st(fns, r)
+  R1 {}.go(fns) }

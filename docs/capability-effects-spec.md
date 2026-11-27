@@ -376,8 +376,9 @@ returned value, and the rows of a lambda's annotated parameters.
   parameter is bound to, at the moment it is bound.
 - Not covered:
   * The `deny!` verdict and the forward references: see 2.7. What 2.7 does not reach is a
-    helper's stores followed through a factory result (LEDGER item 123a) and a container
-    inside a tuple / `Option` / `Result` / enum parameter (item 119).
+    store made by a lambda that another lambda returns, by a returned lambda that hands the
+    container to a named helper, or by a local lambda with unannotated parameters (the three
+    shapes at the end of THREAT-MODEL 4.1).
   * A store inside a lambda into a variable the lambda captured by move is a dead
     store at run time, but the slot is shared, so the program is rejected when the
     privileged closure reaches a `deny!` that reads the variable.
@@ -446,8 +447,15 @@ it) let a privileged closure reach the block in every one of those cases.
   through a reference; a block written directly in an impl method keeps that rule), and a bound or
   `self` call charges what the candidates charge and returns what they return. A `dyn` call outside
   a default body keeps the `Unknown` charge and the erased return type.
-- Not covered: a store helper reached through a factory result (item 123a), or a container inside a
-  tuple / `Option` / `Result` / enum parameter (item 119), is not followed.
+- A container inside a tuple / `Option` / `Result` / enum parameter is the caller's container, so a
+  store through it is recorded and replayed like a store through a plain array parameter (item 119,
+  `storage_rows_in`). The container parameters of the function types in a declaration's RETURN type
+  are that declaration's input storage too (`mark_returned_fn_storage`): a store made through the
+  lambda it returns, or the named function it names, is the declaration's own effect and is
+  replayed at every reference with that reference's arguments, whether the value is called at once,
+  handed to a helper, relayed, or kept in a field or an array (item 123a).
+- Not covered: a store made by a lambda that another lambda returns, by a returned lambda that hands
+  the container to a named helper, or by a local lambda whose parameters carry no annotation.
 
 ## 3. Subtyping and variance
 

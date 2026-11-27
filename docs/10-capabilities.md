@@ -484,11 +484,15 @@ body of a trait default method is checked (LEDGER item 122); a call through a tr
 signature (a generic bound, a `dyn`, `self` in a default body) references the default
 body and every impl method with its arguments (item 123, rows 123b and 123c); and the
 verdict does not depend on the order the declarations are written in (items 124 and
-125). Still open: a helper that stores a closure into a container it was handed is not
-followed through a factory result (item 123a), or when the container sits inside a
-tuple, an `Option`, a `Result` or an enum (item 119); `deny!(fs)`,
-`deny!(io)` and `deny!(all)` are not matched against a used `fs:read` by this layer
-(item 121). Rejected: the `tests/security/attack_deny_*.kry` programs (E0110).
+125). A helper that stores a closure into a container it was handed is followed when the
+container sits inside a tuple, an `Option`, a `Result` or an enum (item 119), and
+through a factory result: the container parameters of a function type a declaration
+returns are that declaration's input storage, so a store made through the returned
+lambda or the returned named function is replayed at every reference (item 123a). Still
+open: the same store made by a lambda that another lambda returns, by a returned lambda
+that hands the container to a named helper, or by a local lambda whose parameters carry no
+annotation (docs/THREAT-MODEL.md, end of 4.1). `deny!(fs)`, `deny!(io)` and
+`deny!(all)` are matched against a used `fs:read` by overlap (item 121). Rejected: the `tests/security/attack_deny_*.kry` programs (E0110).
 Accepted: the `tests/security/ctl_deny_*.kry` controls.
 
 See `tests/security/cap_escape_closure_launder_local_struct_field.kry`,

@@ -67,6 +67,23 @@ tests/security/ctl_disp_self_put_registry.kry
 tests/security/ctl_disp_bound_put_registry.kry
 tests/security/ctl_disp_bound_return_chain.kry
 tests/security/ctl_disp_dyn_default_param.kry
+tests/security/attack_slot_param_fn_value_factory.kry
+tests/security/attack_tdb_factory_captured.kry
+tests/security/attack_tdb_factory_two_level.kry
+tests/security/attack_tdb_factory_hof.kry
+tests/security/attack_tdb_named_factory_cond.kry
+tests/security/attack_tdb_named_factory_tuple.kry
+tests/security/attack_tdb_put_tuple_default.kry
+tests/security/attack_tdb_put_tuple_free.kry
+tests/security/attack_tdb_method_factory.kry
+tests/security/attack_tdb_bound_factory.kry
+tests/security/attack_tdb_factory_relay.kry
+tests/security/attack_tdb_factory_param_arg.kry
+tests/security/ctl_tdb_factory_captured.kry
+tests/security/ctl_tdb_named_factory_cond.kry
+tests/security/ctl_tdb_method_factory.kry
+tests/security/ctl_tdb_bound_factory.kry
+tests/security/ctl_tdb_factory_relay.kry
 "
 fail=0
 # shellcheck disable=SC2086

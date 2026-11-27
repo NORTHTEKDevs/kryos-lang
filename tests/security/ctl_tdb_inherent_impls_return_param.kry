@@ -1,0 +1,7 @@
+// The same defect without a trait: two inherent impls whose methods share one name and return different closures. `kryos check` must finish and accept.
+fn safe() -> str { return "safe" }
+struct A {}
+struct B {}
+impl A { fn mk(self: A) -> fn() -> str { return safe } }
+impl B { fn mk(self: B, f: fn() -> str) -> fn() -> str { return f } }
+fn main() { println("ok") }

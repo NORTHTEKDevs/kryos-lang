@@ -1,0 +1,17 @@
+// finish-line trait-default-body-d3f2beae/n04 (LEDGER item 122): two impls of one trait return different closures from methods of one name. `kryos check` never returned (the return summary was keyed by the bare method name and the two bodies overwrote each other); it must finish and reject this program, whose default body calls the privileged function inside deny!.
+@capabilities(fs:read)
+fn secret() -> fn() -> str { return || file_read("tests/security/secret_for_closure_launder.txt") }
+fn safe() -> str { return "safe" }
+@capabilities(fs:read)
+fn priv() -> str { return file_read("tests/security/secret_for_closure_launder.txt") }
+trait Rn { fn get(self: Self) -> fn() -> str
+  fn go(self: Self) { let f = || "h"
+    let g = self.get()
+    deny!(fs:read) { println("LEAK: " + g()) } } }
+struct R1 {}
+impl Rn for R1 { fn get(self: Self) -> fn() -> str { return priv } }
+struct R2 {}
+impl Rn for R2 { fn get(self: Self) -> fn() -> str { return safe } }
+@capabilities(fs:read)
+fn main() { let r = secret()
+  R1 {}.go() }

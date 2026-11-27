@@ -1390,6 +1390,41 @@ R3_ESCAPES="$R3_ESCAPES \
     attack_disp_bound_put_registry \
     attack_disp_bound_return_chain \
     attack_disp_dyn_default_param"
+# Items 119 and 123 (the trait-default-body finish-line rows f11, f12 and g07 and the
+# escape_status.sh rows 119a-119e and 123a). A store through a container held inside a tuple,
+# Option, Result or enum parameter is a store into the caller's container (`storage_rows_in`), and a
+# store made through a function value a declaration hands out (the lambda a factory returns, the
+# named function it names) is the declaration's own effect: the container parameters of a
+# returned function type are input storage like its parameters (`mark_returned_fn_storage`), so the
+# store is filed against the factory and replayed at every reference with that reference's
+# arguments. The `tdb` programs are the finish-line shapes plus the ones around them (a generic
+# bound, a lambda with a tuple parameter, a factory that wraps a factory, a factory result handed to
+# a helper or relayed by one, kept in a struct field or in an array, a closure created inside the
+# factory, a named function picked by a condition, a factory that is a method or a bound method).
+R3_ESCAPES="$R3_ESCAPES \
+    attack_slot_param_container_in_tuple \
+    attack_slot_param_container_in_result \
+    attack_slot_param_array_of_option \
+    attack_slot_param_option_of_nested_array \
+    attack_slot_param_tuple_of_two_arrays \
+    attack_slot_param_fn_value_factory \
+    attack_tdb_put_tuple_free \
+    attack_tdb_put_tuple_default \
+    attack_tdb_put_tuple_bound \
+    attack_tdb_lambda_tuple \
+    attack_tdb_factory_captured \
+    attack_tdb_factory_two_level \
+    attack_tdb_factory_hof \
+    attack_tdb_factory_struct_field \
+    attack_tdb_factory_array_of_ops \
+    attack_tdb_factory_inner_secret \
+    attack_tdb_factory_tuple_lambda \
+    attack_tdb_named_factory_tuple \
+    attack_tdb_named_factory_cond \
+    attack_tdb_method_factory \
+    attack_tdb_bound_factory \
+    attack_tdb_factory_relay \
+    attack_tdb_factory_param_arg"
 for esc in $R3_ESCAPES; do
     esc_ok=1
     for mode in "" "--strict-capabilities"; do
@@ -1453,6 +1488,24 @@ R3_CONTROLS="$R3_CONTROLS \
     ctl_disp_bound_put_registry \
     ctl_disp_bound_return_chain \
     ctl_disp_dyn_default_param"
+R3_CONTROLS="$R3_CONTROLS \
+    ctl_tdb_put_tuple_free \
+    ctl_tdb_put_tuple_default \
+    ctl_tdb_put_tuple_bound \
+    ctl_tdb_lambda_tuple \
+    ctl_tdb_factory_captured \
+    ctl_tdb_factory_two_level \
+    ctl_tdb_factory_hof \
+    ctl_tdb_factory_struct_field \
+    ctl_tdb_factory_array_of_ops \
+    ctl_tdb_factory_inner_secret \
+    ctl_tdb_factory_tuple_lambda \
+    ctl_tdb_named_factory_tuple \
+    ctl_tdb_named_factory_cond \
+    ctl_tdb_method_factory \
+    ctl_tdb_bound_factory \
+    ctl_tdb_factory_relay \
+    ctl_tdb_factory_param_arg"
 for ctl in $R3_CONTROLS; do
     ctl_ok=1
     for mode in "" "--strict-capabilities"; do
@@ -1492,6 +1545,28 @@ for pair in "attack_resid_cycle2_k100:1" "ctl_resid_cycle2_k100:0"; do
             echo "  FAIL: $prog.kry passed \`check $mode\`"; fail=1
         elif [ "$want" = 0 ] && [ $rc -ne 0 ]; then
             echo "  FAIL: $prog.kry rejected by \`check $mode\`"; tail -3 "$TMP/cost" | sed 's/^/    /'; fail=1
+        else
+            echo "  ok   $prog.kry \`check $mode\` finished in time with the expected verdict"
+        fi
+    done
+done
+
+# The closure-return summary of a function was keyed by its bare name, so two impls that give a
+# method of one name different closures to return (a privileged named function and a pure one, a
+# named function and the parameter handed on) wrote over each other in every round and
+# `kryos check` never returned (finish-line rows trait-default-body-d3f2beae/n04 and n04_ctl;
+# also two inherent impls and two actors). The entries of a shared name are joined now. A timeout is
+# a failure; the attack must still be rejected and the controls accepted.
+for pair in "attack_tdb_two_impls_named_fn:1" "ctl_tdb_two_impls_return_param:0" "ctl_tdb_inherent_impls_return_param:0"; do
+    prog="${pair%%:*}"; want="${pair##*:}"
+    for mode in "" "--strict-capabilities"; do
+        timeout 30 "$K" check $mode "tests/security/$prog.kry" >"$TMP/hang" 2>&1; rc=$?
+        if [ $rc -eq 124 ]; then
+            echo "  FAIL: $prog.kry did not finish \`check $mode\` within 30 s (same-named methods returning different closures)"; fail=1
+        elif [ "$want" = 1 ] && [ $rc -eq 0 ]; then
+            echo "  FAIL: $prog.kry passed \`check $mode\`"; fail=1
+        elif [ "$want" = 0 ] && [ $rc -ne 0 ]; then
+            echo "  FAIL: $prog.kry rejected by \`check $mode\`"; tail -3 "$TMP/hang" | sed 's/^/    /'; fail=1
         else
             echo "  ok   $prog.kry \`check $mode\` finished in time with the expected verdict"
         fi
