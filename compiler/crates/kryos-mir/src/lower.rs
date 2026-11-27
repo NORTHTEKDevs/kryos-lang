@@ -7039,8 +7039,31 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
         }
 
         ast::Stmt::Assign {
-            target, op, value, ..
+            target, op, value, span,
         } => {
+            // `h.f = v` through a `shared Struct` handle auto-derefs exactly
+            // like the read `h.f`: normalize it to `(*h).f = v` so the one
+            // read-modify-writeback rule for shared payloads applies (the
+            // un-normalized form stored into an unknown struct type).
+            if let ast::Expr::FieldAccess { object, field, span: fspan } = target {
+                if !matches!(object.as_ref(), ast::Expr::Deref { .. })
+                    && matches!(infer_expr_type(ctx, object), MirType::Shared(ref t) if matches!(**t, MirType::Struct(_)))
+                {
+                    let deref = ast::Expr::Deref { inner: object.clone(), span: *fspan };
+                    let norm = ast::Stmt::Assign {
+                        target: ast::Expr::FieldAccess {
+                            object: Box::new(deref),
+                            field: field.clone(),
+                            span: *fspan,
+                        },
+                        op: op.clone(),
+                        value: value.clone(),
+                        span: *span,
+                    };
+                    lower_stmt_inner(ctx, &norm);
+                    return;
+                }
+            }
             // Reassigning a closure-holding name: later calls must go through
             // the new value, not the old lambda's direct-call shortcut.
             if let ast::Expr::Identifier { name, .. } = target {

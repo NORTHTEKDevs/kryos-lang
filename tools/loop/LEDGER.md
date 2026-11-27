@@ -11291,3 +11291,22 @@ n03 (mem-shared-ownership-e7f16887/n/n03) is a DEFECTIVE FIXTURE, not a compiler
 compiler. With the assertion corrected to `g() == i + 1` the same program prints `OK n03 595850` on JIT and AOT (master does not
 compile it at all: codegen internal error). The oracle files may not be edited from this lane; it needs an excluded.txt line
 (same class as c04_assign_copy_then_mutate, already excluded) or a regenerated fixture.
+
+## mem_attacks: plain `h.f = v` through a `shared T` handle -- CLOSED (residual of c06)
+
+The verifier's residual: `h.f = v` (no explicit `*`) on a `shared Struct` handle was accepted by the checker and miscompiled
+(JIT: "StoreField 'name' on unknown struct type", rc=5/116, AOT: `1 error generated`; master identical).
+ROOT CAUSE: the read `h.f` auto-derefs (infer_expr_type of the field sees through Shared) but the Assign lowering took `h` as the
+struct object itself, so the store targeted a handle (an arc pointer) as if it were a struct. The c06 rule only covered the
+spelled-out `(*h).f` object.
+FIX (MIR, one rule): at the head of the `Stmt::Assign` lowering, a `FieldAccess` target whose object (any expression, not only an
+identifier: `w.h.name = v`) infers `Shared(Struct)` and is not already a Deref is rewritten to `(*object).field` (op and value kept, so
+`h.n += 1` goes through the same path) and lowered by the existing rule. No backend change.
+EVIDENCE (executed): tests/conformance/conf_shared_plain_field_store.kry PASS on JIT and AOT (store, `+=`, array field, old by-value
+copy keeps old value, second handle sees the store, store through a handle held in a struct field). Master binary: JIT
+`warning: StoreField ... on unknown struct type` rc=5, AOT build `1 error generated` rc=1. conformance 125/125, mem_shared_field_store_gate PASS.
+Scan '^(mem:attacks.*|mem:closure.*|A19|A16|A14|137*|138|139|137-perf)$': 390 PASS / 4 FAIL, the same 4 as before this change (n03,
+n139_a_50, v137_uaf, A14 glob_struct_reassign). `^mem:attacks[-:/]`: 238 PASS / 1 FAIL (n03).
+STILL OPEN: n03 stays FAIL -- a defective fixture (see the entry above: `g()` returns `(*t).v` but the assertion compares it to
+`len("node-...")`; with the assertion corrected the program prints `OK n03` on JIT and AOT). Only the orchestrator can fix it: an
+excluded.txt line in kryos-oracle (this lane may not edit it). Not claimed closed.

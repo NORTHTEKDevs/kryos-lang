@@ -1,0 +1,42 @@
+// Conformance (mem_attacks residual of c06): `h.f = v` WITHOUT an explicit
+// `*` through a `shared T` handle auto-derefs exactly like the read `h.f`.
+// It used to reach StoreField on an unknown struct type (JIT: warning and a
+// crash, AOT: invalid IR). Every shape must agree on both backends.
+struct P { name: str, n: i64, tags: [str] }
+struct B { h: shared P, k: i64 }
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONFORMANCE FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn mkp(i: i64) -> P {
+    return P { name: "name-{i}-padpadpad", n: i, tags: ["t-{i}-padpadpad"] }
+}
+
+fn main() {
+    let mut i = 0
+    while i < 100 {
+        let a: shared P = shared mkp(i)
+        let b: shared P = a
+        let x = *a
+        if i >= 0 { a.name = "newname-{i}-padpadpad" }
+        if i >= 0 { a.n = 1000 + i }
+        if i >= 0 { a.n += 1 }
+        expect(x.name == "name-{i}-padpadpad", "old copy keeps old str {x.name}")
+        expect(x.n == i, "old copy keeps old int")
+        expect(a.name == "newname-{i}-padpadpad", "new str through a {a.name}")
+        expect(a.n == 1001 + i, "new int through a")
+        expect((*b).name == "newname-{i}-padpadpad", "new str through second handle")
+        if i >= 0 { a.tags = ["u-{i}-padpadpad", "v-{i}-padpadpad"] }
+        expect(len(b.tags) == 2 and b.tags[1] == "v-{i}-padpadpad", "array field replaced")
+        expect(len(x.tags) == 1 and x.tags[0] == "t-{i}-padpadpad", "old copy keeps old array")
+        let w = B { h: a, k: i }
+        if i >= 0 { w.h.name = "viaStruct-{i}-padpadpad" }
+        expect((*b).name == "viaStruct-{i}-padpadpad", "store through a handle held in a struct field")
+        i = i + 1
+    }
+    println("conformance shared plain field store: PASS")
+}
