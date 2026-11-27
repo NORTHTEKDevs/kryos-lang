@@ -6414,7 +6414,6 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                 // was also never rejected, so the old model was UB on the
                 // very next read of `src`.
                 let mut aggregate_clone: Option<&'static str> = None;
-                let mut tuple_value_copy: Option<(LocalId, MirType)> = None;
                 if let RValue::Use(Operand::Local(src)) = &rvalue {
                     let src_ty = ctx
                         .locals
@@ -6556,17 +6555,6 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                 // can be reassigned or released independently
                                 // (as an alias, reassigning `t` left both
                                 // never freed).
-                                // A tuple is a value type: when either side can be
-                                // written through (`let mut u = t; u.0 = 7`, or a
-                                // `mut` source), a shared handle would make the
-                                // write visible through the other name (finish
-                                // item A20). Such a binding takes its own copy.
-                                t if is_owned_tuple_ty(ctx, t)
-                                    && (*mutable
-                                        || ctx.locals.iter().any(|l| l.id == *src && l.mutable)) =>
-                                {
-                                    tuple_value_copy = Some((*src, src_ty.clone()));
-                                }
                                 t if is_owned_tuple_ty(ctx, t) => {
                                     ctx.pending_let_share = true;
                                 }
@@ -6600,10 +6588,6 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             }
                         }
                     }
-                }
-                if let Some((src, ty)) = tuple_value_copy {
-                    let copy = emit_tuple_clone(ctx, src, &ty);
-                    rvalue = RValue::Use(Operand::Local(copy));
                 }
                 if let Some(marker) = aggregate_clone {
                     if let RValue::Use(op) = rvalue.clone() {
