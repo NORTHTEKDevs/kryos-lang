@@ -5,6 +5,40 @@ use std::time::Instant;
 use kryos_driver::{BuildConfig, BuildMode, OutputType};
 use kryos_errors::render_diagnostic;
 
+/// Unique per-invocation scratch directory for the linked binary; removed on drop.
+struct RunDir(std::path::PathBuf);
+
+impl RunDir {
+    fn create() -> std::io::Result<Self> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let base = std::env::temp_dir();
+        let mut last_err = None;
+        for _ in 0..64 {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+            let dir = base.join(format!("kryos_run_{}_{nanos}_{n}", std::process::id()));
+            // create_dir (not create_dir_all) fails if the name is taken, so two
+            // invocations can never share a directory.
+            match std::fs::create_dir(&dir) {
+                Ok(()) => return Ok(RunDir(dir)),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => last_err = Some(e),
+                Err(e) => return Err(e),
+            }
+        }
+        Err(last_err.unwrap_or_else(|| std::io::Error::other("no unique temp dir")))
+    }
+}
+
+impl Drop for RunDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 /// Execute the run command without timing output (the historical entry point).
 pub fn execute(
     file: &str,
@@ -88,8 +122,10 @@ fn execute_inner(
     } else {
         stem.to_string()
     };
-    let tmp_dir = std::env::temp_dir();
-    let tmp_output = tmp_dir.join(&exe_name);
+    // Per-invocation directory: concurrent `kryos run` of same-named files
+    // (and the `<stem>.o` intermediate beside the output) must never collide.
+    let run_dir = RunDir::create().map_err(|e| format!("failed to create temp dir: {e}"))?;
+    let tmp_output = run_dir.0.join(&exe_name);
 
     let config = BuildConfig {
         input: file.to_string(),
@@ -137,8 +173,9 @@ fn execute_inner(
                 .status()
                 .map_err(|e| format!("failed to execute `{bin}`: {e}"))?;
             let exec_elapsed = exec_start.elapsed();
-            // Clean up the temp binary produced by `kryos run`
-            let _ = std::fs::remove_file(bin);
+            // Clean up the temp directory produced by `kryos run` (before any
+            // process::exit below, which skips destructors).
+            drop(run_dir);
             if time {
                 let total = total_start.elapsed();
                 eprintln!(

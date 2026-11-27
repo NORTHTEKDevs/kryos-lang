@@ -14,6 +14,9 @@ pub struct Lexer<'src> {
     /// token's `newline_before` -- this single choke point covers plain
     /// whitespace gaps AND newlines swallowed inside a skipped comment.
     last_token_end: usize,
+    /// Leading space/tab count of the line the next emitted token sits on
+    /// (see `Token::line_indent`).
+    line_indent: u32,
     /// Live depth of string-interpolation nesting (`"{ "{ .. }" }"`).
     ///
     /// `scan_string` recurses into `scan_token` for the interpolated
@@ -41,6 +44,7 @@ impl<'src> Lexer<'src> {
             tokens: Vec::new(),
             diagnostics: Vec::new(),
             last_token_end: 0,
+            line_indent: src.bytes().take_while(|&b| b == b' ' || b == b'\t').count() as u32,
             interp_depth: 0,
         }
     }
@@ -160,14 +164,35 @@ impl<'src> Lexer<'src> {
         true
     }
 
+    fn set_line_start(&mut self, line_start: usize) {
+        self.line_indent = self.bytes[line_start..]
+            .iter()
+            .take_while(|&&b| b == b' ' || b == b'\t')
+            .count() as u32;
+    }
+
     fn emit(&mut self, kind: TokenKind, start: usize, end: usize, text: String) {
         let newline_before = self.bytes[self.last_token_end..start.max(self.last_token_end)]
             .contains(&b'\n');
+        let gap_end = start.max(self.last_token_end);
+        if let Some(i) = self.bytes[self.last_token_end..gap_end]
+            .iter()
+            .rposition(|&b| b == b'\n')
+        {
+            self.set_line_start(self.last_token_end + i + 1);
+        }
+        let line_indent = self.line_indent;
+        if end > gap_end {
+            if let Some(i) = self.bytes[gap_end..end].iter().rposition(|&b| b == b'\n') {
+                self.set_line_start(gap_end + i + 1);
+            }
+        }
         self.tokens.push(Token {
             kind,
             span: Span::new(self.file_id, start as u32, end as u32),
             text,
             newline_before,
+            line_indent,
         });
         self.last_token_end = end;
     }

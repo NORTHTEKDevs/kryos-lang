@@ -10633,3 +10633,160 @@ Executed after the reverts (this tree, release build): run.sh -j 2 --only '^(A20
 (`stdout=q.n=1 r.n=9\nt.0=7 u.0=7\n want ...t.0=1 u.0=7`), i.e. `let mut u = t; u.0 = 7` still changes `t.0` on the JIT.
 The two tuple value-copy pin tests (tests/tuple_value_copy_pin.*, tests/tuple_elem_value_copy_pin.*) left the tree with the reverts.
 NOT covered (not executed): a replacement fix; whether the AOT backend shares the aliasing for the element/field/map read shapes.
+### RUN-TMP-1: `kryos run` links to a unique per-invocation path (lane-misc)
+
+Root cause: `compiler/crates/kryos-cli/src/commands/run.rs` linked every run to
+`<temp>/<stem>.exe`, and the driver wrote its `<stem>.o` intermediate beside the
+output. Concurrent `kryos run` of same-named files (e.g. several `main.kry`) shared
+one exe and one .o: link failures (exe locked / overwritten) and, when the race
+went the other way, one program executing another's binary.
+
+Fix: each run gets its own directory `<temp>/kryos_run_<pid>_<nanos>_<counter>`
+(created with `create_dir`, which fails on a name clash, so it is never shared),
+the exe keeps its `<stem>.exe` name inside it, and a `RunDir` guard removes the
+whole directory (exe + .o) after the run, before any `process::exit`, and on
+every early error return.
+
+Files: compiler/crates/kryos-cli/src/commands/run.rs, tests/run_tmp_unique_pin.sh.
+
+Evidence: tests/run_tmp_unique_pin.sh (4 same-name programs x 8 rounds against one
+private TMP): master binary FAIL (31 bad runs of 32, link failed); this build PASS
+(32/32, TMP empty afterwards). finish/run.sh --only '^(RUN\-TMP\-1)$': master
+FAIL (116 bad runs), this build PASS. The 8 other lane-misc items (docs-*, ASI,
+buf_get_byte, abort, import-*, turbofish) are identical FAIL on master and here (not
+touched, not regressions).
+
+Not covered: `kryos run` killed by a signal / hard-killed leaves its
+`kryos_run_*` directory behind (no destructor runs); `kryos build` default output
+path and other temp users (eval, test, LLVM AOT already uses unique stems) were
+not changed or probed for same-name collisions.
+
+## CI-WIN-1 - WALL (oracle expectation contradicts the program; compiler side already fixed)
+
+Item: finish/run.sh `CI-WIN-1` builds the tree's kryos-rt + kryos-stdlib-native with
+rustc 1.100, links `inv/CI-WIN-1/actor_basic.kry` via `kryos build --release` with
+KRYOS_STDLIB_NATIVE_LIB/KRYOS_RT_LIB, runs it, and requires stdout exactly
+`total: 5\ntotal: 15\nlog: hello\n`.
+
+Root cause of the original red (LNK2019 `__imp_WaitOnAddress` / `WakeByAddressAll`):
+rustc 1.100 std needs synchronization.lib on the Windows link line. Already fixed in
+this branch's history by 60071762 (kryos-driver runtime.rs adds `synchronization`;
+unit test pins it). Master binary lacks it: executed with the same two .lib files,
+master `kryos build` -> LNK2019 x3 and no exe; this build links and runs.
+
+Why the item still FAILs here: `actor_basic.kry` sends four messages (add 5, add 10,
+note, sub 3) and prints four lines, the last being `total: 12`. Its own header says
+`expect-stdout: total: 12`. The oracle's `expect.stdout` has only the first three
+lines. Executed evidence: this build's exe, the inventory's own known-good
+kryos-inventory/ci-win-1/actor_100_fix.exe and actor_95.exe all print the 4 lines
+(rc=0). The oracle's accept_runs (20261125-131039, 145627) and integ_run0.txt show the
+identical `stdout=...total: 12\n want ...log: hello\n` failure. The only way to emit 3
+lines is to drop the last queued message at main exit, i.e. break the graceful-drain
+guarantee that the actor_basic test and docs assert. Not done: that would be an unsound
+change made to satisfy a wrong expectation, and the oracle (read-only) must be fixed
+to expect `total: 12\n`.
+
+No source change, no pin test (a pin would pass on master only for the link half, which
+60071762 already pins). Residual: once the oracle expects 4 lines the item should PASS
+(link + run verified by hand above); not executed through run.sh because that expectation
+cannot be edited from this lane.
+
+## ASI-nonW0001-tokens: newline-led `+` / `*` / `|` silently continued the previous statement with no W0001
+
+Root cause: the Pratt loop in kryos-parser consumes any token with infix binding power across a newline. W0001 covered only `||`, `-`, `[`, `(`; `+`, `*` and single `|` merged silently (`let a: i64 = 5` / `+ 1` -> 6, `| 1` -> 7, `* 2` -> 14, no diagnostic). Single `|` had been excluded because indented bit-packing chains are common and legitimate, and the parser had no way to tell an indented continuation from a fresh same-indent line.
+
+Fix: the lexer records `Token::line_indent` (leading space/tab count of the token's line); the parser tracks `stmt_indent` (indent of the innermost statement's first token). A newline-led `+`/`*`/`|` whose line indent is <= stmt_indent, inside a statement, warns W0001 once per expression per token. Indented chains and non-statement expressions (e.g. a top-level const initializer) stay silent. Merge semantics are unchanged (warning only). Based on the previous run's unverified misc.patch, re-verified and with one added guard (stmt_indent != u32::MAX so expressions outside any statement never warn).
+
+Files: kryos-lexer/src/{lexer,token}.rs, kryos-parser/src/parser.rs, kryos-errors/{codes,explain}.rs, CLAUDE.md (rule 1 text), tests/asi_nonw0001_pin.sh.
+
+Evidence: run.sh --only '^(ASI-nonW0001-tokens)$': master/pre-fix FAIL (stdout=6 7 14), now PASS (3 x W0001). tests/asi_nonw0001_pin.sh: master FAIL (want 3 W0001, got 0), here PASS. tests/diagnostics_gate.sh PASS (existing || - [ ( warn cases, bit-packing and chain no-false-positive cases). `kryos check` over all 1874 tracked .kry files: W0001 count identical to master on every file (no new warnings in the corpus).
+
+Residual / NOT covered: the item's second alternative (each line its own statement) was not implemented -- the merge still happens, only warned. `&` and unary-`-`-style same-indent lines were not changed. A newline-led `+`/`*`/`|` that is indented deeper than its statement is deliberately silent even if the author meant a fresh statement. Same-indent heuristic is by leading space/tab byte count (a tab counts as 1). `kryos fmt` refuses files carrying the new warnings (existing W0001 behavior); not exercised on the new shapes. The LSP/REPL W0001 delivery (A21) is a separate item and still FAILs.
+
+## 2c-hardrule6: CLAUDE.md hard rule #6 claimed annotations are required; the compiler never enforced it
+
+- **Root cause:** doc drift, not a compiler gap. The language infers top-level
+  `let` (`let count = 5` is an `i64`) and unannotated fn params
+  (`fn add(a, b) -> i64 { return a + b }` runs, prints 3), on the master binary
+  and on this tree alike, jit path. Enforcing the rule would reject
+  programs that have always worked (the corpus relies on inference), so the
+  finish-line's "doc or enforce" was resolved on the doc side.
+- **Files:** `CLAUDE.md` and `docs/claude/FULL-REFERENCE.md` (rule #6
+  reworded: annotations optional and house style, but a value-returning fn
+  still needs `-> T`: `fn add(a, b) { return a + b }` gives E0100 "declared to
+  return `void`"). Pin: `tests/hardrule6_doc_pin.sh`.
+- **Evidence both ways:** `KRYOS_DOC_ROOT=<master tree> tests/hardrule6_doc_pin.sh`
+  prints 2x `FAIL ... stale 'annotations required' claim` (rc=1); on this tree
+  `PASS hardrule6_doc_pin`. `run.sh --only '^(2c\-hardrule6)$'` FAIL on master
+  docs, PASS 2c-hardrule6 + 2c-hardrule6.ctl here.
+- **NOT covered:** other stale statements in rule #6's neighbours (rule #8,
+  top-level `let mut` calling functions) were not re-verified; the claim
+  "return type is required" was checked only for a body that returns an i64;
+  struct-field and closure-param annotation requirements were not examined.
+  The pin is a text + one-program check, not a grammar proof. Non-lane items
+  still failing in the same --only sweep (M7, B5, docs-stability-stale,
+  docs-claude-narrow-int, buf_get_byte-sentinel, abort-undefined,
+  import-shadows-builtin, import-struct-reachability, turbofish-struct) were
+  failing before this change and are untouched; `tests/docs_status_gate.sh`
+  also fails (README conformance count 118 vs 120), unrelated to this edit.
+
+## 2c-hardrule6 (round 2): rule #6 rewording overclaimed "the compiler infers both"
+
+- **Root cause:** the first rewording (581cf970) replaced "annotations required" with "the compiler infers both", which is false for fn params whose type cannot be pinned by the body: `fn getx(p) -> i64 { return p.x }` is E0110 `cannot access field x on type ?T5` (identical on master and this tree; doc-only change, no compiler code touched).
+- **Files:** `CLAUDE.md`, `docs/claude/FULL-REFERENCE.md` (rule #6 now: optional on top-level `let`, and on params whose type the body pins down by use, e.g. arithmetic, `len(s)`, indexing, conditions; field access on a param needs the annotation; a top-level `let` with a struct literal must follow the `struct` declaration, annotated or not). Pin `tests/hardrule6_doc_pin.sh` extended: rejects the "compiler infers both" text, requires the caveat, and executes the E0110 program (unannotated) and its annotated twin (prints 7).
+- **Evidence both ways:** `KRYOS_DOC_ROOT=<master tree> tests/hardrule6_doc_pin.sh` -> FAIL x4 (stale claim + missing caveat, both files), rc=1; this tree -> `PASS hardrule6_doc_pin`. `run.sh --only '^(2c\-hardrule6)'` -> PASS 2c-hardrule6, PASS 2c-hardrule6.ctl.
+- **Executed shapes:** `lm_a` unannotated field access E0110; annotated `p: P` prints 7 (incl. struct declared after the fn); top-level `let origin = P{..}` before `struct P` E0110, still E0110 with `let origin: P`; `.len()` is not a method on str at all (E0107 even with `s: str`), `len(s)` on an unannotated param prints 3.
+- **NOT covered:** method calls on user-struct params without annotation (only `.len()` on a string was tried); closure params, struct fields, and AOT path for the new probes were not examined; the inference rule is stated by examples, not derived from the typechecker, so other un-pinnable uses (e.g. passing the param to a generic fn) are unverified.
+
+## import-shadows-builtin: a function named like a builtin captured another module's builtin calls
+
+- **Root cause:** imports merge into ONE flat namespace, and a user-visible function named like a builtin (`use std::trie::{contains}`, or a user `fn contains`) won every call to that name, including the stdlib's own: `use std::os::{name}` type-failed on std::os's `contains(ostype, "linux")` with E0100 "expected [i64], found str", reported at line 4 col ~1960 of a 3-line file (the span belongs to the stdlib text). Reproduced on the master binary and on this tree before the change; a user-defined `fn contains(t: [i64], w: str)` next to `use std::os::{name}` failed identically.
+- **Fix:** `resolve.rs` records per imported module (declaration range, own names, its `use` lines); new `isolate_builtin_shadows`, called from the three pipeline sites after `validate_qualified_calls`, finds modules that call (unshadowed, scope-aware via the existing renamer as a probe) a name they neither declare nor import while a single function of that name exists elsewhere, renames that function to `__kry_shadow_<name>` and every reference outside those modules (incl. the root, and `module::name` static calls), so the stdlib keeps reaching the builtin and the user's calls still reach the user's function.
+- **Files:** `compiler/crates/kryos-driver/src/resolve.rs`, `compiler/crates/kryos-driver/src/pipeline.rs`, pin `tests/import_shadows_builtin_pin.sh`.
+- **Evidence both ways:** pin on master binary: FAIL sel, qual, local (E0100 type mismatch); on this tree `PASS import_shadows_builtin_pin (sel qual local ctl)`. `run.sh --only '^(import\-shadows\-builtin)(\.ctl)?$'`: master FAIL, here PASS x2 (imp.kry prints `windows`). AOT: `kryos build` of selective trie+os program prints `true true`. Regression scan: 4919 items of `^(cap|esc|swa|std|stdlib|str|A*|M*|digits)` executed on this tree (run cut by its timeout, not complete); 0 ids PASS in master_run1.txt and FAIL here. Items that fail on both (B9, M2, abort-undefined, import-struct-reachability, turbofish-struct, A13) unchanged.
+- **NOT covered:** a user program that wants builtin `contains` while ALSO importing a module function `contains` still binds to the imported one (unchanged, by design of the flat namespace); two different functions of the same builtin name (count != 1) are not isolated; Impl/Actor method bodies that call a shadowed builtin are probed (impl methods yes, actors no); diagnostics about the renamed function show `__kry_shadow_<name>`; the regression scan did not run the full 7125-item suite; shadowers that are consts or struct constructors are not handled; WASM backend not exercised.
+
+## import-struct-reachability: selective imports collided on same-named structs nobody references
+
+- **Root cause:** `resolve_imports_inner` always includes every type decl of a selectively imported module (so selected fns' signatures resolve). `use ma::{fa}` + `use mb::{fb}` with `struct Item` in both modules therefore reached the final duplicate-declaration check and failed with E0205, although no program text names `Item`.
+- **Fix:** `resolve.rs`: new `prune_dead_duplicate_types`, run once at the ROOT level (only the root sees every consumer) before the duplicate check. For each type name declared more than once, if no declaration outside its group (the same-named types plus impls targeting the name) mentions the name -- in the root module or any import (Debug-text match on the quoted name, an over-approximation that keeps the error on doubt) -- the whole group is dropped and the MODULE_RECORDS ranges are shifted. Nested levels skip type duplicates and leave them to the root check. Only programs that were previously rejected with E0205 change.
+- **Files:** `compiler/crates/kryos-driver/src/resolve.rs`, pin `tests/import_struct_reachability_pin.sh`.
+- **Evidence both ways:** pin on master binary: `FAIL dead: ... E0205 duplicate struct Item`, rc=1; on this tree `PASS import_struct_reachability_pin (dead lit sig named)`. `run.sh --only '^(import\-struct\-reachability(\.ctl)?)$'`: master FAIL (E0205), here `PASS import-struct-reachability` + `.ctl` (jit and aot). Regression: the 58 non-cap/esc/swa feature regexes of this lane (+ .ctl), 92 items executed: 63 FAIL, 0 of them PASS in master_run2.txt (the failures are the lane's pending leak/doc/crash items). `tests/diagnostics_gate.sh`, `module_case_gate.sh`, `import_shadows_builtin_pin.sh` PASS; `stdlib_compile_gate.sh` 66/66.
+- **NOT covered:** a name that IS mentioned (struct literal, signature, `use ma::{Item}`) still reports E0205 even when only one module's `Item` could be meant (executed: lit, sig, named all stay E0205). A bare `use ma` + `use mb` with unreferenced same-named types now also compiles (executed, prints 3) because the rule is reference-based, not import-form-based. Same-named enums/traits/aliases/actors use the same code path but only structs were executed. A same-named type that only shows up in a generic parameter or a local binding also keeps the error (over-approximation). Duplicate FUNCTIONS and consts are unchanged.
+
+## M4: map literal whose first key is negative or parenthesised failed to parse (E0003)
+
+- **Root cause:** `parse_map_or_block_expr` (kryos-parser) decides map vs block by a one-token lookahead: first token Ident/TypeIdent/String/Integer followed by `:`. A first key starting with `-` (`{-3: 1}`) or `(` (`{(0-3): 1}`) fell through to the block path, which parsed `-3` as a statement and died on the `:` with E0003 "unexpected token ':', expected expression". Later keys and negative VALUES (`{3: -1}`) were never affected.
+- **Fix:** two more map-introducing lookaheads: `-` Integer `:`, and a `(` whose balanced group is immediately followed by `:` (new `paren_group_followed_by_colon`). Neither shape can begin a block statement, so blocks starting with `-` or `(` (`{ -3 }`, `{ (1 + 2) * 3 }`) are unchanged.
+- **Files:** `compiler/crates/kryos-parser/src/parser.rs`, pin `tests/map_negkey_pin.sh`.
+- **Evidence both ways:** pin on master binary: `FAIL neg`, `FAIL paren` (E0003); on this tree `PASS map_negkey_pin (neg paren negval blk_neg blk_paren)`. `run.sh --only '^(M4)$'`: master FAIL (E0003, jit negkey.kry), here `PASS M4` (jit+aot, negkey and negkey2). Regression: `^(M[0-9]+|A[0-9]+|B[0-9]+|digits|map|import|ASI|turbofish)` executed on this tree (54 items): 0 ids FAIL here that were not already FAIL in master_run2.txt; `diagnostics_gate`, `asi_nonw0001_pin`, `import_*_pin` PASS; `stdlib_compile_gate` 66/66.
+- **NOT covered:** a float first key (`{1.5: 7}`, `{-1.5: 7}`) still fails with E0003 (positive floats were already unparsed; I did NOT widen to Float because a negative-float map then reaches codegen and dies with a Cranelift Verifier error, i.e. f64-keyed maps are a separate defect); Char/true/false first keys, `-` followed by an identifier (`{-x: 1}`) and arbitrary-expression first keys (`{a + 1: 2}`, `{f(x): 1}`) are not map-detected and were not executed; `#{-3: 1}` already took the always-map path and was not re-run; the in-flight misc.patch (ASI warnings for `+`/`*`/`|`) was NOT applied or verified.
+
+## m4: REOPENED -- fix refuted by verifier
+
+Commit 713911cc was reverted. Verifier findings:
+
+- Step 1 passes: kbuild was a no-op and `run.sh ... -j 2 --only '^(M4)$'` printed `PASS M4` and `# RESULT: ALL PASS`. The features.json acceptance command targets kryos-integ, so it was run against kryos-lane-misc as directed.
+- Step 2 is clean: `git show 713911cc` touches only parser.rs, codegen.rs, tests/map_negkey_pin.sh and tools/loop/LEDGER.md. It does not touch kryos-oracle, no test is weakened or deleted, and nothing special-cases test or file names. The pin grew from 4 to 13 cases and added 2 block guards (`blk_stmt` and `blk_lambda`).
+- Step 4 confirmed: `bash tests/map_negkey_pin.sh` on the tree printed `PASS map_negkey_pin (...)`. With KRYOS_BIN set to the master binary it failed `neg`, `paren`, `negid`, `negexpr`, `parenop`, `parenop2`, `addkey`, `callkey`, `charkey` and `floatkey` with E0003 `unexpected token ':'`.
+- Fix verified for the shapes it targets: `{p.id: 9}`, `{a as i64: 5}`, `{-a - 1: 1, -a - 2: 2}` split across lines, `{len([1,2]): 7}`, `{[1,2][0]: 7}`, `{a == 4: 1}`, a map as a fn tail expression `{-a: 1, a * 2: 2}`, and map<i64,char>, map<i64,f64>, map<u8,u8>, map<char,char>. AOT via `kryos build` correct for v1, d4, d5, d6. Master gives E0003 on the `{-a: ...}` fn-tail shape.
+- REFUTED on narrowness: `first_key_then_colon` gates on a whitelist of first-token kinds (Minus, Bang, Tilde, Not, LParen, LBracket, Ident, TypeIdent, Integer, Float, String, Char, True, False). The lexer emits an interpolated string as `StringPart`, which is not in the whitelist. `Star` and `If` are not either. So the claim that any expression-shaped first key parses as a map is false. The defect is specific to first-key detection (non-first keys work: `{"z": 1, "k{a}": 3}` returned 3).
+
+Residual shapes (still E0003 on the tree and on master):
+- Interpolated string first key: `fn main() { let a: i64 = 4; let m8: map<string,i64> = {"k{a}": 3}; println("{m8["k4"]}") }`; also `{"{a}": 3}` and `{"k{a}": 3, "z": 1}`. Cause: StringPart missing from the gate.
+- Deref first key: `let p = &a; let m: map<i64,i64> = {*p: 3}`. `let k = *p; {k: 3}` and `{(*p): 3}` work. Star is missing from the gate.
+- If-expression first key: `{if a > 1 { 1 } else { 2 }: 3}` (exotic; `if` not in the gate).
+- Newline continuation before a binary operator: `{a\n        + 1: 7}` gives E0003.
+
+## m7 (finish item M7): stale double-free doc presented a fixed bug as live
+
+- **Root cause:** `docs/BUGS-mini-parser-double-free.md` still described 60/7 double-frees and an rc=139 SEGFAULT in `stage1_mini_parser.kry` with no resolved marker. Executed on this tree AND on the master binary: `kryos run compiler/self-host/stage1_mini_parser.kry` -> rc=0, `stage 1 mini-parser: ok`; under `KRYOS_FREE_DIAG=1` -> rc=0, 0 `DOUBLE-FREE` lines. The bug is gone; only the doc was stale (no compiler change).
+- **Fix:** doc gets a RESOLVED banner in its first lines with the re-measured result, the old tables are labelled historical, and the stale "Current CI position" section is replaced by a pointer to CI.
+- **Files:** `docs/BUGS-mini-parser-double-free.md`, pin `tests/mini_parser_doublefree_doc_pin.sh`.
+- **Evidence both ways:** `run.sh --only '^(M7)$'` before: `FAIL M7 ... /\A(?:[^\n]*\n){0,6}...(FIXED|RESOLVED...)/ not found`; after: `PASS M7`, `PASS M7.ctl`. Pin with the OLD doc (git show HEAD:doc) and the master binary: `FAIL doc: no RESOLVED marker in first 7 lines`; pin on this tree: `PASS mini_parser_doublefree_doc_pin`.
+- **NOT covered:** the pin's binary half (rc=0, no double-free) also passes on the master binary because master already ran clean, so only the doc half discriminates. I did not identify which commit fixed the double-frees. I did not run the double-free diagnostic on any program other than `stage1_mini_parser.kry`.
+
+## m4: REOPENED -- fix refuted by verifier (first attempt 29d37d7f reverted by aaf8b82a)
+
+- The first m4 fix, 29d37d7f ("map literal with a negative or parenthesised first key parses as a map"), was reverted in aaf8b82a. The second attempt 713911cc was reverted earlier in 9e25344a (see the m4 REOPENED entry above, which holds the verifier findings and the residual shapes).
+- m4 is OPEN. No m4 fix is on this branch. After both reverts the lane tree was rebuilt (kbuild green) and the dependent items RUN-TMP-1, ASI-nonW0001-tokens, 2c-hardrule6, import-shadows-builtin, import-struct-reachability and M7 were re-run with `run.sh -j 2 --only`: all PASS. I did not re-run M4 after the reverts and make no claim about its state.

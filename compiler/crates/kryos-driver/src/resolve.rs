@@ -469,9 +469,34 @@ thread_local! {
         RefCell::new(std::collections::HashMap::new());
 }
 
+/// What one imported module file contributed to the merged declaration list,
+/// kept so `isolate_builtin_shadows` can tell which declarations belong to
+/// which module once the module boundaries are flattened.
+struct ModuleRecord {
+    tag: String,
+    from_stdlib: bool,
+    /// `[start, end)` in the resolved declaration list: this module's own
+    /// declarations (its nested imports were pushed before `start`).
+    start: usize,
+    end: usize,
+    /// Every top-level name the module declares itself.
+    own_names: HashSet<String>,
+    /// Its `use` lines: (canonical path of the imported file, selected items;
+    /// empty = a bare `use`, every name).
+    imports: Vec<(PathBuf, Vec<String>)>,
+}
+
+thread_local! {
+    static MODULE_RECORDS: RefCell<Vec<ModuleRecord>> = const { RefCell::new(Vec::new()) };
+    /// canonical module path -> every top-level name that module declares.
+    static MODULE_DEFS: RefCell<HashMap<PathBuf, HashSet<String>>> = RefCell::new(HashMap::new());
+}
+
 /// Reset the per-compile import-origin table. Call before a fresh resolve.
 pub fn reset_import_origins() {
     IMPORT_ORIGINS.with(|o| o.borrow_mut().clear());
+    MODULE_RECORDS.with(|r| r.borrow_mut().clear());
+    MODULE_DEFS.with(|d| d.borrow_mut().clear());
     kryos_types::reset_stdlib_fns();
 }
 
@@ -817,6 +842,7 @@ pub fn resolve_imports(
         resolved_decls,
         verbose,
         &unions,
+        Some(module),
     )
 }
 
@@ -827,6 +853,7 @@ fn resolve_imports_inner(
     resolved_decls: &mut Vec<Decl>,
     verbose: bool,
     unions: &SelectionUnions,
+    root: Option<&Module>,
 ) -> Result<(), Vec<Diagnostic>> {
     let imports = extract_imports(module);
 
@@ -898,7 +925,27 @@ fn resolve_imports_inner(
             resolved_decls,
             verbose,
             unions,
+            None,
         )?;
+
+        let record_own_names: HashSet<String> = imported_module
+            .declarations
+            .iter()
+            .filter_map(decl_name_of)
+            .collect();
+        let record_imports: Vec<(PathBuf, Vec<String>)> = extract_imports(&imported_module)
+            .into_iter()
+            .filter_map(|(ip, _)| {
+                let p = resolve_module_path(&ip.segments, &module_path).ok()?;
+                let c = fs::canonicalize(&p).unwrap_or(p);
+                Some((c, ip.items.clone()))
+            })
+            .collect();
+        MODULE_DEFS.with(|d| {
+            d.borrow_mut()
+                .insert(canonical.clone(), record_own_names.clone());
+        });
+        let record_start = resolved_decls.len();
 
         // Collect non-import declarations from the imported module.
         // When selective import is used (`use foo::{a, b}`), include:
@@ -1141,6 +1188,24 @@ fn resolve_imports_inner(
                 }
             }
         }
+        MODULE_RECORDS.with(|r| {
+            r.borrow_mut().push(ModuleRecord {
+                tag: import_path.segments.last().cloned().unwrap_or_default(),
+                from_stdlib,
+                start: record_start,
+                end: resolved_decls.len(),
+                own_names: record_own_names,
+                imports: record_imports,
+            })
+        });
+    }
+
+    // Selective imports always drag in a module's types; two modules that
+    // each declare an UNREFERENCED `struct Item` must not collide. Only the
+    // root level sees every consumer, so only it prunes; nested levels leave
+    // type duplicates for the root's final check.
+    if let Some(root_module) = root {
+        prune_dead_duplicate_types(root_module, resolved_decls);
     }
 
     // Check for duplicate declarations across imported modules.
@@ -1151,6 +1216,9 @@ fn resolve_imports_inner(
     for (idx, decl) in resolved_decls.iter().enumerate() {
         if let Some(name) = decl_name_of(decl) {
             if let Some(&prev_idx) = seen.get(&name) {
+                if root.is_none() && is_type_decl(decl) && is_type_decl(&resolved_decls[prev_idx]) {
+                    continue;
+                }
                 // Skip duplicate Decl::Const - constants from the same module
                 // can appear multiple times when re-exported through different
                 // selective imports. Only flag non-const duplicates, or const
@@ -1183,6 +1251,93 @@ fn resolve_imports_inner(
     Ok(())
 }
 
+fn is_type_decl(decl: &Decl) -> bool {
+    matches!(
+        decl,
+        Decl::Struct { .. }
+            | Decl::Enum { .. }
+            | Decl::Trait { .. }
+            | Decl::Actor { .. }
+            | Decl::TypeAlias { .. }
+    )
+}
+
+/// Drop type declarations that would be reported as duplicates (E0205) when
+/// NOTHING in the program mentions the name. Selective import (`use m::{f}`)
+/// includes every type of `m` so selected functions' signatures resolve; two
+/// modules that each declare an `Item` nobody uses then collided although
+/// neither `Item` was imported or referenced. A name is dead only when no
+/// declaration outside its own group (the same-named types plus impls
+/// targeting the name) mentions it, in the root module or any import; a
+/// mention anywhere keeps the duplicate error, since which `Item` is meant
+/// cannot be told. Only programs that would otherwise be rejected change.
+fn prune_dead_duplicate_types(root: &Module, resolved: &mut Vec<Decl>) {
+    let mut count: HashMap<String, usize> = HashMap::new();
+    for d in resolved.iter() {
+        if is_type_decl(d) {
+            if let Some(n) = decl_name_of(d) {
+                *count.entry(n).or_insert(0) += 1;
+            }
+        }
+    }
+    let dup_names: Vec<String> = count
+        .into_iter()
+        .filter(|(_, c)| *c > 1)
+        .map(|(n, _)| n)
+        .collect();
+    if dup_names.is_empty() {
+        return;
+    }
+    let in_group = |d: &Decl, name: &str| -> bool {
+        (is_type_decl(d) && decl_name_of(d).as_deref() == Some(name))
+            || matches!(d, Decl::Impl { target, .. } if target == name)
+    };
+    let root_dbg: Vec<String> = root.declarations.iter().map(|d| format!("{d:?}")).collect();
+    let mut dbg: Vec<Option<String>> = vec![None; resolved.len()];
+    let mut remove: HashSet<usize> = HashSet::new();
+    for name in &dup_names {
+        let quoted = format!("\"{name}\"");
+        let qualified = format!("::{name}\"");
+        let mentions = |s: &str| s.contains(&quoted) || s.contains(&qualified);
+        let mut used = root_dbg.iter().any(|s| mentions(s));
+        if !used {
+            for (i, d) in resolved.iter().enumerate() {
+                if in_group(d, name) {
+                    continue;
+                }
+                let s = dbg[i].get_or_insert_with(|| format!("{d:?}"));
+                if mentions(s) {
+                    used = true;
+                    break;
+                }
+            }
+        }
+        if !used {
+            for (i, d) in resolved.iter().enumerate() {
+                if in_group(d, name) {
+                    remove.insert(i);
+                }
+            }
+        }
+    }
+    if remove.is_empty() {
+        return;
+    }
+    let shift = |pos: usize| pos - remove.iter().filter(|&&r| r < pos).count();
+    MODULE_RECORDS.with(|r| {
+        for rec in r.borrow_mut().iter_mut() {
+            rec.start = shift(rec.start);
+            rec.end = shift(rec.end);
+        }
+    });
+    let mut i = 0;
+    resolved.retain(|_| {
+        let keep = !remove.contains(&i);
+        i += 1;
+        keep
+    });
+}
+
 /// Return a human-readable kind name for a declaration (for error messages).
 fn decl_kind_name(decl: &Decl) -> &'static str {
     match decl {
@@ -1210,6 +1365,100 @@ fn decl_name_of(decl: &Decl) -> Option<String> {
         Decl::Actor { name, .. } => Some(name.clone()),
         Decl::Const { name, .. } => Some(name.clone()),
         _ => None,
+    }
+}
+
+// ─── Builtin-shadow isolation ──────────────────────────────────────────────
+
+/// Imported modules share ONE flat namespace once merged, so a function named
+/// like a builtin (`use std::trie::{contains}`, or a user `fn contains`)
+/// silently captured every OTHER module's call to that builtin: `use
+/// std::os::{name}` then type-failed on std::os's own `contains(ostype,
+/// "linux")`, reported at an offset of the wrong file. A module that calls a
+/// name it neither declares nor imports means the builtin; so the shadowing
+/// function is renamed (with every reference that does mean it) and those
+/// modules keep reaching the builtin. Run after `resolve_imports` and
+/// `validate_qualified_calls`, before the declarations are merged.
+pub fn isolate_builtin_shadows(root: &mut Module, imported: &mut [Decl]) {
+    let recs: Vec<ModuleRecord> = MODULE_RECORDS.with(|r| std::mem::take(&mut *r.borrow_mut()));
+    if recs.is_empty() {
+        return;
+    }
+    // name -> (definitions, index in `imported` when imported).
+    let mut fn_defs: HashMap<String, (usize, Option<usize>)> = HashMap::new();
+    for (i, d) in imported.iter().enumerate() {
+        if let Decl::Function { name, .. } = d {
+            let e = fn_defs.entry(name.clone()).or_insert((0, Some(i)));
+            e.0 += 1;
+        }
+    }
+    for d in &root.declarations {
+        if let Decl::Function { name, .. } = d {
+            let e = fn_defs.entry(name.clone()).or_insert((0, None));
+            e.0 += 1;
+        }
+    }
+    // name -> indexes of the modules that mean the BUILTIN of that name.
+    let mut builtin_users: HashMap<String, Vec<usize>> = HashMap::new();
+    for (ri, rec) in recs.iter().enumerate() {
+        let mut visible: HashSet<String> = rec.own_names.clone();
+        MODULE_DEFS.with(|defs| {
+            let defs = defs.borrow();
+            for (path, items) in &rec.imports {
+                if items.is_empty() {
+                    if let Some(names) = defs.get(path) {
+                        visible.extend(names.iter().cloned());
+                    }
+                } else {
+                    visible.extend(items.iter().cloned());
+                }
+            }
+        });
+        let range = &imported[rec.start.min(imported.len())..rec.end.min(imported.len())];
+        let mut idents: HashSet<String> = HashSet::new();
+        for d in range {
+            collect_idents_in_decl(d, &mut idents);
+        }
+        for (name, (count, _)) in &fn_defs {
+            if *count != 1 || visible.contains(name) || !idents.contains(name) {
+                continue;
+            }
+            // An unshadowed reference (a local of that name is not one)?
+            let probe: HashMap<String, String> =
+                HashMap::from([(name.clone(), "__kry_probe".to_string())]);
+            let hit = range.iter().any(|d| {
+                let mut c = d.clone();
+                rename_idents_in_decl(&mut c, &probe);
+                c != *d
+            });
+            if hit {
+                builtin_users.entry(name.clone()).or_default().push(ri);
+            }
+        }
+    }
+    let mut names: Vec<String> = builtin_users.keys().cloned().collect();
+    names.sort();
+    for name in names {
+        let users = &builtin_users[&name];
+        let new = format!("__kry_shadow_{name}");
+        let mut map: HashMap<String, String> = HashMap::from([(name.clone(), new.clone())]);
+        if let Some((_, Some(di))) = fn_defs.get(&name) {
+            if let Some(owner) = recs.iter().find(|r| (r.start..r.end).contains(di)) {
+                map.insert(format!("{}::{}", owner.tag, name), new.clone());
+                if owner.from_stdlib {
+                    kryos_types::mark_stdlib_fn(&new);
+                }
+            }
+        }
+        for (i, d) in imported.iter_mut().enumerate() {
+            if users.iter().any(|&u| (recs[u].start..recs[u].end).contains(&i)) {
+                continue;
+            }
+            rename_idents_in_decl(d, &map);
+        }
+        for d in root.declarations.iter_mut() {
+            rename_idents_in_decl(d, &map);
+        }
     }
 }
 
@@ -1607,7 +1856,18 @@ fn rename_expr_scoped(e: &mut Expr, map: &HashMap<String, String>, shadowed: &Ha
                 rename_expr_scoped(a, map, shadowed);
             }
         }
-        Expr::StaticMethodCall { args, .. } => {
+        Expr::StaticMethodCall {
+            type_name,
+            method,
+            args,
+            ..
+        } => {
+            // A module-qualified call (`trie::contains(..)`) names the module
+            // function through the key `module::name`; plain helper maps never
+            // carry one, so only `isolate_builtin_shadows` triggers this.
+            if let Some(new) = map.get(&format!("{type_name}::{method}")) {
+                *method = new.clone();
+            }
             for a in args {
                 rename_expr_scoped(a, map, shadowed);
             }

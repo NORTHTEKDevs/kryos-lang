@@ -550,6 +550,8 @@ fn compile_file_impl(
         };
     }
 
+    resolve::isolate_builtin_shadows(&mut module, &mut imported_decls);
+
     // Prepend imported declarations so they are visible during type checking.
     // We insert them before the main module's declarations.
     let mut merged_decls = imported_decls;
@@ -1407,6 +1409,8 @@ pub fn check_file(path: &Path) -> (Vec<Diagnostic>, SourceMap) {
         return (diagnostics, source_map);
     }
 
+    resolve::isolate_builtin_shadows(&mut module, &mut imported_decls);
+
     // Merge imported declarations before the main module's declarations.
     let mut merged_decls = imported_decls;
     merged_decls.append(&mut module.declarations);
@@ -1507,6 +1511,8 @@ pub fn check_file_with_options_full(
         diagnostics.extend(qc);
         return (diagnostics, source_map);
     }
+
+    resolve::isolate_builtin_shadows(&mut module, &mut imported_decls);
 
     // Merge imported declarations before the main module's declarations.
     let mut merged_decls = imported_decls;
