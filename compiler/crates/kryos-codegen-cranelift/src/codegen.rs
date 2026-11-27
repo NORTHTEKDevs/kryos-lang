@@ -605,6 +605,11 @@ pub fn compile_module_with_options(
     // These break compile-time recursion when array elements are structs/enums
     // that themselves contain heap fields (e.g. strings inside structs inside arrays).
     let mut type_drop_ids: HashMap<String, FuncId> = HashMap::new();
+    // (wrapper, body) pairs for types that can reach themselves: the wrapper is
+    // the `__kryos_drop_<T>` every caller uses and runs the body through the
+    // runtime's worklist (`kryos_drop_call`), so no chain drops recursively.
+    let mut drop_wrappers: Vec<(FuncId, FuncId)> = Vec::new();
+    let rec_drop_types = kryos_mir::ir::recursive_drop_types(&module.struct_defs, &module.enum_defs);
     {
         let call_conv = object_module.isa().default_call_conv();
         let has_heap_fields = |fields: &[(String, MirType)]| -> bool {
@@ -627,9 +632,21 @@ pub fn compile_module_with_options(
                 let drop_name = format!("__kryos_drop_{name}");
                 let mut sig = Signature::new(call_conv);
                 sig.params.push(AbiParam::new(types::I64)); // struct ptr
-                let id = object_module.declare_function(&drop_name, Linkage::Local, &sig)?;
-                type_drop_ids.insert(name.clone(), id);
-                func_ids.insert(drop_name, id);
+                if rec_drop_types.contains(name) {
+                    let bid = object_module.declare_function(
+                        &format!("__kryos_dropb_{name}"),
+                        Linkage::Local,
+                        &sig,
+                    )?;
+                    let wid = object_module.declare_function(&drop_name, Linkage::Local, &sig)?;
+                    type_drop_ids.insert(name.clone(), bid);
+                    drop_wrappers.push((wid, bid));
+                    func_ids.insert(drop_name, wid);
+                } else {
+                    let id = object_module.declare_function(&drop_name, Linkage::Local, &sig)?;
+                    type_drop_ids.insert(name.clone(), id);
+                    func_ids.insert(drop_name, id);
+                }
             }
         }
         for (name, variants) in &module.enum_defs {
@@ -650,9 +667,21 @@ pub fn compile_module_with_options(
                 let drop_name = format!("__kryos_drop_{name}");
                 let mut sig = Signature::new(call_conv);
                 sig.params.push(AbiParam::new(types::I64)); // enum ptr
-                let id = object_module.declare_function(&drop_name, Linkage::Local, &sig)?;
-                type_drop_ids.insert(name.clone(), id);
-                func_ids.insert(drop_name, id);
+                if rec_drop_types.contains(name) {
+                    let bid = object_module.declare_function(
+                        &format!("__kryos_dropb_{name}"),
+                        Linkage::Local,
+                        &sig,
+                    )?;
+                    let wid = object_module.declare_function(&drop_name, Linkage::Local, &sig)?;
+                    type_drop_ids.insert(name.clone(), bid);
+                    drop_wrappers.push((wid, bid));
+                    func_ids.insert(drop_name, wid);
+                } else {
+                    let id = object_module.declare_function(&drop_name, Linkage::Local, &sig)?;
+                    type_drop_ids.insert(name.clone(), id);
+                    func_ids.insert(drop_name, id);
+                }
             }
         }
     }
@@ -2062,6 +2091,14 @@ pub fn compile_module_with_options(
             )?;
             func_ids.insert("kryos_array_free_elems".to_string(), id);
         }
+        // Recursive types' drop wrappers run their body through this worklist.
+        if !func_ids.contains_key("kryos_drop_call") {
+            let mut sig = Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            let id = object_module.declare_function("kryos_drop_call", Linkage::Import, &sig)?;
+            func_ids.insert("kryos_drop_call".to_string(), id);
+        }
     }
     for (func_name, (_, _, cap_types, _, _)) in &closure_info {
         if let Some(&dropper_id) = dropper_ids.get(func_name.as_str()) {
@@ -2198,7 +2235,32 @@ pub fn compile_module_with_options(
             let entry = builder.create_block();
             builder.append_block_params_for_function_params(entry);
             builder.switch_to_block(entry);
-            let ptr = builder.block_params(entry)[0];
+            let ptr0 = builder.block_params(entry)[0];
+
+            // A self-recursive enum (`Cons(i64, L)`) is dropped by a loop, not
+            // by recursion: the last self-typed field of the active variant is
+            // carried to the next iteration as a block param, so a 1M-node
+            // list drops in constant stack instead of overflowing it (A9).
+            let self_rec = !module.struct_defs.contains_key(type_name)
+                && module.enum_defs.get(type_name).is_some_and(|vs| {
+                    vs.iter().any(|v| {
+                        v.fields
+                            .iter()
+                            .any(|f| matches!(f, MirType::Enum(n) if n == type_name))
+                    })
+                });
+            let mut loop_blk = None;
+            let mut next_param = None;
+            let ptr = if self_rec {
+                let lb = builder.create_block();
+                builder.append_block_param(lb, types::I64);
+                builder.ins().jump(lb, &[ptr0]);
+                builder.switch_to_block(lb);
+                loop_blk = Some(lb);
+                builder.block_params(lb)[0]
+            } else {
+                ptr0
+            };
 
             // Shared-ownership bail-out. A struct box can be referenced by more
             // than one owner (an array-of-structs dup shares its elements), and
@@ -2315,6 +2377,10 @@ pub fn compile_module_with_options(
                 // Enum drop: load tag, dispatch per-variant, free fields.
                 let tag = builder.ins().load(types::I64, MemFlags::new(), ptr, 0);
                 let merge_block = builder.create_block();
+                let no_next = builder.ins().iconst(types::I64, 0);
+                if self_rec {
+                    builder.append_block_param(merge_block, types::I64);
+                }
 
                 for (idx, variant) in variants.iter().enumerate() {
                     let droppable_fields: Vec<(usize, &MirType)> = variant
@@ -2350,10 +2416,24 @@ pub fn compile_module_with_options(
                     builder.seal_block(variant_block);
 
                     builder.switch_to_block(variant_block);
+                    let defer_fi = if self_rec {
+                        droppable_fields
+                            .iter()
+                            .rev()
+                            .find(|(_, t)| matches!(t, MirType::Enum(n) if n == type_name))
+                            .map(|(i, _)| *i)
+                    } else {
+                        None
+                    };
+                    let mut deferred = no_next;
                     for (field_idx, field_ty) in &droppable_fields {
                         let offset = ((*field_idx + 1) * 8) as i32;
                         let field_val =
                             builder.ins().load(types::I64, MemFlags::new(), ptr, offset);
+                        if defer_fi == Some(*field_idx) {
+                            deferred = field_val;
+                            continue;
+                        }
                         if let MirType::Array(elem, _) = *field_ty {
                             emit_helper_array_field_free(
                                 &mut builder,
@@ -2385,14 +2465,25 @@ pub fn compile_module_with_options(
                         let fref = object_module.declare_func_in_func(fid, builder.func);
                         builder.ins().call(fref, &[field_val]);
                     }
-                    builder.ins().jump(merge_block, &[]);
+                    if self_rec {
+                        builder.ins().jump(merge_block, &[deferred]);
+                    } else {
+                        builder.ins().jump(merge_block, &[]);
+                    }
 
                     builder.switch_to_block(skip_block);
                     builder.seal_block(skip_block);
                 }
-                builder.ins().jump(merge_block, &[]);
+                if self_rec {
+                    builder.ins().jump(merge_block, &[no_next]);
+                } else {
+                    builder.ins().jump(merge_block, &[]);
+                }
                 builder.seal_block(merge_block);
                 builder.switch_to_block(merge_block);
+                if self_rec {
+                    next_param = Some(builder.block_params(merge_block)[0]);
+                }
             }
 
             // Free the struct/enum allocation itself. Header-aware: bails out if
@@ -2401,6 +2492,11 @@ pub fn compile_module_with_options(
             let free_ref = object_module.declare_func_in_func(free_id, builder.func);
             builder.ins().call(free_ref, &[ptr]);
 
+            if let (Some(lb), Some(nx)) = (loop_blk, next_param) {
+                let done_blk = builder.create_block();
+                builder.ins().brif(nx, lb, &[nx], done_blk, &[]);
+                builder.switch_to_block(done_blk);
+            }
             builder.ins().return_(&[]);
             builder.seal_all_blocks();
             builder.finalize();
@@ -2409,6 +2505,36 @@ pub fn compile_module_with_options(
         let mut ctx = Context::for_function(cl_func);
         object_module
             .define_function(drop_id, &mut ctx)
+            .map_err(CodegenError::Module)?;
+    }
+
+    // Drop wrappers of self-reaching types: `__kryos_drop_<T>(p)` is
+    // `kryos_drop_call(p, &__kryos_dropb_<T>)`, which runs the body and any
+    // child drops it triggers from a worklist instead of the native stack.
+    for (wrapper_id, body_id) in drop_wrappers {
+        let call_conv = object_module.isa().default_call_conv();
+        let mut sig = Signature::new(call_conv);
+        sig.params.push(AbiParam::new(types::I64));
+        let mut cl_func =
+            Function::with_name_signature(UserFuncName::user(0, wrapper_id.as_u32()), sig);
+        {
+            let mut builder = FunctionBuilder::new(&mut cl_func, &mut fb_ctx);
+            let entry = builder.create_block();
+            builder.append_block_params_for_function_params(entry);
+            builder.switch_to_block(entry);
+            let p = builder.block_params(entry)[0];
+            let body_ref = object_module.declare_func_in_func(body_id, builder.func);
+            let body_addr = builder.ins().func_addr(types::I64, body_ref);
+            let call_ref =
+                object_module.declare_func_in_func(func_ids["kryos_drop_call"], builder.func);
+            builder.ins().call(call_ref, &[p, body_addr]);
+            builder.ins().return_(&[]);
+            builder.seal_all_blocks();
+            builder.finalize();
+        }
+        let mut ctx = Context::for_function(cl_func);
+        object_module
+            .define_function(wrapper_id, &mut ctx)
             .map_err(CodegenError::Module)?;
     }
 
@@ -3481,6 +3607,7 @@ fn translate_instruction<M: Module>(
                                     | "range"
                                     | "to_string"
                                     | "exit"
+                                    | "abort"
                             )
                     }
                     RValue::CallIndirect { .. } | RValue::VtableCall { .. } => true,
@@ -5415,6 +5542,7 @@ fn translate_rvalue<M: Module>(
                 "buf_write_to_file" => ("kryos_buf_write_to_file", 2),
                 "buf_free" => ("kryos_buf_free", 1),
                 "exit" => ("kryos_builtin_exit", 1),
+                "abort" => ("kryos_builtin_abort", 0),
                 "args" => ("kryos_builtin_args", 0),
                 "map_has" => ("kryos_map_has", 2),
                 "map_has_str" => ("kryos_map_has_str", 2),

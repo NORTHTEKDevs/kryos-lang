@@ -766,3 +766,36 @@ fn consume_extra_owner(rc: &std::sync::atomic::AtomicU64) -> bool {
     }
     false
 }
+
+thread_local! {
+    static DROP_ACTIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static DROP_QUEUE: RefCell<Vec<(i64, extern "C" fn(i64))>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Entry point of a recursive type's drop helper. The generated
+/// `__kryos_drop_<T>` of a type that can reach itself through its fields
+/// (`L` -> `L`, `A` -> `B` -> `A`, `Tree` -> `[Tree]`, `Opt` -> `N` -> `Opt`)
+/// is a thin wrapper that calls this with the real body `f`. The outermost
+/// call runs the body and then drains a worklist; a call made while a drop is
+/// already running (a child field, an array element) is only queued. Dropping
+/// a 1M-node chain therefore needs two native frames instead of one per node,
+/// whichever field the chain runs through.
+#[no_mangle]
+pub extern "C" fn kryos_drop_call(ptr: i64, f: extern "C" fn(i64)) {
+    let nested = DROP_ACTIVE.try_with(|a| a.replace(true));
+    match nested {
+        Ok(true) => {
+            if DROP_QUEUE.try_with(|q| q.borrow_mut().push((ptr, f))).is_err() {
+                f(ptr);
+            }
+        }
+        Ok(false) => {
+            f(ptr);
+            while let Ok(Some((p, g))) = DROP_QUEUE.try_with(|q| q.borrow_mut().pop()) {
+                g(p);
+            }
+            let _ = DROP_ACTIVE.try_with(|a| a.set(false));
+        }
+        Err(_) => f(ptr),
+    }
+}

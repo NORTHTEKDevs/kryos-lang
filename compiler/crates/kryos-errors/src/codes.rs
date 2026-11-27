@@ -32,6 +32,7 @@ pub const E0110: &str = "E0110"; // type error (general / uncategorized)
 pub const E0111: &str = "E0111"; // integer literal out of range for declared type
 pub const E0112: &str = "E0112"; // non-exhaustive match
 pub const E0113: &str = "E0113"; // generic monomorphization resource limit exceeded
+pub const E0114: &str = "E0114"; // capability-modelled name that is not a callable builtin
 
 // Resolution errors (E02xx)
 pub const E0200: &str = "E0200"; // module path / import could not be resolved

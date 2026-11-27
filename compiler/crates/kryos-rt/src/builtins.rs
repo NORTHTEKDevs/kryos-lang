@@ -768,6 +768,32 @@ pub extern "C" fn kryos_builtin_contains(haystack: i64, needle: i64) -> i64 {
     if haystack == 0 || needle == 0 {
         return 0;
     }
+    // An `any` parameter has no runtime tag, so `contains(a, "x")` with `a: any`
+    // reaches this STRING entry even when the handle is a `[str]` (reading the
+    // array header as a KryosString segfaulted). The two headers differ at byte
+    // 16: a KryosString holds its `data` pointer there (always a real address,
+    // static or heap), a KryosArray holds `elem_size` (a small constant). A
+    // small word there means an array header: test membership by content.
+    // Elements below the same bound cannot be string handles (an int array
+    // asked for a str needle) and never match.
+    const MIN_PTR: i64 = 0x10000;
+    unsafe {
+        let word16 = *((haystack as *const i64).add(2));
+        if word16 < MIN_PTR {
+            let arr = haystack as *const crate::array::KryosArray;
+            let data = (*arr).data as *const i64;
+            let ks_n = needle as *const crate::string::KryosString;
+            for i in 0..(*arr).len.max(0) as usize {
+                let el = *data.add(i);
+                if el >= MIN_PTR
+                    && crate::string::kryos_string_eq(el as *const crate::string::KryosString, ks_n)
+                {
+                    return 1;
+                }
+            }
+            return 0;
+        }
+    }
     let ks_h = haystack as *const crate::string::KryosString;
     let ks_n = needle as *const crate::string::KryosString;
     unsafe { crate::string::kryos_string_contains(ks_h, ks_n) }
@@ -1305,11 +1331,17 @@ pub unsafe extern "C" fn kryos_buf_contents_to_str(handle: i64) -> i64 {
 #[no_mangle]
 pub unsafe extern "C" fn kryos_buf_get_byte(handle: i64, offset: i64) -> i64 {
     let buf = &*(handle as *const KryosBuf);
-    let idx = offset as usize;
-    if idx < buf.data.len() {
-        buf.data[idx] as i64
+    // Out of range PANICS like `arr[i]` does. It used to return -1, a value
+    // indistinguishable from data to any caller that does not test for it.
+    if offset >= 0 && (offset as usize) < buf.data.len() {
+        buf.data[offset as usize] as i64
     } else {
-        -1
+        let msg = format!(
+            "buffer index out of bounds: index {} but length is {}",
+            offset,
+            buf.data.len()
+        );
+        crate::panic::kryos_panic(msg.as_ptr(), msg.len());
     }
 }
 
@@ -1370,6 +1402,15 @@ pub unsafe extern "C" fn kryos_buf_free(handle: i64) {
 pub unsafe extern "C" fn kryos_builtin_exit(code: i64) {
     crate::allocstats::report();
     std::process::exit(code as i32);
+}
+
+/// `abort()` -- terminate the process abnormally (exit status 134, the
+/// SIGABRT convention) without running Kryos-level cleanup. Flushes the
+/// allocation report like `exit` so stdout already written is not lost.
+#[no_mangle]
+pub unsafe extern "C" fn kryos_builtin_abort() {
+    crate::allocstats::report();
+    std::process::exit(134);
 }
 
 // ── Command-line arguments ────────────────────────────────────────

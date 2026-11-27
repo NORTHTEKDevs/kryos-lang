@@ -482,6 +482,15 @@ on a tiny source file. No hand-written program gets near these limits, so
 there's no useful minimal example -- see `kryos explain E0113` for the two
 shapes that do trigger it and how to restructure around each.
 
+### E0114 -- capability-modelled name that is not a callable builtin
+
+`env_set`, `exec` and `spawn_process` are charged the `process` capability
+by the capability model, but none of them is a standalone builtin function,
+so a bare call used to report them as undefined variables (E0102). It now
+reports E0114 and points at `std::process` (the `Command` struct). `env_get`
+and `abort` ARE builtins (`abort()` terminates the process with exit status
+134, ambient like `exit`).
+
 ---
 
 ## Resolution errors (E02xx)

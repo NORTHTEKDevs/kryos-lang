@@ -920,6 +920,7 @@ impl LlvmCodegen {
         self.emit_line("declare i64 @kryos_builtin_file_exists(i64)");
         self.emit_line("declare i64 @kryos_builtin_env_get(i64)");
         self.emit_line("declare void @kryos_builtin_exit(i64)");
+        self.emit_line("declare void @kryos_builtin_abort()");
         self.emit_line("declare i64 @kryos_builtin_args()");
         self.emit_line("declare i64 @kryos_builtin_read_line()");
         self.emit_line("declare i64 @kryos_builtin_http_get(i64)");
@@ -1200,6 +1201,7 @@ impl LlvmCodegen {
         self.emit_line("declare void @kryos_dyn_drop(ptr)");
         self.emit_line("declare ptr @kryos_array_retain(ptr)");
         self.emit_line("declare i64 @kryos_struct_release_shared(ptr)");
+        self.emit_line("declare void @kryos_drop_call(ptr, ptr)");
         // Read-only zero image an unboxed aggregate loads from when its box
         // pointer is null (a map read of a missing key returns 0).
         self.emit_line("@__kryos_zero_box = internal constant [2048 x i64] zeroinitializer");
@@ -2263,6 +2265,19 @@ impl LlvmCodegen {
     // Type drop helpers
     // -----------------------------------------------------------------------
 
+    /// `__kryos_drop_<T>` for a self-reaching type: runs `__kryos_dropb_<T>`
+    /// through the runtime worklist (`kryos_drop_call`).
+    fn emit_drop_wrapper(&mut self, name: &str) {
+        self.emit_line(&format!("define internal void @__kryos_drop_{name}(ptr %p) {{"));
+        self.emit_line("entry:");
+        self.emit_line(&format!(
+            "  call void @kryos_drop_call(ptr %p, ptr @__kryos_dropb_{name})"
+        ));
+        self.emit_line("  ret void");
+        self.emit_line("}");
+        self.emit_blank();
+    }
+
     /// Emit named drop helper functions for struct/enum types with heap fields.
     /// `__kryos_drop_MyStruct(ptr)` recursively frees nested heap fields then
     /// frees the struct/enum allocation. Used by array element drop loops.
@@ -2294,6 +2309,10 @@ impl LlvmCodegen {
                 )
             })
         };
+        // Types that can reach themselves: their `__kryos_drop_<T>` is a thin
+        // wrapper over `kryos_drop_call` (a runtime worklist) and the real body
+        // is `__kryos_dropb_<T>`, so a 1M-deep chain never recurses natively.
+        let rec_types = kryos_mir::ir::recursive_drop_types(&self.struct_defs, &self.enum_defs);
 
         // Struct drop helpers.
         for (name, fields) in &struct_defs {
@@ -2352,6 +2371,8 @@ impl LlvmCodegen {
                 continue;
             }
             self.emit_line(&format!("; Type drop helper for struct {name}"));
+            let wrap = rec_types.contains(name);
+            let drop_name = if wrap { format!("__kryos_dropb_{name}") } else { drop_name };
             self.emit_line(&format!("define internal void @{drop_name}(ptr %ptr) {{"));
             self.emit_line("entry:");
             // Null guard: unlike the enum-drop helpers below (which already
@@ -2422,6 +2443,9 @@ impl LlvmCodegen {
             self.emit_line("  ret void");
             self.emit_line("}");
             self.emit_blank();
+            if wrap {
+                self.emit_drop_wrapper(name);
+            }
         }
 
         // Enum drop helpers.
@@ -2444,8 +2468,22 @@ impl LlvmCodegen {
             // need recursive cleanup. Array-of-enum drop loops call this
             // unconditionally; a missing symbol would break linking.
             let drop_name = format!("__kryos_drop_{name}");
+            // A self-recursive enum (`Cons(i64, L)`) is dropped by a loop, not
+            // by recursion: the last self-typed field of the active variant is
+            // carried to the next iteration through a slot, so a 1M-node list
+            // drops in constant stack instead of overflowing it (A9).
+            let self_rec = has_droppable
+                && variants
+                    .iter()
+                    .any(|v| v.fields.iter().any(|f| matches!(f, MirType::Enum(n) if n == name)));
+            let wrap = has_droppable && rec_types.contains(name);
+            let drop_name = if wrap { format!("__kryos_dropb_{name}") } else { drop_name };
             self.emit_line(&format!("; Type drop helper for enum {name}"));
-            self.emit_line(&format!("define internal void @{drop_name}(ptr %ptr) {{"));
+            if self_rec {
+                self.emit_line(&format!("define internal void @{drop_name}(ptr %ptr_in) {{"));
+            } else {
+                self.emit_line(&format!("define internal void @{drop_name}(ptr %ptr) {{"));
+            }
             self.emit_line("entry:");
 
             if !has_droppable {
@@ -2469,6 +2507,14 @@ impl LlvmCodegen {
 
             let uid = self.temp_counter;
             self.temp_counter += 1;
+            if self_rec {
+                self.emit_line(&format!("  %edrop_slot_{uid} = alloca ptr"));
+                self.emit_line(&format!("  br label %edrop_loop_{uid}"));
+                self.emit_line(&format!("edrop_loop_{uid}:"));
+                self.emit_line(&format!(
+                    "  %ptr = phi ptr [ %ptr_in, %entry ], [ %edrop_nx_{uid}, %edrop_merge_{uid} ]"
+                ));
+            }
             // Shared-ownership bail-out, same as the struct helper. An
             // array-of-enums dup (`T.N([T.Nm(..)])` copies its array payload
             // with kryos_array_dup, kind 4) retains each element BOX, so two
@@ -2492,6 +2538,9 @@ impl LlvmCodegen {
                 self.emit_line(&format!("edrop_ret_{uid}:"));
                 self.emit_line("  ret void");
                 self.emit_line(&format!("edrop_body_{uid}:"));
+            }
+            if self_rec {
+                self.emit_line(&format!("  store ptr null, ptr %edrop_slot_{uid}"));
             }
             let tag_tmp = self.next_temp();
             self.emit_line(&format!("  {tag_tmp} = load i64, ptr %ptr"));
@@ -2537,6 +2586,15 @@ impl LlvmCodegen {
                 ));
 
                 self.emit_line(&format!("{var_label}:"));
+                let defer_fi = if self_rec {
+                    droppable
+                        .iter()
+                        .rev()
+                        .find(|(_, t)| matches!(t, MirType::Enum(n) if n == name))
+                        .map(|(i, _)| *i)
+                } else {
+                    None
+                };
                 for (fi, fty) in &droppable {
                     let offset = fi + 1;
                     let fgep = self.next_temp();
@@ -2575,6 +2633,10 @@ impl LlvmCodegen {
                             self.emit_line(&format!("  {fval} = load ptr, ptr {fgep}"));
                             self.emit_line(&format!("  call void @kryos_arc_release(ptr {fval})"));
                         }
+                        MirType::Enum(_) if defer_fi == Some(*fi) => {
+                            self.emit_line(&format!("  {fval} = load ptr, ptr {fgep}"));
+                            self.emit_line(&format!("  store ptr {fval}, ptr %edrop_slot_{uid}"));
+                        }
                         MirType::Struct(ref n) | MirType::Enum(ref n) => {
                             // Skip a nested field whose type is an UNRESOLVED
                             // generic placeholder (e.g. `Result<U, E>`
@@ -2603,9 +2665,20 @@ impl LlvmCodegen {
             self.emit_line(&format!("  br label %{merge_label}"));
             self.emit_line(&format!("{merge_label}:"));
             self.emit_line("  call void @kryos_free(ptr %ptr)");
+            if self_rec {
+                self.emit_line(&format!("  %edrop_nx_{uid} = load ptr, ptr %edrop_slot_{uid}"));
+                self.emit_line(&format!("  %edrop_more_{uid} = icmp ne ptr %edrop_nx_{uid}, null"));
+                self.emit_line(&format!(
+                    "  br i1 %edrop_more_{uid}, label %edrop_loop_{uid}, label %edrop_end_{uid}"
+                ));
+                self.emit_line(&format!("edrop_end_{uid}:"));
+            }
             self.emit_line("  ret void");
             self.emit_line("}");
             self.emit_blank();
+            if wrap {
+                self.emit_drop_wrapper(name);
+            }
         }
     }
 
@@ -7266,6 +7339,7 @@ impl LlvmCodegen {
                                 "canvas_fill_rect" => "kryos_canvas_fill_rect_ks",
                                 "env_get" => "kryos_builtin_env_get",
                                 "args" => "kryos_builtin_args",
+                                "abort" => "kryos_builtin_abort",
                                 "read_line" => "kryos_builtin_read_line",
                                 "http_get" => "kryos_builtin_http_get",
                                 "http_request" => "kryos_http_request_ks",
@@ -13020,6 +13094,7 @@ fn post_call_exception_check_applies(value: &RValue) -> bool {
                         | "range"
                         | "to_string"
                         | "exit"
+                        | "abort"
                 )
         }
         RValue::CallIndirect { .. } | RValue::VtableCall { .. } => true,

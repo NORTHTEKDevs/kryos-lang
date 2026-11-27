@@ -34,6 +34,7 @@ pub fn explain(code: &str) -> Option<&'static str> {
         "E0111" => Some(E0111),
         "E0112" => Some(E0112),
         "E0113" => Some(E0113),
+        "E0114" => Some(E0114),
         "E0100" => Some(E0100),
         "E0101" => Some(E0101),
         "E0102" => Some(E0102),
@@ -87,6 +88,7 @@ pub fn list() -> Vec<(&'static str, &'static str)> {
         ("E0111", "integer literal out of range for declared type"),
         ("E0112", "non-exhaustive match"),
         ("E0113", "generic monomorphization resource limit exceeded"),
+        ("E0114", "capability-modelled name that is not a callable builtin"),
         ("E0100", "type mismatch"),
         ("E0101", "unknown type"),
         ("E0102", "undefined variable"),
@@ -700,6 +702,23 @@ Fixes:
 
 Exhaustiveness makes adding a new enum variant a compile error at every
 match that must handle it, rather than a silent fall-through at runtime.
+"#;
+
+const E0114: &str = r#"E0114: capability-modelled name that is not a callable builtin
+
+`env_set`, `exec` and `spawn_process` appear in the capability model (they
+need the `process` capability), but they are NOT standalone builtin
+functions, so a bare call to one cannot resolve. (`env_get` and `abort` are
+the builtins in this family.)
+
+    fn main() {
+        exec("echo hi")      // E0114
+    }
+
+Run another program with the `Command` struct from `std::process` (build a
+`Command`, then call `.run()`).
+
+`kryos explain E0102` covers the ordinary undefined-name case.
 "#;
 
 const E0113: &str = r#"E0113: generic monomorphization resource limit exceeded

@@ -1555,6 +1555,12 @@ fn main() { let f = |s| contains(s, "x")
 want_pass contains_any_param_str '
 fn has(a: any, v: str) -> bool { return contains(a, v) }
 fn main() { if not has("axb", "x") { exit(1) } }'
+want_pass contains_any_param_str_array '
+fn has(a: any, v: str) -> bool { return contains(a, v) }
+fn main() {
+  let a = ["x", "y"]
+  let e: [str] = []
+  if not (has(a, "y") and not has(a, "z") and not has(e, "x") and has("axb", "x") and not has("abc", "x")) { exit(1) } }'
 want_reject_e0100 contains_map_wrong_needle '
 fn main() { let m: map<str, i64> = {"a": 1}
   println("{contains(m, 1)}") }'

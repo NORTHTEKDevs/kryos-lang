@@ -44,6 +44,11 @@ use kryos_rt::debug::StopEvent;
 struct DapServer {
     /// Outgoing message sequence counter.
     out_seq: i64,
+    /// The JIT compiler that owns the executable pages and the string-literal
+    /// data `main_ptr` points into. It must outlive the debuggee thread:
+    /// dropping it freed those pages, and on Linux they were reused, so the
+    /// debuggee read garbage literals (use-after-free, A22).
+    jit: Option<kryos_codegen_cranelift::jit::JitCompiler>,
     /// Target program path (from the `launch` request).
     program: Option<String>,
     /// JIT entry-point address for the program's `main`.
@@ -65,6 +70,7 @@ impl DapServer {
     fn new() -> Self {
         Self {
             out_seq: 0,
+            jit: None,
             program: None,
             main_ptr: None,
             instrumented_lines: Vec::new(),
@@ -286,11 +292,24 @@ impl DapServer {
         self.instrumented_lines = lines.into_iter().collect();
 
         // JIT-compile the whole module so cross-function calls resolve.
-        let backend = kryos_codegen_cranelift::CraneliftBackend::new();
-        match backend.jit_compile_module(&mir) {
+        // The compiler is stored on `self` so the code pages outlive the run.
+        let mut jit = match kryos_codegen_cranelift::jit::JitCompiler::new() {
+            Ok(j) => j,
+            Err(e) => {
+                self.send_response(
+                    req_seq,
+                    "launch",
+                    false,
+                    json!({ "error": format!("JIT compilation failed: {e}") }),
+                );
+                return;
+            }
+        };
+        match jit.compile_all_with_module(&mir) {
             Ok(ptrs) => match ptrs.get("main") {
                 Some(&p) => {
                     self.main_ptr = Some(p as usize);
+                    self.jit = Some(jit);
                     self.send_response(req_seq, "launch", true, json!({}));
                 }
                 None => {
@@ -413,8 +432,8 @@ impl DapServer {
         kryos_rt::debug::set_stdout_sink(Some(tx));
         self.output_rx = Some(rx);
 
-        // Move the entry address as a `usize` (Send); the JIT module's code is
-        // leaked on drop (as the REPL also relies on), so it stays valid.
+        // Move the entry address as a `usize` (Send); `self.jit` owns the code
+        // pages and outlives the debuggee thread, so the address stays valid.
         let addr = ptr;
         let handle = std::thread::Builder::new()
             .name("kryos-debuggee".to_string())

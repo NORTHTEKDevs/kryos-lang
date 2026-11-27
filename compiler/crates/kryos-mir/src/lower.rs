@@ -427,6 +427,7 @@ fn is_unwind_source(inst: &Instruction) -> bool {
                         | "range"
                         | "to_string"
                         | "exit"
+                        | "abort"
                         | "malloc"
                         | "calloc"
                         | "free"
@@ -1218,6 +1219,7 @@ pub fn lower_module_with_lambda_params(
         ("buf_write_to_file", MirType::I64),
         ("buf_free", MirType::Void),
         ("exit", MirType::Void),
+        ("abort", MirType::Void),
         ("args", MirType::Array(Box::new(MirType::Str), None)),
         ("trim_start", MirType::Str),
         ("trim_end", MirType::Str),
@@ -1355,6 +1357,63 @@ pub fn lower_module_with_lambda_params(
     ] {
         ctx.builtin_fn_names.insert(name.to_string());
         ctx.func_ret_types.insert(name.to_string(), ret_ty);
+    }
+
+    // Register every non-generic enum's name before any signature resolves.
+    // `resolve_type` tags a named type Enum only when it is already in
+    // `enum_defs`; a function declared ABOVE its enum (`fn mk() -> E` ...
+    // `enum E`) registered its return type as Struct("E"), so the caller's
+    // `let d = mk()` was a struct local and the LLVM backend dropped the
+    // inline enum value through the struct path (ICE: `{ i64, i64 }` used as
+    // ptr). Variant payloads are lowered context-free, so they can be
+    // registered here, ahead of declaration order.
+    //
+    // Generic enums/structs register their TEMPLATE (and the type-erased stub)
+    // here too: `resolve_type` monomorphizes `Opt<str>` only once the template
+    // is known, so `fn mk() -> Opt<str>` declared above `enum Opt<T>` kept a
+    // bare Struct("Opt") return type and the call result read back as a
+    // garbage pointer. The main pre-pass below re-inserts the same entries.
+    for decl in &module.declarations {
+        match decl {
+            ast::Decl::Enum { name, generics, variants, .. } => {
+                if generics.is_empty() {
+                    let variant_defs: Vec<EnumVariantDef> = variants
+                        .iter()
+                        .map(|v| EnumVariantDef {
+                            name: v.name.clone(),
+                            fields: v.fields.iter().map(lower_type_expr).collect(),
+                        })
+                        .collect();
+                    ctx.enum_defs.insert(name.clone(), variant_defs);
+                } else {
+                    ctx.generic_enum_templates.insert(
+                        name.clone(),
+                        GenericEnumTemplate {
+                            generic_params: generics.iter().map(|g| g.name.clone()).collect(),
+                            variants: variants.clone(),
+                        },
+                    );
+                    let stub_defs: Vec<EnumVariantDef> = variants
+                        .iter()
+                        .map(|v| EnumVariantDef {
+                            name: v.name.clone(),
+                            fields: v.fields.iter().map(|_| MirType::I64).collect(),
+                        })
+                        .collect();
+                    ctx.enum_defs.insert(name.clone(), stub_defs);
+                }
+            }
+            ast::Decl::Struct { name, generics, fields, .. } if !generics.is_empty() => {
+                ctx.generic_struct_templates.insert(
+                    name.clone(),
+                    GenericStructTemplate {
+                        generic_params: generics.iter().map(|g| g.name.clone()).collect(),
+                        fields: fields.clone(),
+                    },
+                );
+            }
+            _ => {}
+        }
     }
 
     // Pre-pass: collect struct definitions and function return types so the

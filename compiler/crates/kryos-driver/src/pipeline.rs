@@ -902,7 +902,7 @@ fn compile_source_impl(
     config: &BuildConfig,
     backend: Option<&dyn Backend>,
 ) -> CompileResult {
-    let diagnostics: Vec<Diagnostic> = Vec::new();
+    let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
     // 2. Source map registration
     let mut source_map = SourceMap::default();
@@ -915,12 +915,15 @@ fn compile_source_impl(
         eprintln!("[kryos] lexer: {} tokens from '{file_name}'", tokens.len());
     }
 
-    // 4. Parse
-    let module = match parse(tokens) {
-        Ok(module) => module,
-        Err(parse_errors) => {
+    // 4. Parse. Keep parser WARNINGS (W0001) as well as errors, as the
+    // file-based pipeline does; `parse` drops them on success.
+    let (parsed_module, parse_diags) = parse_with_diagnostics(tokens);
+    diagnostics.extend(parse_diags);
+    let module = match parsed_module {
+        Some(module) => module,
+        None => {
             return CompileResult {
-                diagnostics: parse_errors,
+                diagnostics,
                 source_map,
                 success: false,
                 output_path: None,
@@ -1545,9 +1548,11 @@ pub fn check_source(source: &str, file_name: &str) -> (Vec<Diagnostic>, SourceMa
     let tokens = Lexer::new(source, file_id).tokenize();
 
     // Parse
-    let mut module = match parse(tokens) {
-        Ok(module) => module,
-        Err(parse_errors) => return (parse_errors, source_map),
+    let (parsed_module, parse_diags) = parse_with_diagnostics(tokens);
+    diagnostics.extend(parse_diags);
+    let mut module = match parsed_module {
+        Some(module) => module,
+        None => return (diagnostics, source_map),
     };
 
     // Expand @derive(...) annotations.

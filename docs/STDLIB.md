@@ -133,6 +133,7 @@ type-registry live in `compiler/crates/kryos-mir/src/lower.rs`.
 `buf_len`, `buf_get_byte`, `buf_set_byte`, `buf_patch_i32_le`,
 `buf_patch_i64_le`, `buf_write_to_file`, `buf_free`. These are the raw
 byte-buffer primitives used by codegen back-ends and serialization libs.
+`buf_get_byte` panics on an out-of-range (or negative) offset, like `arr[i]`.
 
 ### 1.9 JSON, crypto, regex
 

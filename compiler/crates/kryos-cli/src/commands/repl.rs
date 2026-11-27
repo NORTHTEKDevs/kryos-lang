@@ -348,6 +348,10 @@ pub fn execute(allow: Vec<String>) -> Result<(), String> {
                         eprintln!("hint: the session's {}", caps_line(&grant));
                     }
                 } else {
+                    // Parser warnings (W0001) survive a successful compile.
+                    for d in result.diagnostics.iter().filter(|d| !d.is_error()) {
+                        eprint!("{}", kryos_errors::render_diagnostic(d, &result.source_map));
+                    }
                     // Compilation succeeded - accumulate into history so
                     // subsequent lines see these definitions/bindings.
                     if is_decl {

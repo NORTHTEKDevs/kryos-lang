@@ -1,0 +1,14 @@
+fn main() {
+    println("literal-01-ok")
+    println("literal-02-ok")
+    println("literal-03-ok")
+    println("literal-04-ok")
+    println("literal-05-ok")
+    println("literal-06-ok")
+    println("literal-07-ok")
+    println("literal-08-ok")
+    println("literal-09-ok")
+    println("literal-10-ok")
+    println("literal-11-ok")
+    println("literal-12-ok")
+}

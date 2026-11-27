@@ -223,6 +223,10 @@ impl JitCompiler {
             kryos_rt::array::kryos_array_free_elems as *const u8,
         );
         jit_builder.symbol(
+            "kryos_drop_call",
+            kryos_rt::alloc::kryos_drop_call as *const u8,
+        );
+        jit_builder.symbol(
             "kryos_array_free_chain",
             kryos_rt::array::kryos_array_free_chain as *const u8,
         );
@@ -1416,6 +1420,10 @@ impl JitCompiler {
             kryos_rt::builtins::kryos_builtin_exit as *const u8,
         );
         jit_builder.symbol(
+            "kryos_builtin_abort",
+            kryos_rt::builtins::kryos_builtin_abort as *const u8,
+        );
+        jit_builder.symbol(
             "kryos_builtin_args",
             kryos_rt::builtins::kryos_builtin_args as *const u8,
         );
@@ -2290,6 +2298,7 @@ fn declare_runtime_builtins<M: Module>(
 
     // --- Utility builtins ---
     decl!("exit", "kryos_builtin_exit", sig(1));
+    decl!("abort", "kryos_builtin_abort", sig(0));
     decl!("len", "kryos_builtin_len", sig(1));
     decl!("to_string", "kryos_builtin_to_string", sig(1));
     decl!("kryos_f64_to_string", "kryos_f64_to_string", sig(1));

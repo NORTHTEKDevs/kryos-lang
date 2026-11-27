@@ -1,0 +1,84 @@
+// Conformance (2026-11-26, finish-line A9 residual): a deep recursive value
+// overflowed the stack at its scope-end drop for every shape the single
+// "iterate the last self-typed field" loop did not cover. Drop helpers of
+// types that reach themselves now run through a runtime worklist, so the
+// field the chain runs through no longer matters. Run on both backends.
+
+// chain through the FIRST child of a two-child enum (left-deep tree)
+enum T { Leaf, Br(T, i64, T) }
+// mutually recursive enums
+enum A { ANil, AC(i64, B) }
+enum B { BNil, BC(i64, A) }
+// enum recursing through a struct
+enum Opt { No, Yes(N) }
+struct N { v: i64, next: Opt }
+// recursion through an array of children
+struct Tree { v: i64, kids: [Tree] }
+// plain list stays correct
+enum L { Nil, Cons(i64, L) }
+
+fn left_deep(n: i64) -> T {
+    let mut t = T.Leaf
+    let mut i = 0
+    while i < n { t = T.Br(t, i, T.Leaf)  i = i + 1 }
+    return t
+}
+
+fn mutual(n: i64) -> A {
+    let mut a = A.ANil
+    let mut i = 0
+    while i < n { a = A.AC(i, B.BC(i, a))  i = i + 1 }
+    return a
+}
+
+fn via_struct(n: i64) -> Opt {
+    let mut o = Opt.No
+    let mut i = 0
+    while i < n { o = Opt.Yes(N { v: i, next: o })  i = i + 1 }
+    return o
+}
+
+fn via_array(n: i64) -> Tree {
+    let mut t = Tree { v: 0, kids: [] }
+    let mut i = 1
+    while i < n { t = Tree { v: i, kids: [t] }  i = i + 1 }
+    return t
+}
+
+fn list(n: i64) -> L {
+    let mut l = L.Nil
+    let mut i = 0
+    while i < n { l = L.Cons(i, l)  i = i + 1 }
+    return l
+}
+
+fn head_t(t: T) -> i64 {
+    match t {
+        T.Leaf => return -1,
+        T.Br(_, v, _) => return v
+    }
+}
+
+fn main() {
+    let a = left_deep(1000000)
+    let b = mutual(500000)
+    let c = via_struct(500000)
+    let d = via_array(300000)
+    let e = list(1000000)
+    if head_t(a) != 999999 {
+        println("CONF FAIL: left-deep head")
+        exit(1)
+    }
+    // drops inside the loop too: each iteration builds and drops a deep value
+    let mut k = 0
+    while k < 3 {
+        let x = left_deep(200000)
+        let y = mutual(100000)
+        if head_t(x) != 199999 {
+            println("CONF FAIL: loop head")
+            exit(1)
+        }
+        k = k + 1
+    }
+    println("conf_recursive_drop_any_shape ok")
+}
