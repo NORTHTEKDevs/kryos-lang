@@ -12343,6 +12343,103 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
             }
         }
     }
+    // The same rule for a whole-subject bind that is NOT the sole arm
+    // (`match mks(i) { "zzz" => .., other => len(other) }`, a guarded `x if g`,
+    // a catch-all after refutable arms) or whose subject is a retained str /
+    // array / map field or element read (`match p.name { s => .. }`): `x`
+    // aliased a call-result / retained-read temporary that nothing owned. The call result goes into an owning local `__ws`, the
+    // match runs on it, and each whole-bind arm takes its OWN reference by an
+    // ordinary `let x = __ws` (a copy retains) with its guard evaluated the same
+    // way; `__ws` is released by the block's scope-end drop on every exit path.
+    let whole_flags: Vec<bool> = arms
+        .iter()
+        .map(|a| {
+            matches!(&a.pattern, ast::Pattern::Ident { name, .. }
+                if find_enum_variant(ctx, name).is_none())
+        })
+        .collect();
+    if (fresh || retained_read) && whole_flags.iter().any(|f| *f) {
+        let sty = infer_expr_type(ctx, subject);
+        // A field / element read is retained only for str / array / map (the
+        // `owned` set below); `let __ws = <read>` is then an ordinary owning
+        // `let` of that read.
+        let readable = fresh
+            || matches!(sty, MirType::Str | MirType::Array(_, _) | MirType::Map { .. });
+        if readable && !is_copy_type(ctx, &sty) && !matches!(sty, MirType::Void) {
+            let ws = format!("__ws_{}", ctx.locals.len());
+            let sspan = subject.span();
+            let ws_ident = ast::Expr::Identifier { name: ws.clone(), span: sspan.clone() };
+            let bind_stmt = |name: &String, mutable: bool, span: &ast::Span| ast::Stmt::Let {
+                name: name.clone(),
+                mutable,
+                ty: None,
+                value: Some(ws_ident.clone()),
+                pattern: None,
+                span: span.clone(),
+            };
+            let new_arms: Vec<ast::MatchArm> = arms
+                .iter()
+                .zip(whole_flags.iter())
+                .map(|(a, is_whole)| {
+                    let ast::Pattern::Ident { name, mutable, span: pspan } = &a.pattern else {
+                        return a.clone();
+                    };
+                    if !*is_whole {
+                        return a.clone();
+                    }
+                    let guard = a.guard.as_ref().map(|g| {
+                        Box::new(ast::Expr::Block {
+                            block: ast::Block {
+                                stmts: vec![
+                                    bind_stmt(name, *mutable, pspan),
+                                    ast::Stmt::Expr { expr: (**g).clone(), span: g.span() },
+                                ],
+                                span: a.span.clone(),
+                            },
+                            span: a.span.clone(),
+                        })
+                    });
+                    let mut stmts = vec![bind_stmt(name, *mutable, pspan)];
+                    match a.body.as_ref() {
+                        ast::Expr::Block { block, .. } => stmts.extend(block.stmts.iter().cloned()),
+                        other => stmts.push(ast::Stmt::Expr { expr: other.clone(), span: other.span() }),
+                    }
+                    ast::MatchArm {
+                        pattern: ast::Pattern::Wildcard { span: pspan.clone() },
+                        guard,
+                        body: Box::new(ast::Expr::Block {
+                            block: ast::Block { stmts, span: a.span.clone() },
+                            span: a.span.clone(),
+                        }),
+                        span: a.span.clone(),
+                    }
+                })
+                .collect();
+            let inner = ast::Expr::MatchExpr {
+                subject: Box::new(ws_ident.clone()),
+                arms: new_arms,
+                span: sspan.clone(),
+            };
+            let block = ast::Expr::Block {
+                block: ast::Block {
+                    stmts: vec![
+                        ast::Stmt::Let {
+                            name: ws,
+                            mutable: false,
+                            ty: None,
+                            value: Some(subject.clone()),
+                            pattern: None,
+                            span: sspan.clone(),
+                        },
+                        ast::Stmt::Expr { expr: inner, span: sspan.clone() },
+                    ],
+                    span: sspan.clone(),
+                },
+                span: sspan,
+            };
+            return lower_expr_to_operand(ctx, &block);
+        }
+    }
     if fresh || retained_read {
         let sty = infer_expr_type(ctx, subject);
         // An enum read out of a struct FIELD (`match h.o { .. }`): the read is a

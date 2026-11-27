@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
-# mem_whole_subject_gate.sh -- peak-RSS gate for `match <call> { x => body }`
-# (LEDGER item A19, 2026-11-26): a sole whole-subject arm owns the call result
-# like `let x = <call>` (tuple, str, array, struct, enum; the value, `return`,
-# escape, push, closure, break and `mut` uses of x). Master at 1M iters: the
-# non-copy legs sit over the ceiling. Double-free direction: no_double_free.sh
-# match_whole_subject. Windows-only (PowerShell PeakWorkingSet64 polling).
-# Skips elsewhere.
+# mem_whole_subject_gate.sh -- peak-RSS gate for a whole-subject bind in a match
+# (LEDGER item A19, 2026-11-26, round 2). `match <call> { x => body }` bound x
+# as an alias of a call-result temporary nothing owned. Now a sole arm owns it
+# like `let x = <call>`, and every other whole-bind arm (a catch-all after
+# refutable arms, a guarded x, a bind of a retained str / array field or element
+# read) takes its own reference from an owning hidden local. Modes: the plain
+# sole-arm legs (tuple str arr struct enum val_tup ret escape push closure brk
+# mut_x), the same bind as a NON-sole arm (ns_*), and the field / element read
+# (fld_*). Master at 1M iters: every leg sits over the ceiling. Double-free
+# direction: no_double_free.sh match_whole_subject. Windows-only (PowerShell
+# PeakWorkingSet64 polling). Skips elsewhere.
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"; cd "$ROOT"
 export KRYOS_STDLIB_DIR="${KRYOS_STDLIB_DIR:-$ROOT/compiler/stdlib}"
@@ -14,7 +18,7 @@ KRYOS="${KRYOS_BIN:-$ROOT/compiler/target/release/kryos}"
 PROBE="$ROOT/tests/mem/whole_subject_leak.kry"
 ITERS=1000000
 CEIL_MB=40
-MODES="tuple str arr struct enum val_tup ret escape push closure brk mut_x"
+MODES="tuple str arr struct enum val_tup ret escape push closure brk mut_x ns_str ns_tup ns_enum ns_arr ns_struct ns_guard ns_val ns_ret ns_escape ns_push ns_closure ns_brk fld_str fld_str_ns fld_arr fld_call"
 
 if ! command -v powershell >/dev/null 2>&1; then
   echo "mem-whole-subject: SKIP (no powershell -- Windows-only, like the other mem_* gates)"

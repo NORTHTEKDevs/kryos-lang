@@ -11161,3 +11161,41 @@ RESIDUAL (executed, NOT covered)
   the explicit block `{ let x = mkt(i)  x.0 }` leaks identically on master, so it is the block-tail field-read defect (A17 family),
   not part of this item. val_str mode exists in the probe and is NOT in the gate.
 - A19 `.ctl` modes and A10-A18 are unchanged by this edit.
+
+## a19 round 2 -- every whole-subject bind of a call result / retained read owns it (2026-11-26, branch closeout/lane-mem)
+
+VERIFIER FINDING (kryos-oracle/lane_wip_2026-11-26/a19_verify1.json, REFUTED round 1): the sole-arm rewrite left the same defect for a
+whole bind that is not the sole unguarded arm: `match mks(i) { "zzz" => .., other => len(other) }` (97MB, same as master), the tuple and enum
+catch-alls (97MB / 51MB), a guarded sole `x if g` (96MB), and a whole bind of a field read.
+
+ROOT CAUSE (lower.rs, `lower_match`): a whole-bind arm binds `x` as an alias of the subject. For a fresh call result (or a retained
+str / array / map field or element read) nothing owns the subject temporary when some arm binds the whole value, so the existing
+`owned && !binds_whole` release is skipped and the temp leaks once per match. Round 1 handled one arm shape; the defect is "a whole bind
+over an unowned subject temporary", independent of arm position or guard.
+
+FIX (one rule, same block family): when the subject is a call (or a retained str / array / map field / element read) and ANY arm is a
+whole bind, the subject goes into an owning hidden local `__ws_N` (`let __ws_N = <subject>`), the match runs on `__ws_N`, and each
+whole-bind arm takes its OWN reference by an ordinary `let x = __ws_N` (a copy retains) in the arm body and in its guard; `__ws_N` is
+released by the enclosing block's scope-end drop on every exit path (fall-through, return, break, continue). Sole unguarded arms keep
+the round-1 `let x = <call>` form. The starting point was the untrusted in-flight patch (kryos-oracle/lane_wip_2026-11-26/mem.patch);
+every line kept was re-verified below, and the retained-read extension is new.
+
+EVIDENCE (executed)
+- tests/mem_whole_subject_gate.sh (now 28 modes x JIT + LLVM AOT, 1M iters, ceiling 40MB): this tree PASS, 56 legs, every leg 3-4MB;
+  master binary (KRYOS_BIN=kryos-co-nov): FAIL on all 56 legs ("leak reintroduced").
+- finish run.sh '^(A19|A19\.ctl)$': PASS A19, PASS A19.ctl.
+- Regression scan: '^(A1[0-9]|A1[0-9]\.ctl|A19|A19\.ctl|leakmode.*|copy-assign-leak.*|137.*|139.*|138.*)$' 43 PASS / 9 FAIL; the 9
+  (A14, A16, A17, leakmode:throw_locals, leakmode:clo_nested_tuple_arr, copy-assign-leak x4) fail identically on the master binary
+  (their fixes were refuted and reverted on this branch). 137-perf PASS x0.650 of master. '^mem:' 379 PASS / 10 FAIL, the same ten
+  documented failures as before the change.
+- Use-after-free / double-free direction: tests/conformance/conf_match_whole_subject.kry extended (catch-all after refutable arms for
+  tuple / str / array / struct / enum, guarded sole arm, guard miss falling to the catch-all, `return x`, `outer = x`, push, closure
+  capture, str field read whole bind) prints PASS on JIT, Cranelift AOT and LLVM AOT, with KRYOS_FREE_DIAG=1 and with real frees, and on
+  master (these shapes leaked, they did not corrupt). tests/no_double_free.sh "all programs clean"; run_conformance.sh 122/122.
+
+RESIDUAL (executed, NOT part of this item; all leak the same with no match involved, or fail on master too)
+- A tuple stored into a struct literal field (`let x = mkt(i)  return H { t: x, tag: "g" }`, and `h.t.1` read with NO match) leaks
+  ~90MB / 1M on AOT, 180MB on JIT: so `match h.t { x => .. }` over a tuple field and `match mkt(i) { x => H { t: x } }` keep that leak.
+- A block tail moving a local into a `let` (`let y = { let p = mkp(i)  p }`) leaks ~96MB / 1M, equal to `let y = match mkp(i) { p => p }`.
+- `match <tuple call> { _ => .. }` fails LLVM AOT codegen ("'%t8' defined with type 'ptr' but expected 'i64'") on this tree AND master.
+- Whole bind over a tuple / struct / enum FIELD read is not rewritten (only str / array / map reads are retained by the read).
