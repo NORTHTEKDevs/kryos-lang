@@ -3685,8 +3685,16 @@ impl LlvmCodegen {
         // as a single LLVM module so internal linkage doesn't break cross-fn
         // references.
         let linkage = if name == "main" { "" } else { "internal " };
+        // A user function that shares a name with a C library function
+        // (`sin`, `cos`, `pow`, `abs`, ...) with the same signature is
+        // recognised by LLVM as that libfunc and its calls are constant
+        // folded / simplified to the REAL libm result (`fn sin(x) { return
+        // 42.0 }` then `sin(1.0)` printed 0.8414... on AOT, 42 on JIT).
+        // `nobuiltin` on the definition stops LLVM treating it as a library
+        // builtin; it is a no-op for every name that is not a libfunc.
+        let no_builtin = if name == "main" { "" } else { " nobuiltin" };
         self.emit_line(&format!(
-            "define {linkage}{ret} @{name}({params}){dbg_suffix_for_define} {{"
+            "define {linkage}{ret} @{name}({params}){no_builtin}{dbg_suffix_for_define} {{"
         ));
 
         // Detect TCO loops: if any other block branches back to bb0, we must
@@ -11380,7 +11388,7 @@ impl LlvmCodegen {
     /// Emit an identity copy that works for any LLVM type (not just integer types).
     /// For `ptr` types, uses `getelementptr i8, ptr {val}, i64 0` instead of
     /// the illegal `add ptr {val}, 0`.
-    /// For `double` types, uses `fadd double {val}, 0.0`.
+    /// For `double` types, uses `fadd double {val}, -0.0` (x + -0.0 == x for every x incl. -0.0; +0.0 would flip -0.0 to +0.0).
     /// For integer types, uses `add {ty} {val}, 0`.
     fn emit_identity_copy(&mut self, target: &str, ty: &str, val: &str) {
         if ty == "ptr" {
@@ -11393,7 +11401,7 @@ impl LlvmCodegen {
             self.emit_line(&format!("  {target} = getelementptr i8, ptr {val}, i64 0"));
             self.track_type(target, "ptr");
         } else if is_float_type(ty) {
-            self.emit_line(&format!("  {target} = fadd {ty} {val}, 0.0"));
+            self.emit_line(&format!("  {target} = fadd {ty} {val}, -0.0"));
             self.track_type(target, ty);
         } else if ty.starts_with('%') || ty.starts_with('{') {
             // Named struct types and inline aggregate types do not support

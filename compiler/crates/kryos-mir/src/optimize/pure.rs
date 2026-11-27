@@ -23,12 +23,7 @@ use crate::ir::{Instruction, LocalId, MirModule, Operand, RValue};
 /// Gathers the set of `@pure` functions, then runs CSE and dead-pure-call
 /// removal on every function.
 pub fn optimize_pure(module: &mut MirModule) {
-    let pure_fns: HashSet<String> = module
-        .functions
-        .iter()
-        .filter(|f| f.attributes.pure_fn)
-        .map(|f| f.name.clone())
-        .collect();
+    let pure_fns = verified_pure_fns(module);
 
     if pure_fns.is_empty() {
         return;
@@ -39,6 +34,153 @@ pub fn optimize_pure(module: &mut MirModule) {
         cse_pure_calls(func, &pure_fns);
     }
     remove_dead_pure_calls(module, &pure_fns);
+}
+
+// ---------------------------------------------------------------------------
+// Purity verification
+// ---------------------------------------------------------------------------
+
+/// The `@pure` annotation is a promise the type checker only partly enforces
+/// (it restricts which functions may be CALLED, but a `@pure` body may still
+/// `push` onto a parameter array or assign a module-level `let mut`). Trusting
+/// the annotation let release AOT delete the call to such a function, dropping
+/// its mutation (`len=1 counter=0` instead of `len=2 counter=1`). So the
+/// optimizer only acts on `@pure` functions whose MIR body is *verified*
+/// effect-free: every call goes to a verified-pure function or a builtin that
+/// reads without writing, and every store targets a locally built aggregate.
+fn verified_pure_fns(module: &MirModule) -> HashSet<String> {
+    let mut verified: HashSet<String> = module
+        .functions
+        .iter()
+        .filter(|f| f.attributes.pure_fn)
+        .map(|f| f.name.clone())
+        .collect();
+    // Greatest fixpoint: drop a function whose body is impure given the
+    // current set, repeat until nothing changes (handles pure -> impure
+    // helper chains and mutual recursion between pure functions).
+    loop {
+        let drop_now: Vec<String> = module
+            .functions
+            .iter()
+            .filter(|f| verified.contains(&f.name) && !body_is_effect_free(f, &verified))
+            .map(|f| f.name.clone())
+            .collect();
+        if drop_now.is_empty() {
+            return verified;
+        }
+        for n in drop_now {
+            verified.remove(&n);
+        }
+    }
+}
+
+/// Builtins / runtime helpers that only read their arguments (or allocate a
+/// fresh result) and never write through them or to global state.
+fn is_read_only_builtin(name: &str) -> bool {
+    matches!(
+        name,
+        "len" | "range" | "to_string" | "typeof" | "sizeof" | "min" | "max" | "min_f" | "max_f"
+            | "abs" | "abs_f" | "sqrt" | "pow" | "floor" | "ceil" | "round" | "log" | "log2"
+            | "log10" | "sin" | "cos" | "tan" | "contains" | "keys" | "values" | "split" | "trim"
+            | "starts_with" | "ends_with" | "to_upper" | "to_lower" | "char_at" | "substring"
+            | "parse_int" | "parse_float"
+            | "kryos_global_get" | "kryos_struct_share" | "kryos_array_get"
+            | "kryos_array_contains" | "kryos_map_get" | "kryos_map_get_str"
+            | "kryos_map_keys" | "kryos_map_keys_str" | "kryos_map_values"
+            | "kryos_map_values_str" | "kryos_map_contains" | "kryos_map_contains_str"
+    )
+}
+
+/// Builtins that mutate their FIRST argument. Allowed only on a locally built
+/// (fresh) aggregate, never on a parameter, a global, or an alias of either.
+fn is_first_arg_mutator(name: &str) -> bool {
+    matches!(
+        name,
+        "push" | "pop" | "kryos_array_set" | "kryos_map_insert" | "kryos_map_insert_str"
+    )
+}
+
+/// Locals that provably hold a fresh aggregate owned by this function: not a
+/// parameter, and every assignment to them is a constructor (array literal,
+/// struct, tuple, map, enum variant, string concat). A `Use` of another local
+/// (an alias of a parameter or global) disqualifies it.
+fn fresh_locals(func: &crate::ir::MirFunction) -> HashSet<u32> {
+    let mut candidates: HashSet<u32> = HashSet::new();
+    let mut tainted: HashSet<u32> = func.params.iter().map(|p| p.local.0).collect();
+    for block in &func.blocks {
+        for inst in &block.instructions {
+            if let Instruction::Assign { dest, value } = inst {
+                match value {
+                    RValue::Array(_)
+                    | RValue::Tuple(_)
+                    | RValue::Struct { .. }
+                    | RValue::Map(_)
+                    | RValue::EnumVariant { .. }
+                    | RValue::StringConcat(_) => {
+                        candidates.insert(dest.0);
+                    }
+                    _ => {
+                        tainted.insert(dest.0);
+                    }
+                }
+            }
+        }
+    }
+    candidates.retain(|c| !tainted.contains(c));
+    candidates
+}
+
+fn body_is_effect_free(func: &crate::ir::MirFunction, verified: &HashSet<String>) -> bool {
+    let fresh = fresh_locals(func);
+    let is_fresh = |op: &Operand| matches!(op, Operand::Local(id) if fresh.contains(&id.0));
+    for block in &func.blocks {
+        for inst in &block.instructions {
+            match inst {
+                Instruction::Assign { value, .. } => {
+                    if !rvalue_is_effect_free(value, verified, &is_fresh) {
+                        return false;
+                    }
+                }
+                Instruction::StoreField { object, .. } => {
+                    if !is_fresh(object) {
+                        return false;
+                    }
+                }
+                Instruction::StoreDeref { .. }
+                | Instruction::Send { .. }
+                | Instruction::Receive { .. }
+                | Instruction::Spawn { .. }
+                | Instruction::ActorSpawn { .. }
+                | Instruction::ActorSend { .. }
+                | Instruction::ActorStateLoad { .. }
+                | Instruction::ActorStateStore { .. } => return false,
+                Instruction::ArcRetain { .. }
+                | Instruction::ArcRelease { .. }
+                | Instruction::Drop { .. }
+                | Instruction::DropIfNe { .. }
+                | Instruction::Nop
+                | Instruction::DebugLine(_) => {}
+            }
+        }
+    }
+    true
+}
+
+fn rvalue_is_effect_free(
+    rv: &RValue,
+    verified: &HashSet<String>,
+    is_fresh: &dyn Fn(&Operand) -> bool,
+) -> bool {
+    match rv {
+        RValue::Call { func, args } => {
+            verified.contains(func.as_str())
+                || is_read_only_builtin(func)
+                || (is_first_arg_mutator(func) && args.first().is_some_and(|a| is_fresh(a)))
+        }
+        RValue::CallIndirect { .. } | RValue::VtableCall { .. } => false,
+        RValue::Comptime(inner) => rvalue_is_effect_free(inner, verified, is_fresh),
+        _ => true,
+    }
 }
 
 // ---------------------------------------------------------------------------

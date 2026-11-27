@@ -76,10 +76,13 @@ enum Commands {
         #[arg(short = 'g', long)]
         debug_info: bool,
 
-        /// Enable the cross-build artifact cache. Identical source +
-        /// (target, mode, output_type, compiler version) tuples reuse a
-        /// previously produced binary without rerunning the pipeline. The
-        /// cache lives under `$KRYOS_CACHE_DIR` (or `$XDG_CACHE_HOME/kryos`,
+        /// Enable the cross-build artifact cache. Every build still parses
+        /// and checks the program (including the capability check in this
+        /// build's mode); the cache is consulted only after that accepts it,
+        /// and a hit reuses the compiled output instead of generating code
+        /// again. The key covers the source, every module file read, target,
+        /// mode, output type and compiler version. The cache lives under
+        /// `$KRYOS_CACHE_DIR` (or `$XDG_CACHE_HOME/kryos`,
         /// `$HOME/.cache/kryos`). Disable with --no-cache.
         #[arg(long)]
         cache: bool,

@@ -10381,3 +10381,255 @@ entries above stay as history; their items remain open.
 - Fix: removed the `release:` trigger (workflow_dispatch only), tag now comes from the dispatch input only, header rewritten to state why there is no release trigger. Files: .github/workflows/publish-vscode.yml, tests/publish_vscode_trigger_gate.sh (new, wired into tools/loop/kryos-loop.sh).
 - Evidence both ways: `run.sh -j 2 --only '^(A23)$'` FAIL on this tree before the edit ("release:" still present) and on the master tree (stale "fires automatically" text); PASS after. tests/publish_vscode_trigger_gate.sh: rc=1 on the master tree and on the pre-fix HEAD copy, rc=0 here.
 - NOT covered: no real tag was cut, so a workflow_call from release.yml (automatic publishing) was never executed; publishing stays manual. The earlier unverified crash.patch (mem_readable probe for `contains`) was not applied and is unrelated to A23.
+
+### num lane: finish-line item `6` (`let x: any = "hi"; println(to_string(x))`) -- narrow shape CLOSED (2026-11-25)
+
+Root cause (read, not guessed): `any` resolves to `Type::Error` in the checker
+and `MirType::I64` in `lower_type_expr`; the `let` slot took the ANNOTATION's
+type, so a `str` initializer was stored in an i64 slot. `to_string(_0)` then
+printed the raw pointer on the JIT and the LLVM module failed in clang
+(`'%_0' defined with type 'ptr' but expected 'i64'`).
+Fix: an IMMUTABLE, non-destructuring `let x: any = <v>` whose initializer has a
+concrete non-integer/bool/float type keeps that type for the binding. Checker
+(`kryos-types/src/check.rs`, Stmt::Let) binds the concrete type and records it in
+`resolved_let_types`; MIR (`kryos-mir/src/lower.rs`, Stmt::Let) uses the
+recorded type instead of `i64` when the annotation is `any`/`Any`.
+Pin: tests/conformance/conf_any_let_concrete.kry (master: JIT `CONF FAIL: to_string
+of an any-annotated str literal`, AOT clang error; here: both backends pass).
+Evidence: run.sh --only '^(6|6\.ctl)$' PASS/PASS; conformance 121/121; diagnostics_gate
+and backend_divergence_pins PASS; 98-item `any`/swa-payload family scan: no item
+that passed on master fails here.
+NOT covered (executed, still wrong): `let mut m: any = "s"; to_string(m)` still prints
+the pointer on the JIT (a mut binding can be reassigned to another type, so it keeps
+the erased i64); an `any`-typed fn PARAMETER or `[any]` element holding a str still has
+no tag (the item-6 ABI design note above is unchanged); `let x: any = <int>` is
+unchanged (already i64-shaped). A real tagged `any` remains the only general fix.
+
+
+### num lane: finish-line item `6` second pass (verifier REFUTED 9428ba32 as let-binding-only) -- `str` into every top-level `any` slot now rejected (2026-11-26)
+
+Verifier findings reproduced on the 9428ba32 build before touching anything (JIT):
+`fn show(a: any)` called with a str, `fn pick(b: bool) -> any` returning str literals,
+and `let mut m: any = "s"` all printed a raw pointer; nothing rejected them (an f64
+into `any` is already E0110). Root cause is unchanged: `any` erases to a bare i64 with
+no tag, so a `str` stored in any `any` slot other than the one immutable `let` that the
+first pass refined cannot be read back (`to_string` / `println` / interpolation print
+the pointer; the AOT fails in clang on the ptr/i64 mismatch). A tagged `any` is the only
+way to make those shapes WORK; this pass takes the other documented option (E0110, same
+as items 24 / 40 / 40b) so they are no longer silent wrong answers.
+Fix (`kryos-types/src/check.rs`, one new helper `reject_str_into_any_slot` that fires
+only when a CONCRETE `str` meets the `any` sentinel `Type::Error`): rejected with E0110 at
+a free-fn / method / closure parameter, a `-> any` return, a `let mut x: any = <str>`,
+an assignment into an `any` slot, an `any`-typed struct field, and a `let a: [any] = [<str>]`
+annotation. User-fn and let-closure parameters annotated literally `any` are tracked in
+`any_annotated_params` (the resolved sig only holds the shared `Type::Error`, which a
+polymorphic builtin param also is, so the builtin `println("x")` etc. are untouched).
+One deliberate exemption, kept because `type_soundness.sh` pins it (`contains_any_param_str`,
+fa16e134): a free fn whose `any` param is used ONLY as the haystack of `contains(p, ..)`
+(`any_str_safe_params`, decided from the body's Debug rendering, fails closed). The
+immutable `let x: any = <str>` from 9428ba32 is unchanged (keeps its concrete type).
+WIP: the saved cut-off patch (kryos-oracle/lane_wip_2026-11-25/num.patch) was applied,
+re-verified, and extended (closure params, contains exemption after it broke
+`contains_any_param_str`).
+Pins (tests/type_soundness.sh, 10 new probes + 1 no-cascade): master binary
+(KRYOS_BIN=kryos-co-nov) reports 18 probes FAILED incl. all 10 new HOLEs; this tree:
+"type-soundness: all probes correct". Evidence: `kryos check` over all 1875 tracked .kry
+files: zero `cannot store a ... any` diagnostics (no repo program changes output, so
+nothing added to closeout_targets.txt); 98-item any/swa family scan identical to before
+(83 PASS, the same 15 pre-existing swa:attacks FAIL); run.sh --only '^(6|6\.ctl)$' PASS/PASS.
+NOT covered (not executed or known still open): a str inside a struct/enum/Option/Result payload typed `any`
+(stdlib `result::ok(val: any)` with a str now E0110 at the call; `Result` payload shapes are
+the swa lane's); `any` via a generic / trait-method return; method-call `a.contains(x)` on
+an `any` param is NOT exempt (rejected); a closure bound with `let f = fn(a: any)` and then
+re-bound/passed around as a value loses the name-keyed check; non-str, non-i64 payloads (arrays/structs
+in an `any` param/return) were NOT probed in this pass. A real tagged `any` remains the only general fix.
+
+6: REOPENED -- fix refuted by verifier
+Verifier findings: item 6 passes run.sh and the pin test fails on master and passes on the tree, but the fix is too narrow (a str tail of an `-> any` lambda is only caught with an explicit `-> any` annotation).
+Residual shapes (all pass `kryos check` and print a raw pointer under `kryos run`):
+- lambda with no annotation whose `any` return comes from its expected type: `let f: fn() -> any = fn() { "hi" }; let x: any = f(); println(to_string(x))` (also on master)
+- lambda passed to a `fn() -> any` parameter: `fn run(f: fn() -> any) { let x: any = f(); println(to_string(x)) }  fn main() { run(fn() { "hi" }) }`
+- str through a struct field holding a `fn(any)`: `struct H { f: fn(any) }`, then `h.f("yo")`
+- str to a returned closure: `fn mk() -> fn(any) { fn(a: any) { println(to_string(a)) } }  fn main() { mk()("yo") }`
+- `fn pick() -> [any] { ["hi"] }  fn main() { println(to_string(pick()[0])) }`
+- `fn f() -> i64 { "hi" }  fn main() { println(to_string(f())) }` (tail never unified with the declared return type)
+
+A4: invalid UTF-8 digest/base64 input treated as empty -- FIXED (num lane)
+Root cause: `handle_to_str` (kryos-stdlib-native/src/bindings.rs) returns "" for any string whose
+bytes are not valid UTF-8. `substr("café", 0, 4)` splits the 2-byte `é`, yielding bytes `caf\xC3`
+(len 4); `sha256`, `sha512`, `sha1_hex`, `sha1_base64`, `hmac_sha256` (key and data),
+`pbkdf2_sha256` (password) and `base64_encode` all read it through `handle_to_str`, so they hashed /
+encoded the EMPTY string (`sha256(a) == sha256("")` was true, `base64_encode(a)` was "") on both
+JIT and AOT (shared runtime). Fix: new `handle_to_raw` (the raw byte slice) used by those digest/MAC/
+KDF inputs; `base64_encode_ks` keeps its codepoint-as-byte (latin-1) model for the valid runs and
+takes each invalid byte raw (same unit model `byte_at` uses), so valid strings are byte-identical
+to before (`base64_encode("café")` is still `Y2Fm6Q==`) and `caf\xC3` gives `Y2Fmww==`.
+Files: compiler/crates/kryos-stdlib-native/src/bindings.rs, tests/invalid_utf8_digest_pin.{kry,sh}.
+Evidence: run.sh --only '^(A4)$' FAIL on the previous build (`stdout=true\n[]\n4\n want false\n[Y2Fmww==]\n4\n`),
+PASS after. Pin tests/invalid_utf8_digest_pin.sh (JIT + AOT, 9 lines incl. sha256/sha1/sha512/hmac
+against python hashlib/hmac values): master binary FAIL both backends (empty-string digests,
+empty base64), this tree ok both. Regression scan (A*, M2-M7, NaN-neg0, libm-constfold,
+buf_get_byte-sentinel, 6, 6.ctl) diffed master-vs-tree: zero PASS->FAIL, A4 flips to PASS.
+NOT covered (not executed): other `handle_to_str` readers still collapse invalid UTF-8 to "" (regex
+find/replace/split, http bodies, ed25519 sign/verify message, hex/b64url converters take text
+input by design); `base64_decode` of bytes >= 0x80 still produces latin-1 codepoints, not raw
+bytes (existing documented model); string `==`/`len` on invalid strings were not re-probed.
+
+## a4: REOPENED -- fix refuted by verifier
+
+Verifier findings:
+- Step 1 passed: run.sh -j 2 --only "^(A4)$" printed PASS A4 (kryos 1.3.0).
+- Step 2 passed: diff touched only bindings.rs (sign/verify handle_to_str -> handle_to_raw), the new pin .kry/.sh, and LEDGER.md; no test or gate weakened; correct for ed25519.
+- Step 4 passed: tests/invalid_utf8_ed25519_pin.sh ok on JIT and AOT; fails on master binary.
+- Step 3: ed25519 sign/verify, hmac keys, pbkdf2 and digests fixed; nested calls, loops, concatenated invalid strings correct on JIT and AOT.
+- REFUTED on residual: other handle_to_str consumers still treat invalid UTF-8 as the empty string (the exact defect A4 names). The fix is per-consumer (second patch after digests); handle_to_str still returns "" on invalid UTF-8 (bindings.rs line 36). With a = substr("café",0,4): regex_match(regex_new("caf"), a) is false though a contains caf; regex_match(regex_new("^$"), a) is true for a 4-byte non-empty string. Same on master. Wrong answer, not the loud UTF-8 error A4 accepts.
+
+Residual shapes:
+- @capabilities(crypto) fn main(){ let a = substr("café",0,4); let re = regex_new("^$"); println("{regex_match(re, a)}") } prints true on tree and master; expected false or loud UTF-8 panic.
+- Same with regex_new("caf") prints false; expected true.
+- Not run, uncovered: regex_find, regex_replace_all, http request body/url/headers, dom/alert readers (all handle_to_str).
+- contains(a,"caf") panics loudly with a UTF-8 error (acceptable); regex builtins are inconsistent with it.
+
+Item result: A4 oracle PASS and ed25519 pin ok on JIT and AOT (fails on master), but regex_match still collapses invalid-UTF-8 text to "", so the per-consumer fix leaves same-class residuals: REFUTED. The fix commit 2820ba7e was reverted.
+
+## NaN-neg0-divergence: AOT identity copy flipped -0.0, JIT/AOT sorted NaN differently
+
+Root causes (two, both read in the code, not guessed):
+1. LLVM `emit_identity_copy` for f64/f32 emitted `fadd x, 0.0`. IEEE: -0.0 + +0.0 = +0.0, so any
+   float local copy (`parse_float("-0.0")` result moved into a local) lost its sign and
+   `1.0 / z` printed `inf` on AOT (JIT: `-inf`). `x + -0.0 == x` for every x incl. -0.0, so the
+   identity is now `fadd x, -0.0` (the same idiom lines ~7758/7800/9365 already use).
+2. `kryos_builtin_sort_f64` used bare `f64::total_cmp`, which orders by sign bit: -NaN before
+   everything, +NaN after. `0.0 / 0.0` is -NaN when the CPU computes it (JIT) and +NaN when LLVM
+   folds it (AOT), so `sort([3.0, 0.0/0.0, 1.0, 2.0])` gave `[NaN, 1, 2, 3]` vs `[1, 2, 3, NaN]`.
+   Comparator now puts every NaN last regardless of sign bit; non-NaN keeps total_cmp (-0.0 < +0.0).
+Files: compiler/crates/kryos-codegen-llvm/src/codegen.rs, compiler/crates/kryos-rt/src/builtins.rs,
+tests/nan_neg0_pin.{kry,sh}.
+Both-ways evidence: run.sh --only '^(NaN\-neg0\-divergence)$' FAIL before (`JIT/AOT diverge:
+jit=[NaN, 1, 2, 3] aot=[1, 2, 3, NaN]`, and AOT `inf`), PASS after. tests/nan_neg0_pin.sh: master binary FAIL
+both JIT (NaN first) and AOT (`inf`, NaN first), this tree ok both. Regression scan (A*, M2-M7, 6, 6.ctl,
+libm-constfold, buf_get_byte-sentinel, 135/136/138, abort-undefined, turbofish-struct) master-vs-tree diffed: zero
+PASS->FAIL; 6, A1, A2, A4, M3 and NaN-neg0 flip to PASS (the rest fail identically on both).
+NOT covered (not executed): NaN SIGN BIT itself still differs JIT vs AOT for `0.0/0.0` (observable only via
+bit casts or `copysign`-style code, not via print/sort/compare); `sort_by`/`min`/`max`/`group_by` over f64 with
+NaN were not probed; f32 arrays routed to sort_f64 were not probed; the unverified num.patch in
+kryos-oracle/lane_wip (any-slot str rejection) was NOT applied.
+
+## libm-constfold: AOT constant-folded a user fn named like a libm function to the real libm result
+
+Root cause (read in the emitted IR, not guessed): `fn sin(x: f64) -> f64 { return 42.0 }` is emitted as
+`define internal double @sin(double %_0)`. LLVM's TargetLibraryInfo recognises any function NAMED `sin` with
+the libm signature as the C library `sin`, so `sin(1.0)` was constant folded to 0.8414709848078965 even though
+the module defines its own body (JIT ran the user body and printed 42). `clang -O2` on the dumped .ll
+reproduced it; adding `nobuiltin` to the define made it fold to 42.0.
+Fix: emit_function_as in kryos-codegen-llvm now writes `nobuiltin` on every non-`main` user function
+definition (attribute is a no-op for names that are not libfuncs).
+Files: compiler/crates/kryos-codegen-llvm/src/codegen.rs, tests/libm_user_fn_pin.{kry,sh}.
+Both-ways evidence: run.sh --only '^(libm\-constfold)$' FAIL before (`aot run 1/1: stdout=0.8414709848078965\n want 42\n`),
+PASS after. tests/libm_user_fn_pin.sh (user sin/cos/sqrt/floor/exp/pow, JIT + AOT): master binary FAIL AOT
+(got 0.84.., 0.54.., 2, 2, 2.718.., 8), this tree ok both. Regression scan (A*, M2-M7, 6, 6.ctl, NaN-neg0,
+buf_get_byte-sentinel, 135/136/137/138/139, B*, 41, B-latent-intrinsics, abort-undefined, turbofish-struct)
+run.sh master-vs-tree: zero PASS->FAIL; 6, A1, A2, A4, M3, NaN-neg0, libm-constfold flip to PASS (earlier lane commits + this).
+NOT covered (not executed): other libc names (abs, fabs, memcpy, strlen, printf) defined as user fns with
+a matching signature; user fns reached through spawn/actor thunks or fn pointers under these names;
+`--emit-llvm`-text consumers or cargo unit tests asserting the exact `define` line (only substring
+`contains` assertions exist in crates/kryos-codegen-llvm/tests and were not re-run, cargo not allowed).
+The unverified num.patch (any-slot str rejection) was NOT applied.
+
+## A20: JIT `let mut u = t` on a tuple shared the heap handle, so `u.0 = 7` also changed `t.0`
+
+Root cause (read in kryos-mir lower.rs `Stmt::Let`, not guessed): for `let u = t` with `t` a tuple the lowering took the
+"share" branch (`pending_let_share` -> `emit_struct_share`), i.e. both names hold ONE heap tuple with a bumped
+refcount. The struct branch right above it deep-clones (`__kryos_struct_index_clone`), the tuple branch did not, so a
+field write through either name was visible through the other on the Cranelift JIT (AOT already produced a copy).
+Fix: when the new binding is `mut`, or the source local is `mut`, a tuple `let` from a local now builds its own tuple
+with `emit_tuple_clone` (elements retained, nested tuples cloned) instead of sharing. Immutable-from-immutable keeps the
+cheap share (nothing can write through either name).
+Files: compiler/crates/kryos-mir/src/lower.rs, tests/tuple_value_copy_pin.{kry,sh}.
+Both-ways evidence: run.sh --only '^(A20)$' FAIL before (`stdout=q.n=1 r.n=9\nt.0=7 u.0=7\n want ...t.0=1 u.0=7`), PASS after.
+tests/tuple_value_copy_pin.sh (src-mut, dst-mut, nested, param copy, loop, both-mut): master binary FAIL on JIT (aliased
+values 5/5, 7z/7z, 9/9, 107/107, ...), this tree ok on JIT and AOT. Regression scan: run.sh over A1 A2 A3 A4 A5 A6 A7 A8 A9 A21-A23
+M1 M2 M3 M6 M7 6 NaN-neg0 libm-constfold bare-result-option master-vs-tree: every item failing here fails on master
+too, zero PASS->FAIL; `^mem:(attacks|closure)[-:/]` (388 rows) PASS/FAIL set identical to master (222 PASS each);
+tests/backend_divergence_pins.sh PASS.
+NOT covered (not executed): a tuple copy that is not a bare-local `let` (`let mut u = arr[0]`, `let mut v = s.t`,
+`let mut w = m[k]` of a tuple, reassignment `u = t`, a tuple stored into a struct/array then mutated through one holder);
+a `mut` tuple PARAMETER written inside the callee while the caller keeps its name; closure capture of a mut tuple.
+The unverified num.patch (any-slot str rejection) was NOT applied.
+
+## M6: `u8 << i64` was typed i64 by the MIR, so 1 << 9 printed 512 instead of wrapping to 0
+
+Root cause (read in kryos-mir lower.rs `infer_expr_type`, BinaryOp arm; not guessed): the type checker accepts a shift
+whose count has a different integer width, but the MIR typed EVERY non-comparison binary op through `wider_int_type(l, r)`.
+For `b << k` (b: u8, k: i64) that ranked the COUNT's width in, so the result temp was an i64 slot and the unwrapped 512
+leaked, whether consumed directly (`to_string(b << k)`), through `let r = b << k`, or in a compare. Only `let r2: u8 = ...`
+(narrow store) masked it. A shift's result type is the type of the value being shifted; the count never promotes it.
+Fix: in `infer_expr_type`, `Shl`/`Shr` with a narrow-int (i8/i16/i32/u8/u16/u32) left operand and an integer right operand
+return the LEFT type. The codegen already reduces an i64-computed value to the narrow dest slot (same path `u8 + u8` uses).
+Files: compiler/crates/kryos-mir/src/lower.rs, tests/narrow_shift_pin.{kry,sh}.
+Both-ways evidence: run.sh --only '^(M6)$' FAIL before (`stdout=512\n512\n0\n144\n144\n-2147483648\n44\n want 0\n0\n0\n...`),
+PASS after (JIT and AOT). tests/narrow_shift_pin.sh (u8<<i64, u16, u32, i32 wrap, u8>>i64, i64<<u8, compare on the result):
+master binary FAIL on JIT and AOT (got 512, 512, 0, 80000, 8000000000, 2147483648, ..., big, big), this tree ok on both.
+Regression scan: run.sh --only over A1 A2 A2.ctl A20 A5 A6 A8 M1 M3 M6 NaN-neg0 libm-constfold: A5/A6/A8 fail identically on
+master (pre-existing, other lanes), everything else PASS; tests/backend_divergence_pins.sh, nan_neg0_pin, libm_user_fn_pin,
+tuple_value_copy_pin PASS; all 35 repo .kry files containing a shift run identically master-vs-tree except two examples
+whose output is nondeterministic (random websocket key, live localhost probe).
+NOT covered (not executed): a shift whose LEFT operand is an integer literal or i64/u64 with a narrow count (already
+left-typed i64, unchanged); i128/u128 shifts; compound `<<=` / `>>=` assignment forms; shifts on narrow fields/array
+elements/tuple elems read through paths other than a plain local or expression; signed narrow `>>` of a negative value
+with a wider count beyond what sh_c exercised (i8 -8 >> 1 = -4 only); a count >= the narrow width other than 9 on u8.
+The unverified num.patch (any-slot str rejection in the type checker) was NOT applied: it does not touch shifts.
+
+## M2: release AOT deleted the call to a `@pure` fn that mutates (`len=1 counter=0` instead of `len=2 counter=1`)
+
+Root cause (read in kryos-mir `optimize/pure.rs` + kryos-types `check_pure_free_call`; not guessed): `optimize_pure` trusted the
+`@pure` attribute outright (`pure_fns` = every fn with `attributes.pure_fn`) and then CSE-merged / dead-call-deleted calls to them.
+The type checker only restricts what a `@pure` body may CALL, and it even lists `push`/`pop` as side-effect-free; it never forbids
+`counter = counter + 1` on a module `let mut` (MIR `kryos_global_set`) or `push(param, ..)`. So `bump(xs)` with an unused result was
+removed in the release pipeline, dropping both mutations. JIT does not run the pass, hence the JIT/AOT split. (THREAT-MODEL B7 documents
+that `@pure` does not forbid mutation; the fix keeps that documented behaviour and makes the optimizer sound instead of rejecting.)
+Fix: `verified_pure_fns` in pure.rs. A `@pure` fn is optimizable only if its MIR body is verified effect-free (greatest fixpoint, so a
+pure fn calling a non-verified one is dropped too): calls only to verified-pure fns or a read-only builtin whitelist; mutating builtins
+(`push`, `pop`, `kryos_array_set`, `kryos_map_insert*`) and `store_field` only on a FRESH local (non-param, every assignment a
+constructor, so never an alias of a parameter/global); no `kryos_global_set`, `store_deref`, send/spawn/actor ops, indirect/vtable calls.
+Files: compiler/crates/kryos-mir/src/optimize/pure.rs, tests/pure_mutation_pin.{kry,sh}, tools/loop/closeout_targets.txt.
+Both-ways evidence: run.sh --only '^(M2)$' FAIL before (`aot: stdout=len=1 counter=0 want len=2 counter=1`), PASS after.
+tests/pure_mutation_pin.sh (mutates param + global; global only, called twice; param only, called twice; wrapper over a mutating pure
+fn; push onto a global array; genuinely pure local-array fn still CSE'd/removed): master binary FAILS on AOT (got len=1 counter=0,
+counter=10, ys=2, zs=1 counter=10, log=1, sum=12), tree PASS on JIT and AOT. --emit-mir --release shows `local_sum(4)` twice merged to
+one call and `local_sum(9)` removed, so verified-pure fns keep both optimizations.
+Regression scan: run.sh --only M1 M2 M3 M6 B7 A1 A2 A2.ctl A20 NaN-neg0 NaN-neg0-divergence libm-constfold 137-perf and all
+`^esc\.ctl:.*pure` controls (53 items): 51 PASS, B7 (doc item) and 137-perf (memory budget) FAIL identically on master;
+tests/backend_divergence_pins.sh and narrow_shift_pin.sh PASS. tests/security/bypass_pure_mutates_argument.kry now prints
+BYPASS-B7-OK on release AOT like JIT (listed in closeout_targets.txt).
+NOT covered (not executed): a `@pure` fn that READS a mutable global (`kryos_global_get` is treated as read-only), so CSE of two calls
+with a global write between them is still unsound; impl-method / static-method `@pure` (not tracked); WASM backend; a fresh local
+that is aliased into a returned/stored value and mutated by the caller is not modelled (callers see a new object anyway); mutating
+runtime helpers other than the five named (they fall into "unknown call = impure", i.e. only a lost optimization).
+The unverified num.patch (any-slot str rejection) was NOT applied: it does not touch @pure.
+
+## 136: `kryos build --help` said the `--cache` hit skips the pipeline
+
+Root cause (read in kryos-driver `pipeline.rs` + `build_cache.rs`, not guessed): the doc comment on the `--cache` flag in
+kryos-cli `main.rs` (clap prints it as help) still said a hit reuses the binary "without rerunning the pipeline". Since the B8 fix
+`build_cache::lookup` is called in `pipeline.rs` only after parse/check/capability analysis accepted the program in this build's mode,
+and the key covers every module file read, target, mode, output type and version; a hit replaces only code generation.
+Fix: rewrote the help text (analysis and capability check always run; hit reuses compiled output instead of generating code again;
+key contents listed) and the matching sentence in the `build_cache.rs` module doc. No behaviour change.
+Files: compiler/crates/kryos-cli/src/main.rs, compiler/crates/kryos-driver/src/build_cache.rs, tests/build_help_cache_pin.sh.
+Both-ways evidence: run.sh --only '^(136)$' FAIL before (help matches forbidden /without rerunning the pipeline/), PASS after.
+tests/build_help_cache_pin.sh: master binary FAILS (exit 1, both checks), tree binary PASSES (exit 0).
+Regression scan: run.sh --only over all numeric ids, B7, NaN-neg0, M1-M6 (15 items): the only FAILs (B7, 41, 138, 135, M4, M5, 137, 139)
+are other open items and fail identically on the master tree; tests/cli_smoke_gate.sh 38/38.
+NOT covered: the other `kryos --help` texts and docs/ prose were not audited for the same claim (grep for "without rerunning" finds
+only the two sites fixed plus an unrelated CHANGELOG line). The unverified num.patch (any-slot str rejection) was NOT applied: it does
+not touch help text.
+
+## A20: REOPENED -- fix refuted by verifier
+
+Reverted commits: df815876 (tuple let-copy value copy on the JIT) and 992fb14c (tuple read from an element/field/map value, and `u = t`,
+verifier residuals); revert commits 47dd5088 and cd372ee2. The verifier refuted the fix; the A20 shape is open again.
+Executed after the reverts (this tree, release build): run.sh -j 2 --only '^(A20)$' -> FAIL A20 [jit a20.kry]
+(`stdout=q.n=1 r.n=9\nt.0=7 u.0=7\n want ...t.0=1 u.0=7`), i.e. `let mut u = t; u.0 = 7` still changes `t.0` on the JIT.
+The two tuple value-copy pin tests (tests/tuple_value_copy_pin.*, tests/tuple_elem_value_copy_pin.*) left the tree with the reverts.
+NOT covered (not executed): a replacement fix; whether the AOT backend shares the aliasing for the element/field/map read shapes.
