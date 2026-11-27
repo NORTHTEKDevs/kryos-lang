@@ -24,6 +24,7 @@ pub mod ir;
 pub mod liveness;
 pub mod lower;
 pub mod optimize;
+pub mod shared_own;
 
 // Re-export key types for convenience.
 pub use debug_lines::{set_debug_line_resolver, DebugLineResolver};

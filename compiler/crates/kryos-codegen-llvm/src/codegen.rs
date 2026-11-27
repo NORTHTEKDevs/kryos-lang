@@ -2874,6 +2874,16 @@ impl LlvmCodegen {
         // releases one (payload, then the box).
         let enum_names: Vec<String> = self.enum_defs.keys().cloned().collect();
         for name in enum_names {
+            // `shared <enum>`: the arc block holds the inline `{ tag, words.. }`.
+            // Its drop function releases the active variant's payload (a
+            // `shared` child, a string, ...) and leaves the block itself to
+            // the arc free, as the struct helper above does.
+            self.emit_line(&format!("define internal void @__kryos_arc_drop_{name}(ptr %ptr) {{"));
+            self.emit_line("entry:");
+            self.emit_enum_drop_payload("%ptr", &name, &dummy);
+            self.emit_line("  ret void");
+            self.emit_line("}");
+            self.emit_blank();
             self.emit_line(&format!("define internal void @__kryos_mapval_drop_{name}(ptr %ptr) {{"));
             self.emit_line("entry:");
             self.emit_line("  %isnull = icmp eq ptr %ptr, null");
@@ -3800,6 +3810,10 @@ impl LlvmCodegen {
                     // pointer, 0 for i64, and all-zero for an aggregate enum/
                     // struct slot (`{ i64, i64 }`), where `store ... null`
                     // would be invalid IR.
+                    // An `i64` slot too: a `json_*` node handle lives in a plain
+                    // `i64` local, and the ownership pass releases it at the
+                    // function's end whether or not a branch ever assigned it
+                    // (0 releases nothing).
                     match &local.ty {
                         MirType::Str
                         | MirType::Array(..)
@@ -3808,6 +3822,7 @@ impl LlvmCodegen {
                         | MirType::Struct(_)
                         | MirType::Ptr(_)
                         | MirType::Shared(_)
+                        | MirType::I64
                         | MirType::Function { .. } => {
                             self.emit_line(&format!(
                                 "  store {ty} zeroinitializer, ptr %_{}.addr",
@@ -4355,7 +4370,7 @@ impl LlvmCodegen {
                 // replaced array of tuples (a `ptr` local, not an i64 handle).
                 if matches!(ty, MirType::Struct(_) | MirType::Enum(_))
                     || kryos_mir::ir::tuple_array_elem_releasable(ty)
-                    || matches!(ty, MirType::Array(e, _) if kryos_mir::ir::tuple_array_elem_releasable(e))
+                    || matches!(ty, MirType::Array(e, _) if kryos_mir::ir::array_overwrite_elem_releasable(e))
                 {
                     let old_raw = self.operand_to_llvm(&Operand::Local(*old), func);
                     let old_raw_ty = self.operand_type(&Operand::Local(*old), func);
@@ -4598,7 +4613,7 @@ impl LlvmCodegen {
                                         // owner or the source's element-free releases boxes the
                                         // copy still points at.
                                         MirType::Struct(_) => 4,
-                                        MirType::Function { .. } => 5,
+                                        MirType::Function { .. } | MirType::Shared(_) => 5,
                                         _ => 0,
                                     }
                                 };
@@ -6643,7 +6658,7 @@ impl LlvmCodegen {
                                     .iter()
                                     .find(|l| l.id == dest)
                                     .map(|l| l.ty.clone());
-                                if let Some(tt @ MirType::Tuple(_)) = dest_mir {
+                                if let Some(tt @ MirType::Tuple(_)) = dest_mir.clone() {
                                     if kryos_mir::ir::tuple_array_elem_releasable(&tt) {
                                         let MirType::Tuple(tes) = &tt else { unreachable!() };
                                         let tes = tes.clone();
@@ -6666,6 +6681,46 @@ impl LlvmCodegen {
                                         self.emit_line(&format!("  call void @kryos_free(ptr {p})"));
                                         self.emit_line(&format!("  br label %{tjoin}"));
                                         self.emit_line(&format!("{tjoin}:"));
+                                    }
+                                } else if let Some(MirType::Struct(sn)) = &dest_mir {
+                                    // A struct element is a counted box too (an
+                                    // array dup retains it, kind 4). The pop moved
+                                    // the array's share of it out: the destination
+                                    // holds the struct BY VALUE, so give it its own
+                                    // reference to every heap leaf, then release
+                                    // the array's share through the type's drop
+                                    // helper (shared box: just the count; last
+                                    // owner: drop the fields, free the box). Without
+                                    // it every popped box leaked (A11), and a shared
+                                    // box's fields were freed under the other array.
+                                    if self.struct_defs.contains_key(sn)
+                                        && !self.copy_structs.contains(sn)
+                                    {
+                                        let sn = sn.clone();
+                                        self.emit_struct_share(&p, &sn);
+                                        self.emit_line(&format!(
+                                            "  call void @__kryos_drop_{sn}(ptr {p})"
+                                        ));
+                                    }
+                                }
+                                // A shareable ENUM element is the same counted box
+                                // (the enum drop helper bails on a shared box via
+                                // kryos_struct_release_shared, then drops the active
+                                // variant's payload and frees the box). The pop moved
+                                // the array's share out: the destination holds the
+                                // enum by value, so it takes its own reference on
+                                // every heap payload word, then the array's share of
+                                // the box is released through the helper. Without it
+                                // the box was orphaned (leak) and, once the discarded
+                                // result became an owned temp, its drop freed a
+                                // payload a dup'd array still held (use-after-free).
+                                if let Some(MirType::Enum(en) | MirType::Struct(en)) = &dest_mir {
+                                    if self.enum_defs.contains_key(en) && self.enum_shareable(en) {
+                                        let en = en.clone();
+                                        self.emit_enum_share_payload(&p, &en);
+                                        self.emit_line(&format!(
+                                            "  call void @__kryos_drop_{en}(ptr {p})"
+                                        ));
                                     }
                                 }
                             } else if dest_ty == "double" || dest_ty == "ptr" {
@@ -8351,6 +8406,18 @@ impl LlvmCodegen {
                             self.emit_line(&format!(
                                 "  call void @kryos_arc_set_drop(ptr {target_name}, ptr @__kryos_arc_drop_{sname})"
                             ));
+                        }
+                    } else if let Operand::Local(inner_id) = inner {
+                        // An enum is an unnamed `{ tag, words.. }` aggregate: its
+                        // name comes from the MIR type of the operand.
+                        if let Some(MirType::Enum(ename)) =
+                            func.locals.iter().find(|l| l.id == *inner_id).map(|l| &l.ty)
+                        {
+                            if self.enum_defs.contains_key(ename) {
+                                self.emit_line(&format!(
+                                    "  call void @kryos_arc_set_drop(ptr {target_name}, ptr @__kryos_arc_drop_{ename})"
+                                ));
+                            }
                         }
                     }
                 } else {
@@ -12384,7 +12451,7 @@ impl LlvmCodegen {
                 // owner or the source's element-free releases boxes the
                 // copy still points at.
                 MirType::Struct(_) => 4,
-                MirType::Function { .. } => 5,
+                MirType::Function { .. } | MirType::Shared(_) => 5,
                 _ => 0,
             }
         };
@@ -12496,6 +12563,11 @@ impl LlvmCodegen {
                     let (mk, mv) = (key.as_ref().clone(), value.as_ref().clone());
                     self.emit_map_free(&v, &mk, &mv);
                 }
+                MirType::Shared(_) if slot == "ptr" => {
+                    let v = self.next_temp();
+                    self.emit_line(&format!("  {v} = load ptr, ptr {gep}"));
+                    self.emit_line(&format!("  call void @kryos_arc_release(ptr {v})"));
+                }
                 MirType::Struct(n) if slot == format!("%{n}") && !self.copy_structs.contains(n) => {
                     let n = n.clone();
                     self.emit_struct_drop(&gep, &n, func);
@@ -12535,6 +12607,11 @@ impl LlvmCodegen {
                     self.emit_line(&format!("  {v} = load i64, ptr {gep}"));
                     let t = self.next_temp();
                     self.emit_line(&format!("  {t} = call i64 @kryos_map_retain_opt(i64 {v})"));
+                }
+                MirType::Shared(_) if slot == "ptr" => {
+                    let v = self.next_temp();
+                    self.emit_line(&format!("  {v} = load ptr, ptr {gep}"));
+                    self.emit_line(&format!("  call void @kryos_arc_retain(ptr {v})"));
                 }
                 MirType::Struct(n) if slot == format!("%{n}") && !self.copy_structs.contains(n) => {
                     let n = n.clone();
@@ -12583,6 +12660,7 @@ impl LlvmCodegen {
                             | MirType::Shared(_)
                             | MirType::Struct(_)
                             | MirType::Enum(_)
+                            | MirType::Tuple(_)
                     )
                 })
                 .collect();
@@ -12610,7 +12688,7 @@ impl LlvmCodegen {
                         let line = match other {
                             MirType::Str => format!("  call i64 @kryos_string_retain_opt(ptr {p})"),
                             MirType::Array(_, _) => format!("  call i64 @kryos_array_retain_opt(ptr {p})"),
-                            MirType::Struct(_) | MirType::Enum(_) => {
+                            MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) => {
                                 format!("  call ptr @kryos_struct_retain(ptr {p})")
                             }
                             _ => format!("  call void @kryos_arc_retain(ptr {p})"),
@@ -12686,6 +12764,7 @@ impl LlvmCodegen {
                         | MirType::Function { .. }
                         | MirType::Enum(_)
                         | MirType::Shared(_)
+                        | MirType::Tuple(_)
                         | MirType::Map { .. }
                 )
             })
@@ -12713,6 +12792,7 @@ impl LlvmCodegen {
                                 | MirType::Function { .. }
                                 | MirType::Enum(_)
                                 | MirType::Shared(_)
+                                | MirType::Tuple(_)
                                 | MirType::Map { .. }
                         )
                     })
@@ -12792,6 +12872,33 @@ impl LlvmCodegen {
                         MirType::Shared(_) => {
                             self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
                             self.emit_line(&format!("  call void @kryos_arc_release(ptr {fv})"));
+                        }
+                        MirType::Tuple(tes) => {
+                            // A tuple payload is a kryos_calloc box holding the
+                            // inline tuple; the variant owns one box owner. The
+                            // last owner releases the tuple's heap leaves and
+                            // frees the box (same shape as a struct payload).
+                            let tty = self.sig_ty_to_llvm(field_ty);
+                            if tty.starts_with('{') {
+                                let tes = tes.clone();
+                                self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
+                                let sh = self.next_temp();
+                                let is_sh = self.next_temp();
+                                let uid = self.temp_counter;
+                                self.temp_counter += 1;
+                                let own = format!("tup_pl_own_{uid}");
+                                let end = format!("tup_pl_end_{uid}");
+                                self.emit_line(&format!(
+                                    "  {sh} = call i64 @kryos_struct_release_shared(ptr {fv})"
+                                ));
+                                self.emit_line(&format!("  {is_sh} = icmp ne i64 {sh}, 0"));
+                                self.emit_line(&format!("  br i1 {is_sh}, label %{end}, label %{own}"));
+                                self.emit_line(&format!("{own}:"));
+                                self.emit_tuple_drop(&fv, &tty, &tes, func);
+                                self.emit_line(&format!("  call void @kryos_free(ptr {fv})"));
+                                self.emit_line(&format!("  br label %{end}"));
+                                self.emit_line(&format!("{end}:"));
+                            }
                         }
                         _ => {}
                     }

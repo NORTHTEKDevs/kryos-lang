@@ -35,6 +35,7 @@ pub extern "C" fn kryos_spawn(fn_ptr: i64, args_ptr: *const i64, arg_count: i64)
         Vec::new()
     };
 
+    crate::arc::note_thread_start();
     let handle = std::thread::spawn(move || {
         invoke_task(fn_ptr as usize, &args);
         // A `throw` that unwound out of the thread's entry function would

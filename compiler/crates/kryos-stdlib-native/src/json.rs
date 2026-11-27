@@ -6,8 +6,8 @@
 //! KryosString layout: `{ len: i64, cap: i64, data: *mut u8 }`
 //! KryosArray layout: `{ len: i64, cap: i64, elem_size: i64, ref_count: i64, data: *mut u8 }`
 
-use std::collections::HashMap;
-use std::sync::{atomic::AtomicI64, Mutex};
+use std::collections::HashSet;
+use std::sync::Mutex;
 
 // Layout MUST match kryos_rt::string::KryosString exactly. The ref_count
 // field was added in shift step 37 production hardening. Keeping these
@@ -39,37 +39,87 @@ enum JsonNode {
     Object(Vec<(String, i64)>), // key-value pairs; values are handles
 }
 
+/// Handle registry: the address of every live node. A node is an arc block
+/// (`kryos_arc_alloc`) holding one `JsonNode`; its handle is the block's
+/// address. The registry keeps a stale or foreign integer passed to a `json_*`
+/// builtin harmless (it reads as "no such node", as it did when handles were
+/// table ids) and is the only global state.
 static NODE_TABLE: Mutex<Option<NodeTable>> = Mutex::new(None);
-static NEXT_NODE_ID: AtomicI64 = AtomicI64::new(1000);
 
 struct NodeTable {
-    map: HashMap<i64, Box<JsonNode>>,
+    live: HashSet<usize>,
 }
 
-#[allow(dead_code)]
 impl NodeTable {
     fn new() -> Self {
-        Self {
-            map: HashMap::new(),
-        }
+        Self { live: HashSet::new() }
     }
 
+    /// Allocate an arc block for `node` (count 1, owned by the caller) and
+    /// register it. The block's destructor releases the children the node
+    /// holds, so a tree is freed link by link when its last reference goes.
     fn insert(&mut self, node: JsonNode) -> i64 {
-        let id = NEXT_NODE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        self.map.insert(id, Box::new(node));
-        id
+        let size = std::mem::size_of::<JsonNode>();
+        let align = std::mem::align_of::<JsonNode>();
+        let p = kryos_rt::arc::kryos_arc_alloc(size, align);
+        if p.is_null() {
+            return -1;
+        }
+        unsafe { std::ptr::write(p as *mut JsonNode, node) };
+        kryos_rt::arc::kryos_arc_set_drop(p, json_node_drop);
+        self.live.insert(p as usize);
+        p as i64
     }
 
     fn get(&self, id: i64) -> Option<&JsonNode> {
-        self.map.get(&id).map(|b| b.as_ref())
+        if id > 0 && self.live.contains(&(id as usize)) {
+            // SAFETY: a registered address is a live arc block holding a
+            // JsonNode; the registry lock is held while the borrow lives.
+            Some(unsafe { &*(id as *const JsonNode) })
+        } else {
+            None
+        }
     }
 
-    fn get_mut(&mut self, id: i64) -> Option<&mut JsonNode> {
-        self.map.get_mut(&id).map(|b| b.as_mut())
+    /// `h` if it names a live node, else 0 (a child slot that holds nothing).
+    fn valid_or_zero(&self, h: i64) -> i64 {
+        if h > 0 && self.live.contains(&(h as usize)) {
+            h
+        } else {
+            0
+        }
     }
+}
 
-    fn remove(&mut self, id: i64) -> Option<Box<JsonNode>> {
-        self.map.remove(&id)
+/// Destructor of a node's arc block (runs when the last reference goes):
+/// unregister, drop the node, release each child it held a reference to.
+extern "C" fn json_node_drop(p: *mut u8) {
+    {
+        let mut guard = NODE_TABLE.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(t) = guard.as_mut() {
+            t.live.remove(&(p as usize));
+        }
+    }
+    // SAFETY: the block holds a node written by `NodeTable::insert`, and this
+    // runs exactly once, at count zero.
+    let node = unsafe { std::ptr::read(p as *mut JsonNode) };
+    let mut kids: Vec<i64> = Vec::new();
+    match &node {
+        JsonNode::Array(items) => kids.extend(items.iter().copied()),
+        JsonNode::Object(pairs) => kids.extend(pairs.iter().map(|(_, v)| *v)),
+        _ => {}
+    }
+    drop(node);
+    release_all(&kids);
+}
+
+/// Release one reference of every child handle (0 and unregistered values are
+/// never stored, so each is a real arc block).
+fn release_all(kids: &[i64]) {
+    for &k in kids {
+        if k > 0 {
+            kryos_rt::arc::kryos_arc_release(k as *mut u8);
+        }
     }
 }
 
@@ -305,7 +355,13 @@ impl Parser {
             return Ok(alloc_node(JsonNode::Array(items)));
         }
         loop {
-            items.push(self.parse_value()?);
+            match self.parse_value() {
+                Ok(v) => items.push(v),
+                Err(e) => {
+                    release_all(&items);
+                    return Err(e);
+                }
+            }
             self.skip_whitespace();
             match self.peek() {
                 Some(b',') => {
@@ -316,7 +372,10 @@ impl Parser {
                     self.advance();
                     return Ok(alloc_node(JsonNode::Array(items)));
                 }
-                _ => return Err(()),
+                _ => {
+                    release_all(&items);
+                    return Err(());
+                }
             }
         }
     }
@@ -331,20 +390,45 @@ impl Parser {
             self.advance();
             return Ok(alloc_node(JsonNode::Object(pairs)));
         }
+        // Every exit below releases the values built so far: a parsed node is
+        // owned by the one container that holds it.
+        let fail = |pairs: &Vec<(String, i64)>| {
+            let kids: Vec<i64> = pairs.iter().map(|(_, v)| *v).collect();
+            release_all(&kids);
+        };
         loop {
-            let handle = self.parse_string()?;
-            let key = match with_node(handle, |n| match n {
+            let handle = match self.parse_string() {
+                Ok(h) => h,
+                Err(e) => {
+                    fail(&pairs);
+                    return Err(e);
+                }
+            };
+            // The key node is only a carrier for the text: read it, free it.
+            let key = with_node(handle, |n| match n {
                 JsonNode::Str(s) => Some(s.clone()),
                 _ => None,
-            }) {
+            });
+            release_all(&[handle]);
+            let key = match key {
                 Some(Some(s)) => s,
-                _ => return Err(()),
+                _ => {
+                    fail(&pairs);
+                    return Err(());
+                }
             };
             self.skip_whitespace();
             if self.advance() != Some(b':') {
+                fail(&pairs);
                 return Err(());
             }
-            let value = self.parse_value()?;
+            let value = match self.parse_value() {
+                Ok(v) => v,
+                Err(e) => {
+                    fail(&pairs);
+                    return Err(e);
+                }
+            };
             pairs.push((key, value));
             self.skip_whitespace();
             match self.peek() {
@@ -356,7 +440,10 @@ impl Parser {
                     self.advance();
                     return Ok(alloc_node(JsonNode::Object(pairs)));
                 }
-                _ => return Err(()),
+                _ => {
+                    fail(&pairs);
+                    return Err(());
+                }
             }
         }
     }
@@ -497,20 +584,42 @@ pub extern "C" fn kryos_json_object(keys_handle: i64, vals_handle: i64) -> i64 {
             return -1;
         }
 
-        let mut pairs = Vec::new();
+        let mut keys: Vec<String> = Vec::with_capacity(key_len);
+        let mut kids: Vec<i64> = Vec::with_capacity(key_len);
         for i in 0..key_len {
             let key_handle = *key_data.add(i);
             let val_handle = *val_data.add(i);
 
             if let Some(key_str) = ks_to_string(key_handle) {
-                pairs.push((key_str, val_handle));
+                keys.push(key_str);
+                kids.push(val_handle);
             } else {
                 return -1;
             }
         }
 
-        alloc_node(JsonNode::Object(pairs))
+        // The node takes a reference of its own on every child (the caller
+        // keeps the one it had); a value that is not a live node is stored as
+        // an empty slot.
+        with_node_table(|table| {
+            let pairs: Vec<(String, i64)> = keys
+                .into_iter()
+                .zip(kids)
+                .map(|(k, v)| (k, retain_child(table, v)))
+                .collect();
+            table.insert(JsonNode::Object(pairs))
+        })
     }
+}
+
+/// One more reference to child `h` for a container that stores it; 0 when `h`
+/// is not a live node.
+fn retain_child(table: &NodeTable, h: i64) -> i64 {
+    let v = table.valid_or_zero(h);
+    if v != 0 {
+        kryos_rt::arc::kryos_arc_retain(v as *mut u8);
+    }
+    v
 }
 
 /// Create a JSON array from a Kryos array of i64 JsonNode handles.
@@ -529,12 +638,11 @@ pub extern "C" fn kryos_json_array(items_handle: i64) -> i64 {
             return -1;
         }
 
-        let mut items = Vec::new();
-        for i in 0..len {
-            items.push(*data.add(i));
-        }
-
-        alloc_node(JsonNode::Array(items))
+        let raw: Vec<i64> = (0..len).map(|i| *data.add(i)).collect();
+        with_node_table(|table| {
+            let items: Vec<i64> = raw.into_iter().map(|v| retain_child(table, v)).collect();
+            table.insert(JsonNode::Array(items))
+        })
     }
 }
 

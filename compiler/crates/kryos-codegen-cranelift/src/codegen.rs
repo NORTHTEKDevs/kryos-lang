@@ -116,13 +116,14 @@ fn array_dup_kind(elem: &MirType) -> i64 {
 }
 
 /// `kryos_tuple_release`'s element kinds for a tuple type (4 bits per element:
-/// 1 str, 2 array, 3 map, 0 anything the release leaves alone).
+/// 1 str, 2 array, 3 map, 4 shared arc, 0 anything the release leaves alone).
 fn tuple_release_kinds(tes: &[MirType]) -> i64 {
     tes.iter().take(16).enumerate().fold(0i64, |acc, (k, t)| {
         let kind = match t {
             MirType::Str => 1,
             MirType::Array(_, _) => 2,
             MirType::Map { .. } => 3,
+            MirType::Shared(_) => 4,
             _ => 0,
         };
         acc | (kind << (k * 4))
@@ -610,6 +611,7 @@ pub fn compile_module_with_options(
     // runtime's worklist (`kryos_drop_call`), so no chain drops recursively.
     let mut drop_wrappers: Vec<(FuncId, FuncId)> = Vec::new();
     let rec_drop_types = kryos_mir::ir::recursive_drop_types(&module.struct_defs, &module.enum_defs);
+    let mut arc_drop_ids: Vec<(String, FuncId)> = Vec::new();
     {
         let call_conv = object_module.isa().default_call_conv();
         let has_heap_fields = |fields: &[(String, MirType)]| -> bool {
@@ -660,6 +662,7 @@ pub fn compile_module_with_options(
                             | MirType::Function { .. }
                             | MirType::Enum(_)
                             | MirType::Shared(_)
+                            | MirType::Tuple(_)
                     )
                 })
             });
@@ -683,6 +686,27 @@ pub fn compile_module_with_options(
                     func_ids.insert(drop_name, id);
                 }
             }
+        }
+        // `shared T` over a struct/enum: the arc block holds ONE pointer to
+        // the box of T. Its drop function (set at the `arc_alloc`, run when the
+        // last reference is released) releases that box through the drop
+        // helper of T -- without it a released arc never freed its contents
+        // and every value linked through `shared` leaked (LEDGER item 137).
+        // @copy structs are never boxed this way and keep no drop function.
+        let mut names: Vec<&String> = module
+            .struct_defs
+            .keys()
+            .filter(|n| n.as_str() != "Map" && !module.copy_structs.contains(n.as_str()))
+            .chain(module.enum_defs.keys())
+            .collect();
+        names.sort();
+        for name in names {
+            let thunk_name = format!("__kryos_arc_drop_{name}");
+            let mut sig = Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I64)); // arc user ptr
+            let id = object_module.declare_function(&thunk_name, Linkage::Local, &sig)?;
+            arc_drop_ids.push((name.clone(), id));
+            func_ids.insert(thunk_name, id);
         }
     }
 
@@ -2396,6 +2420,7 @@ pub fn compile_module_with_options(
                                     | MirType::Function { .. }
                                     | MirType::Enum(_)
                                     | MirType::Shared(_)
+                                    | MirType::Tuple(_)
                             )
                         })
                         .collect();
@@ -2432,6 +2457,15 @@ pub fn compile_module_with_options(
                             builder.ins().load(types::I64, MemFlags::new(), ptr, offset);
                         if defer_fi == Some(*field_idx) {
                             deferred = field_val;
+                            continue;
+                        }
+                        if let MirType::Tuple(tes) = *field_ty {
+                            // A tuple payload is a refcounted handle the variant
+                            // owns one reference to.
+                            let kv = builder.ins().iconst(types::I64, tuple_release_kinds(tes));
+                            let fid = func_ids["kryos_tuple_release"];
+                            let fref = object_module.declare_func_in_func(fid, builder.func);
+                            builder.ins().call(fref, &[field_val, kv]);
                             continue;
                         }
                         if let MirType::Array(elem, _) = *field_ty {
@@ -2535,6 +2569,40 @@ pub fn compile_module_with_options(
         let mut ctx = Context::for_function(cl_func);
         object_module
             .define_function(wrapper_id, &mut ctx)
+            .map_err(CodegenError::Module)?;
+    }
+
+    // Arc drop thunks: load the box pointer the arc block holds and release
+    // it through the type's drop helper (a plain free when the type has no
+    // heap fields).
+    for (type_name, thunk_id) in &arc_drop_ids {
+        let call_conv = object_module.isa().default_call_conv();
+        let mut sig = Signature::new(call_conv);
+        sig.params.push(AbiParam::new(types::I64));
+        let mut cl_func =
+            Function::with_name_signature(UserFuncName::user(0, thunk_id.as_u32()), sig);
+        {
+            let mut builder = FunctionBuilder::new(&mut cl_func, &mut fb_ctx);
+            let entry = builder.create_block();
+            builder.append_block_params_for_function_params(entry);
+            builder.switch_to_block(entry);
+            let slot = builder.block_params(entry)[0];
+            let boxed = builder.ins().load(types::I64, MemFlags::new(), slot, 0);
+            let helper = format!("__kryos_drop_{type_name}");
+            let target = if func_ids.contains_key(&helper) {
+                func_ids[&helper]
+            } else {
+                func_ids["kryos_free"]
+            };
+            let target_ref = object_module.declare_func_in_func(target, builder.func);
+            builder.ins().call(target_ref, &[boxed]);
+            builder.ins().return_(&[]);
+            builder.seal_all_blocks();
+            builder.finalize();
+        }
+        let mut ctx = Context::for_function(cl_func);
+        object_module
+            .define_function(*thunk_id, &mut ctx)
             .map_err(CodegenError::Module)?;
     }
 
@@ -3795,7 +3863,7 @@ fn translate_instruction<M: Module>(
             // tuples (type-directed like the rest; both are plain handles).
             if matches!(ty, MirType::Struct(_) | MirType::Enum(_))
                 || kryos_mir::ir::tuple_array_elem_releasable(ty)
-                || matches!(ty, MirType::Array(e, _) if kryos_mir::ir::tuple_array_elem_releasable(e))
+                || matches!(ty, MirType::Array(e, _) if kryos_mir::ir::array_overwrite_elem_releasable(e))
             {
                 if let Some(&old_var) = translator.variables.get(&old.0) {
                     let old_val = builder.use_var(old_var);
@@ -4135,7 +4203,7 @@ fn translate_instruction<M: Module>(
                                     // owner or the source's element-free releases boxes the
                                     // copy still points at.
                                     MirType::Struct(_) => 4,
-                                    MirType::Function { .. } => 5,
+                                    MirType::Function { .. } | MirType::Shared(_) => 5,
                                     _ => 0,
                                 }
                             };
@@ -6450,7 +6518,10 @@ fn translate_rvalue<M: Module>(
                                 builder.ins().call(retain_ref, &[raw_result]);
                                 raw_result
                             }
-                            MirType::Function { .. } | MirType::Shared(_) => {
+                            // A `shared` element read is an ALIAS (the LLVM backend never
+                            // retained it): the shared-handle ownership pass retains it
+                            // where the reader keeps it.
+                            MirType::Function { .. } => {
                                 let retain_ref = ensure_func_ref_with_args(
                                     "kryos_arc_retain",
                                     builder,
@@ -6514,6 +6585,33 @@ fn translate_rvalue<M: Module>(
             let ptr = builder.inst_results(call_inst)[0];
             // 3. Store the inner value at the allocated pointer.
             builder.ins().store(MemFlags::new(), val, ptr, 0);
+            // A struct/enum payload is a box the arc owns: register the drop
+            // thunk that releases it with the last reference.
+            let inner_ty = match inner {
+                Operand::Local(id) => translator
+                    .mir_func
+                    .locals
+                    .iter()
+                    .find(|l| l.id == *id)
+                    .map(|l| l.ty.clone()),
+                _ => None,
+            };
+            if let Some(MirType::Struct(n) | MirType::Enum(n)) = inner_ty {
+                let thunk = format!("__kryos_arc_drop_{n}");
+                if translator.func_ids.contains_key(&thunk) {
+                    let set_drop_ref = ensure_func_ref_with_args(
+                        "kryos_arc_set_drop",
+                        builder,
+                        translator,
+                        module,
+                        2,
+                    )?;
+                    let thunk_ref =
+                        ensure_func_ref_with_args(&thunk, builder, translator, module, 1)?;
+                    let thunk_addr = builder.ins().func_addr(types::I64, thunk_ref);
+                    builder.ins().call(set_drop_ref, &[ptr, thunk_addr]);
+                }
+            }
             Ok(Some(ptr))
         }
 
@@ -6693,7 +6791,9 @@ fn translate_rvalue<M: Module>(
                 .and_then(|variant| variant.fields.get(*field_idx as usize))
                 .cloned();
             match payload_mir_ty {
-                Some(MirType::Function { .. }) | Some(MirType::Shared(_)) => {
+                // A `shared` payload read is an ALIAS (as on the LLVM backend): the
+                // shared-handle ownership pass retains it where the bind keeps it.
+                Some(MirType::Function { .. }) => {
                     let retain_ref = ensure_func_ref_with_args(
                         "kryos_arc_retain",
                         builder,
@@ -7883,6 +7983,34 @@ fn ensure_func_ref_with_args<M: Module>(
     Ok(func_ref)
 }
 
+/// Ensure a FuncRef for a runtime function that takes `arg_count` i64
+/// arguments and returns nothing (declared void, matching the runtime's
+/// `extern "C" fn(..)`; `ensure_func_ref_with_args` would declare an i64
+/// return and clash with the void declaration of the same symbol).
+fn ensure_void_func_ref<M: Module>(
+    name: &str,
+    builder: &mut FunctionBuilder,
+    translator: &mut FuncTranslator,
+    module: &mut M,
+    arg_count: usize,
+) -> Result<cranelift_codegen::ir::FuncRef, CodegenError> {
+    if let Some(func_ref) = translator.func_refs.get(name) {
+        return Ok(*func_ref);
+    }
+    let func_id = if let Some(id) = translator.func_ids.get(name) {
+        *id
+    } else {
+        let mut sig = Signature::new(module.isa().default_call_conv());
+        for _ in 0..arg_count {
+            sig.params.push(AbiParam::new(types::I64));
+        }
+        module.declare_function(name, Linkage::Import, &sig)?
+    };
+    let func_ref = module.declare_func_in_func(func_id, builder.func);
+    translator.func_refs.insert(name.to_string(), func_ref);
+    Ok(func_ref)
+}
+
 /// Ensure a FuncRef for an f64→f64 function (math builtins like sin, cos, log).
 fn ensure_func_ref_f64_f64<M: Module>(
     name: &str,
@@ -8490,7 +8618,7 @@ fn emit_drop_for_value<M: Module>(
                     // owner or the source's element-free releases boxes the
                     // copy still points at.
                     MirType::Struct(_) => 4,
-                    MirType::Function { .. } => 5,
+                    MirType::Function { .. } | MirType::Shared(_) => 5,
                     _ => 0,
                 }
             };
@@ -8907,6 +9035,7 @@ fn emit_drop_for_value<M: Module>(
                                 | MirType::Function { .. }
                                 | MirType::Enum(_)
                                 | MirType::Shared(_)
+                                | MirType::Tuple(_)
                                 | MirType::Map { .. }
                         )
                     })
@@ -8933,6 +9062,7 @@ fn emit_drop_for_value<M: Module>(
                                         | MirType::Function { .. }
                                         | MirType::Enum(_)
                                         | MirType::Shared(_)
+                                        | MirType::Tuple(_)
                                         | MirType::Map { .. }
                                 )
                             })
@@ -8981,6 +9111,16 @@ fn emit_drop_for_value<M: Module>(
                             // for the identical reason) -- a genuine Cranelift
                             // function CALL, safely recursive at runtime (bounded by
                             // the real data depth) instead of at Rust compile time.
+                            // A tuple payload is a refcounted handle the variant owns
+                            // one reference to (same release as the drop helper).
+                            if let MirType::Tuple(tes) = *field_ty {
+                                let kv = builder.ins().iconst(types::I64, tuple_release_kinds(tes));
+                                let rel = ensure_void_func_ref(
+                                    "kryos_tuple_release", builder, translator, module, 2,
+                                )?;
+                                builder.ins().call(rel, &[field_val, kv]);
+                                continue;
+                            }
                             let nested_helper = match field_ty {
                                 MirType::Struct(n) | MirType::Enum(n) => {
                                     Some(format!("__kryos_drop_{n}"))

@@ -72,6 +72,7 @@ pub extern "C" fn kryos_actor_spawn(entry_fn: extern "C" fn(*mut u8), state_ptr:
     // extern "C" fn pointers are Copy + Send, but *mut u8 is not Send.
     let state_addr = state_ptr as usize;
 
+    crate::arc::note_thread_start();
     let entry_for_thread = entry;
     let handle = std::thread::spawn(move || {
         CURRENT_ACTOR_ID.set(actor_id);

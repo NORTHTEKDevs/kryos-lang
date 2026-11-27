@@ -1,0 +1,76 @@
+// Peak-RSS probe for tests/mem_tuple_struct_arr_gate.sh (LEDGER item A18).
+// An array of tuples that hold a struct owned each tuple (and the struct box
+// inside it) forever: the array drop, an element or whole-array overwrite and
+// every array copy skipped them because `tuple_array_elem_releasable` refused a
+// struct element. Modes:
+//   literal  `[(mkp(i), i), (mkp(i + 1), i)]`
+//   push     `push(a, (mkp(i), i))`
+//   copy     `let mut b = a` then a push on the copy
+//   ovr_elem `a[0] = (mkp(..), i)`
+//   ovr_arr  `a = [(mkp(..), i)]`
+//   read     `let t = a[1]`
+//   forin    `for (p, n) in a`
+//   ret      an array built by a callee and summed by another
+//   field    a struct holding the array, copied
+//   namedlit `let t = (mkp(i), i)` then `[t]` (the literal's own share)
+struct P { name: str, n: i64 }
+struct Hold { xs: [(P, i64)], k: i64 }
+
+fn mkp(i: i64) -> P { return P { name: "p{i}-padpadpadpadpadpadpadpadpad", n: i } }
+fn build(i: i64) -> [(P, i64)] { return [(mkp(i), i), (mkp(i + 1), i + 1)] }
+fn sum(xs: [(P, i64)]) -> i64 {
+    let mut s = 0
+    for (p, n) in xs { s = s + len(p.name) + n }
+    return s
+}
+
+@capabilities(process)
+fn main() {
+    let iters = parse_int(env_get("LEAK_ITERS"))
+    let mode = env_get("LEAK_MODE")
+    let mut sink = 0
+    let mut i = 0
+    while i < iters {
+        if mode == "literal" {
+            let a = [(mkp(i), i), (mkp(i + 1), i)]
+            sink = sink + len(a)
+        } elif mode == "push" {
+            let mut a: [(P, i64)] = []
+            a = push(a, (mkp(i), i))
+            a = push(a, (mkp(i + 1), i))
+            sink = sink + len(a)
+        } elif mode == "copy" {
+            let a = [(mkp(i), i)]
+            let mut b = a
+            b = push(b, (mkp(i + 1), 1))
+            sink = sink + len(a) + len(b[1].0.name)
+        } elif mode == "ovr_elem" {
+            let mut a = [(mkp(i), i), (mkp(i + 1), i)]
+            a[0] = (mkp(i + 2), i)
+            sink = sink + len(a[0].0.name)
+        } elif mode == "ovr_arr" {
+            let mut a = [(mkp(i), i)]
+            a = [(mkp(i + 1), i), (mkp(i + 2), i)]
+            sink = sink + len(a[1].0.name)
+        } elif mode == "read" {
+            let a = [(mkp(i), i), (mkp(i + 1), i)]
+            let t = a[1]
+            sink = sink + len(t.0.name) + t.1
+        } elif mode == "forin" {
+            let a = [(mkp(i), i), (mkp(i + 1), i)]
+            for (p, n) in a { sink = sink + len(p.name) + n }
+        } elif mode == "ret" {
+            sink = sink + sum(build(i))
+        } elif mode == "namedlit" {
+            let t = (mkp(i), i)
+            let a = [t]
+            sink = sink + len(a[0].0.name) + len(t.0.name)
+        } elif mode == "field" {
+            let h = Hold { xs: [(mkp(i), i)], k: 1 }
+            let h2 = h
+            sink = sink + len(h2.xs[0].0.name) + len(h.xs)
+        }
+        i = i + 1
+    }
+    println(sink)
+}

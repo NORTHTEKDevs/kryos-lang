@@ -1,0 +1,29 @@
+// A13: a free function that shadows a builtin name (read_file, index_of, split) must get
+// user-function argument ownership. The MIR kept those names in builtin_fn_names, so the
+// struct temp passed to the shadowing function was never released (one box + str per call).
+// LEAK_MODE picks the shadowed name; each iteration passes a fresh struct literal.
+struct P { name: str, n: i64 }
+fn read_file(p: P, k: i64) -> i64 { return k }
+fn index_of(p: P, k: i64) -> i64 { return k + p.n - p.n }
+fn split(p: P, k: i64) -> i64 { return k }
+fn readp(p: P, k: i64) -> i64 { return k }
+@capabilities(process)
+fn main() {
+    let iters = parse_int(env_get("LEAK_ITERS"))
+    let mode = env_get("LEAK_MODE")
+    let mut sink = 0
+    let mut i = 0
+    while i < iters {
+        if mode == "read_file" {
+            sink = sink + read_file(P { name: "t{i}", n: i }, 1)
+        } elif mode == "index_of" {
+            sink = sink + index_of(P { name: "t{i}", n: i }, 1)
+        } elif mode == "split" {
+            sink = sink + split(P { name: "t{i}", n: i }, 1)
+        } else {
+            sink = sink + readp(P { name: "t{i}", n: i }, 1)
+        }
+        i = i + 1
+    }
+    print(sink)
+}

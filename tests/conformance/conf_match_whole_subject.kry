@@ -1,0 +1,147 @@
+// Conformance (A19): `match <call> { x => body }` lowers as `let x = <call>`
+// over the body, so x owns the call result (tuple, struct, str, array, enum).
+// The leak direction is tests/mem_whole_subject_gate.sh; this is the
+// use-after-free direction: every value that leaves the match (the match
+// value, `return x`, an outer variable, a pushed element, a closure capture, a
+// field read) must survive the churn that reuses freed blocks (a use-after-
+// free shows up with real frees). Run under KRYOS_FREE_DIAG on both backends
+// and on AOT with real frees by tests/no_double_free.sh.
+
+struct P { name: str, n: i64 }
+enum E { A(str), B(i64) }
+
+fn mkt(i: i64) -> (str, i64) { return ("t{i}-padpadpadpadpadpadpadpad", i) }
+fn mks(i: i64) -> str { return "s{i}-padpadpadpadpadpadpadpad" }
+fn mka(i: i64) -> [str] { return ["a{i}-padpadpad", "b{i}-padpadpad"] }
+fn mkp(i: i64) -> P { return P { name: "p{i}-padpadpadpadpadpadpadpad", n: i } }
+fn mke(i: i64) -> E { if i % 2 == 0 { return A("e{i}-padpadpadpadpadpadpadpad") } return B(i) }
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn churn(i: i64) -> i64 {
+    let mut junk: [str] = []
+    let mut tot = 0
+    let mut j = 0
+    while j < 40 {
+        junk = push(junk, "junk{i}-{j}-padpadpadpadpadpadpadpad")
+        tot = tot + len(junk[j])
+        j = j + 1
+    }
+    return tot
+}
+
+fn val_tup(i: i64) -> (str, i64) { return match mkt(i) { x => x } }
+fn val_str(i: i64) -> str { return match mks(i) { s => s } }
+fn val_arr(i: i64) -> [str] { return match mka(i) { a => a } }
+fn val_struct(i: i64) -> P { return match mkp(i) { p => p } }
+fn val_enum(i: i64) -> E { return match mke(i) { e => e } }
+fn val_field(i: i64) -> str { return match mkt(i) { x => x.0 } }
+fn val_nested(i: i64) -> (str, i64) { return match mkt(i) { x => match mkt(i + 1) { y => (x.0, y.1) } } }
+fn ret_in_arm(i: i64) -> (str, i64) {
+    match mkt(i) { x => { return x } }
+    return ("unreachable", 0)
+}
+fn shadow(i: i64) -> i64 {
+    let x = 7
+    match mkt(i) { x => { return len(x.0) } }
+    return x
+}
+
+// Non-sole whole-subject binds: a catch-all after refutable arms, a guarded x,
+// an enum catch-all. Each arm takes its own reference to the call result.
+fn ns_tup(i: i64) -> (str, i64) { return match mkt(i) { ("zzz", 0) => ("q", 1) x => x } }
+fn ns_str(i: i64) -> str { return match mks(i) { "zzz" => "q" s => s } }
+fn ns_arr(i: i64) -> [str] { return match mka(i) { z if len(z) == 0 => z a => a } }
+fn ns_struct(i: i64) -> P { return match mkp(i) { P { n: -1 } => mkp(0) p => p } }
+fn ns_enum(i: i64) -> E { return match mke(i) { B(-1) => B(0) e => e } }
+fn ns_guard(i: i64) -> (str, i64) { return match mkt(i) { x if x.1 >= 0 => x } }
+fn ns_guard_miss(i: i64) -> (str, i64) { return match mkt(i) { x if x.1 < 0 => ("neg", 0) y => y } }
+fn fld_val(i: i64) -> str { let p = mkp(i)  return match p.name { "zzz" => "q" s => s } }
+fn fld_sole(i: i64) -> str { let p = mkp(i)  return match p.name { s => s } }
+fn ns_ret(i: i64) -> (str, i64) {
+    match mkt(i) { ("zzz", 0) => { return ("q", 1) } x => { return x } }
+    return ("unreachable", 0)
+}
+
+@capabilities(process)
+fn main() {
+    let mut i = 0
+    let mut keep: [(str, i64)] = []
+    let mut outer = ("none", 0)
+    let mut fs: [fn() -> i64] = []
+    let mut keep2: [(str, i64)] = []
+    let mut fs2: [fn() -> i64] = []
+    while i < 6 {
+        let a = val_tup(i)
+        let b = val_str(i)
+        let c = val_arr(i)
+        let d = val_struct(i)
+        let e = val_enum(i)
+        let f = val_field(i)
+        let g = val_nested(i)
+        let h = ret_in_arm(i)
+        match mkt(i) { x => { outer = x } }
+        match mkt(i) { x => { keep = push(keep, x) } }
+        match mkt(i) { x => { fs = push(fs, || len(x.0) + x.1) } }
+        let na = ns_tup(i)
+        let nb = ns_str(i)
+        let nc = ns_arr(i)
+        let nd = ns_struct(i)
+        let ne = ns_enum(i)
+        let ng = ns_guard(i)
+        let nm = ns_guard_miss(i)
+        let nr = ns_ret(i)
+        let fv = fld_val(i)
+        let fsole = fld_sole(i)
+        let mut fouter = "none"
+        let pf = mkp(i)
+        match pf.name { "zzz" => { fouter = "q" } s => { fouter = s } }
+        let mut nouter = ("none", 0)
+        match mkt(i) { ("zzz", 0) => { nouter = ("q", 1) } x => { nouter = x } }
+        match mkt(i) { ("zzz", 0) => { keep2 = push(keep2, ("q", 1)) } x => { keep2 = push(keep2, x) } }
+        match mkt(i) { ("zzz", 0) => { fs2 = push(fs2, || 0) } x => { fs2 = push(fs2, || len(x.0) + x.1) } }
+        churn(i)
+        expect(fv == "p{i}-padpadpadpadpadpadpadpad" and fsole == fv and fouter == fv, "field read whole bind")
+        expect(na.0 == "t{i}-padpadpadpadpadpadpadpad" and na.1 == i, "ns tuple")
+        expect(nb == "s{i}-padpadpadpadpadpadpadpad", "ns str")
+        expect(len(nc) == 2 and nc[1] == "b{i}-padpadpad", "ns array")
+        expect(nd.name == "p{i}-padpadpadpadpadpadpadpad" and nd.n == i, "ns struct")
+        expect(match ne { A(s) => s == "e{i}-padpadpadpadpadpadpadpad", B(n) => n == i }, "ns enum")
+        expect(ng.0 == "t{i}-padpadpadpadpadpadpadpad" and ng.1 == i, "ns guarded sole arm")
+        expect(nm.0 == "t{i}-padpadpadpadpadpadpadpad" and nm.1 == i, "ns guard miss falls to the catch-all")
+        expect(nr.0 == "t{i}-padpadpadpadpadpadpadpad" and nr.1 == i, "ns return x")
+        expect(nouter.0 == "t{i}-padpadpadpadpadpadpadpad" and nouter.1 == i, "ns outer = x")
+        expect(a.0 == "t{i}-padpadpadpadpadpadpadpad" and a.1 == i, "match value tuple")
+        expect(b == "s{i}-padpadpadpadpadpadpadpad", "match value str")
+        expect(len(c) == 2 and c[1] == "b{i}-padpadpad", "match value array")
+        expect(d.name == "p{i}-padpadpadpadpadpadpadpad" and d.n == i, "match value struct")
+        expect(match e { A(s) => s == "e{i}-padpadpadpadpadpadpadpad", B(n) => n == i }, "match value enum")
+        expect(f == "t{i}-padpadpadpadpadpadpadpad", "match value field")
+        expect(g.0 == "t{i}-padpadpadpadpadpadpadpad" and g.1 == i + 1, "nested match")
+        expect(h.0 == "t{i}-padpadpadpadpadpadpadpad" and h.1 == i, "return x from the arm")
+        expect(outer.0 == "t{i}-padpadpadpadpadpadpadpad" and outer.1 == i, "outer = x")
+        expect(shadow(i) == len("t{i}-padpadpadpadpadpadpadpad"), "x shadows an outer x")
+        i = i + 1
+    }
+    churn(99)
+    let mut k = 0
+    let mut tot = 0
+    while k < 6 {
+        expect(keep[k].0 == "t{k}-padpadpadpadpadpadpadpad" and keep[k].1 == k, "pushed x")
+        tot = tot + fs[k]()
+        k = k + 1
+    }
+    k = 0
+    while k < 6 {
+        expect(keep2[k].0 == "t{k}-padpadpadpadpadpadpadpad" and keep2[k].1 == k, "ns pushed x")
+        expect(fs2[k]() == len("t0-padpadpadpadpadpadpadpad") + k, "ns closure capture of x")
+        k = k + 1
+    }
+    expect(tot == 6 * len("t0-padpadpadpadpadpadpadpad") + 15, "closure capture of x")
+    println("conformance match whole subject: PASS")
+}

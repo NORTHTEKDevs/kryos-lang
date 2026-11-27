@@ -72,7 +72,7 @@ pub const STRUCT_SHARE_FN: &str = "kryos_struct_share";
 pub const TUPLE_ELEM_DUP_KIND: i64 = 6;
 
 /// A tuple whose array-element release is sound on both backends: every
-/// element a scalar, `str`, array, map or such a tuple (what a tuple local's
+/// element a scalar, `str`, array, map, an owned struct or such a tuple (what a tuple local's
 /// Drop releases without any ownership context). An array of such tuples owns
 /// each element once: the literal / `push` stores one reference, a copy
 /// retains it (`TUPLE_ELEM_DUP_KIND`), the array's last drop releases it.
@@ -96,6 +96,7 @@ pub fn tuple_array_elem_releasable(elem: &MirType) -> bool {
             | MirType::Array(_, _)
             | MirType::Map { .. } => true,
             MirType::Tuple(_) => tuple_array_elem_releasable(e),
+            MirType::Struct(n) => owned_struct_registered(n),
             _ => false,
         })
 }
@@ -148,6 +149,49 @@ pub fn recursive_drop_types(
         }
     }
     out
+}
+
+/// Names of the structs whose values are owner-counted boxes any holder may
+/// share (non-`@copy`, `struct_is_shareable`): the struct elements a tuple
+/// owns, and so an array of such tuples releases (LEDGER item A18). Lowering
+/// fills it from its own struct table (`register_owned_structs`) before any
+/// backend asks, so MIR and both backends agree on one predicate.
+static OWNED_STRUCTS: std::sync::RwLock<Option<std::collections::HashSet<String>>> =
+    std::sync::RwLock::new(None);
+
+pub fn register_owned_structs(owned: &[String], not_owned: &[String]) {
+    if let Ok(mut g) = OWNED_STRUCTS.write() {
+        let set = g.get_or_insert_with(std::collections::HashSet::new);
+        for n in not_owned {
+            set.remove(n);
+        }
+        for n in owned {
+            set.insert(n.clone());
+        }
+    }
+}
+
+fn owned_struct_registered(name: &str) -> bool {
+    OWNED_STRUCTS
+        .read()
+        .ok()
+        .and_then(|g| g.as_ref().map(|s| s.contains(name)))
+        .unwrap_or(false)
+}
+
+/// An array whose overwrite releases its elements through the backends'
+/// type-directed array drop (`Instruction::DropIfNe` on the array local): an
+/// array of releasable tuples, or of structs / enums, whose elements are
+/// counted boxes the array owns once (`push` shares the stored value, a copy
+/// of the array retains every element). The untyped `kryos_array_release_if_ne`
+/// frees only the header and buffer, so `xs = []` over `[Struct]` leaked every
+/// element box (LEDGER item A10).
+pub fn array_overwrite_elem_releasable(elem: &MirType) -> bool {
+    match elem {
+        MirType::Struct(_) | MirType::Enum(_) => true,
+        MirType::Array(inner, _) => array_overwrite_elem_releasable(inner),
+        _ => tuple_array_elem_releasable(elem),
+    }
 }
 
 /// MIR-level type representation.

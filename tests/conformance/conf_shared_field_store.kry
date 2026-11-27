@@ -1,0 +1,63 @@
+// Conformance (mem_attacks / c06): `(*h).f = v` through a `shared T` handle
+// stores into the payload the handle points at. On AOT the deref of a shared
+// struct is an inline COPY of the payload, so the store went into the copy
+// and the arc kept the old field (JIT stored through the payload's own box,
+// so the two backends disagreed). Every shape must agree on both backends:
+// the new value is visible through the handle and through a second handle to
+// the same arc, an earlier by-value copy `let x = *h` keeps the old value,
+// and churn that reuses freed blocks does not corrupt either.
+use std::option::{Option, Some, None}
+
+struct P { name: str, n: i64, tags: [str] }
+struct L { next: Option<shared L>, v: i64, name: str }
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONFORMANCE FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn mkp(i: i64) -> P {
+    return P { name: "name-{i}-padpadpad", n: i, tags: ["t-{i}-padpadpad"] }
+}
+
+fn churn(k: i64) -> i64 {
+    let mut a = 0
+    let mut j = 0
+    while j < 30 {
+        let t = "c-{k + j}-pad-pad-pad-pad"
+        let n: shared L = shared L { next: None(), v: k + j, name: "node-{k + j}-padpadpad" }
+        let q = mkp(k + j)
+        a = a + len(t) + (*n).v + len(q.name)
+        j = j + 1
+    }
+    return a
+}
+
+fn main() {
+    let mut i = 0
+    let mut tot = 0
+    while i < 100 {
+        let a: shared P = shared mkp(i)
+        let b: shared P = a
+        let x = *a
+        if i >= 0 { (*a).name = "newname-{i}-padpadpad" }
+        if i >= 0 { (*a).n = 1000 + i }
+        let k = churn(i)
+        expect(x.name == "name-{i}-padpadpad", "old copy keeps old str {x.name}")
+        expect(x.n == i, "old copy keeps old int")
+        expect((*a).name == "newname-{i}-padpadpad", "new str through a {(*a).name}")
+        expect((*a).n == 1000 + i, "new int through a")
+        expect((*b).name == "newname-{i}-padpadpad", "new str through second handle")
+        expect((*b).n == 1000 + i, "new int through second handle")
+        expect(len((*a).tags) == 1 and (*a).tags[0] == "t-{i}-padpadpad", "untouched array field intact")
+        if i >= 0 { (*a).tags = ["u-{i}-padpadpad", "v-{i}-padpadpad"] }
+        expect(len((*b).tags) == 2 and (*b).tags[1] == "v-{i}-padpadpad", "array field replaced")
+        expect(len(x.tags) == 1 and x.tags[0] == "t-{i}-padpadpad", "old copy keeps old array")
+        tot = tot + k
+        i = i + 1
+    }
+    expect(tot > 0, "churn ran")
+    println("conformance shared field store: PASS")
+}

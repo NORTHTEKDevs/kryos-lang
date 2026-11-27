@@ -389,7 +389,12 @@ pub extern "C" fn kryos_http_request_ks(
 
     let keys_handle = build_str_array(&["status", "headers", "body"]);
     let vals_handle = build_i64_array(&[status_node, headers_node, body_node]);
-    crate::json::kryos_json_object(keys_handle, vals_handle)
+    let obj = crate::json::kryos_json_object(keys_handle, vals_handle);
+    // The object took a reference of its own on each value.
+    for n in [status_node, headers_node, body_node] {
+        kryos_rt::arc::kryos_arc_release(n as *mut u8);
+    }
+    obj
 }
 
 /// `https_get(url: str) -> str` — body only, empty on failure. Convenience.
@@ -409,7 +414,9 @@ pub extern "C" fn kryos_https_get_ks(url_handle: i64) -> i64 {
     if body_node <= 0 {
         return str_to_handle("");
     }
-    crate::json::kryos_json_to_str(body_node)
+    let body = crate::json::kryos_json_to_str(body_node);
+    kryos_rt::arc::kryos_arc_release(resp as *mut u8);
+    body
 }
 
 fn do_http_request(

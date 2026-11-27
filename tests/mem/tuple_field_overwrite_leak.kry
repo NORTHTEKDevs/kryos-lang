@@ -1,0 +1,60 @@
+// A15: a tuple-typed field of an owned struct (a local, or a mutable module-level global) is owned
+// by the struct; overwriting it must release the old tuple and its elements. Before the fix
+// `w.t = ("w{i}", i)` / `GW.t = ...` leaked every replaced tuple (a box on LLVM, a refcounted array
+// plus its string on Cranelift): 118MB per million iterations on the JIT, 50MB on AOT.
+// LEAK_MODE picks the shape; every mode returns the same answer: the sum of len("w<i>") over i.
+//   loc_field     local struct, fresh tuple literal
+//   glob_field    mutable global struct, fresh tuple literal
+//   field_named   a NAMED tuple local stored into the field and read afterwards (field takes its own reference)
+//   field_self    w.t = w.t (the new value is the old one)
+//   field_read    a binding of the old tuple read before the overwrite must stay intact
+//   field_call    a user function's result stored into the field
+//   field_global  the field takes a copy of a global tuple that is overwritten afterwards
+struct W { name: str, t: (str, i64) }
+let mut GW: W = W { name: "gw", t: ("x", 0) }
+let mut GT: (str, i64) = ("g", 7)
+fn mk(i: i64) -> (str, i64) { return ("w{i}", i) }
+@capabilities(process)
+fn main() {
+    let iters = parse_int(env_get("LEAK_ITERS"))
+    let mode = env_get("LEAK_MODE")
+    let mut w = W { name: "w", t: ("x", 0) }
+    let mut sink = 0
+    let mut i = 0
+    while i < iters {
+        if mode == "loc_field" {
+            w.t = ("w{i}", i)
+            sink = sink + len(w.t.0)
+        } elif mode == "glob_field" {
+            GW.t = ("w{i}", i)
+            sink = sink + len(GW.t.0)
+        } elif mode == "field_named" {
+            let q = ("w{i}", i)
+            GW.t = q
+            sink = sink + len(q.0)
+            if q.1 != i { sink = 0 - 1 }
+        } elif mode == "field_self" {
+            w.t = ("w{i}", i)
+            w.t = w.t
+            sink = sink + len(w.t.0)
+        } elif mode == "field_read" {
+            let a = w.t
+            w.t = ("w{i}", i)
+            sink = sink + len(w.t.0)
+            if len(a.0) < 1 { sink = 0 - 1 }
+        } elif mode == "field_call" {
+            w.t = mk(i)
+            sink = sink + len(w.t.0)
+        } elif mode == "field_global" {
+            GT = ("w{i}", i)
+            w.t = GT
+            GT = ("v{i}", i)
+            sink = sink + len(w.t.0)
+        } else {
+            let c = ("w{i}", i)
+            sink = sink + len(c.0)
+        }
+        i = i + 1
+    }
+    println("{sink}")
+}

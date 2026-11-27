@@ -1,0 +1,28 @@
+// A11 correctness: pop on a [Struct] whose element boxes are shared with a dup'd
+// array (`let b = a`) must not free the fields the other array still holds, and
+// a discarded pop of a shared box must leave the other array intact.
+struct P { name: str, n: i64 }
+struct Q { tag: str, rows: [str], k: i64 }
+fn main() {
+    let mut a: [P] = []
+    a = push(a, P { name: "alpha" + "1", n: 1 })
+    a = push(a, P { name: "beta" + "2", n: 2 })
+    a = push(a, P { name: "gamma" + "3", n: 3 })
+    let mut b = a
+    let x = pop(a)
+    pop(a)
+    println("x {x.name} {x.n} a {len(a)} b {len(b)}")
+    println("b {b[0].name} {b[1].name} {b[2].name}")
+    let y = pop(b)
+    println("y {y.name} b {len(b)} {b[0].name} {b[1].name}")
+    pop(b)
+    pop(b)
+    println("empty {len(b)} {len(a)} {a[0].name}")
+    let mut q: [Q] = []
+    q = push(q, Q { tag: "t" + "1", rows: ["r" + "1", "r" + "2"], k: 7 })
+    q = push(q, Q { tag: "t" + "2", rows: ["r" + "3"], k: 8 })
+    let mut q2 = q
+    pop(q)
+    let z = pop(q2)
+    println("q {len(q)} {q[0].tag} {q[0].rows[1]} z {z.tag} {z.rows[0]} {z.k} q2 {len(q2)} {q2[0].tag}")
+}

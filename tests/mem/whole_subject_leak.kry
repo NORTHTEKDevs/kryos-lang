@@ -1,0 +1,134 @@
+// Peak-RSS probe for tests/mem_whole_subject_gate.sh (LEDGER item A19).
+// `match <call> { x => body }` bound `x` as an alias of a call-result temporary
+// nothing owned, so the tuple / struct / str / array / enum leaked once per
+// match. A sole unguarded whole-subject arm now lowers as `let x = <call>` over
+// the arm body. Modes (each sums into `sink`; the value of the match is used in
+// the value modes):
+//   tuple    `match mkt(i) { x => { sink = sink + x.1 } }`
+//   str      `match mks(i) { s => .. len(s) .. }`
+//   arr      `match mka(i) { a => .. len(a) .. }`
+//   struct   `match mkp(i) { p => .. len(p.name) .. }`
+//   enum     `match mke(i) { e => .. }`
+//   val_tup  the match VALUE is the bound tuple (`x => x`)
+//   val_str  the match VALUE is a str field of the bound tuple (NOT gated: a block
+//            tail `{ let x = mkt(i)  x.0 }` leaks the same on master, a separate defect)
+//   ret      `return x` from inside the arm
+//   escape   `outer = x`: the bound tuple outlives the match
+//   push     `push(keep, x)`: the bound tuple moves into an array
+//   closure  a closure captures the bound tuple
+//   brk      `break` out of the enclosing loop from inside the arm
+//   mut_x    `mut x`, reassigned inside the arm
+//   The same bind when it is NOT the sole arm (a catch-all after refutable arms, or a guarded x):
+//   ns_str / ns_tup / ns_enum / ns_arr / ns_struct   `match mk(i) { <refutable> => .., other => .. }`
+//   ns_guard   `match mkt(i) { x if x.1 >= 0 => .. }` (guarded sole arm; i >= 0 so it always matches)
+//   ns_val     the match VALUE is the bound tuple after a refutable arm
+//   fld_str / fld_str_ns / fld_arr / fld_call   a whole bind of a str / array FIELD read (`match p.name { s => .. }`, with a
+//   refutable arm before it, `match mkp(i).name { .. }`): the read is retained, `s` aliased it and nothing released it
+//   ns_ret / ns_escape / ns_push / ns_closure / ns_brk   return / outer = x / push / capture / break from the catch-all
+struct P { name: str, n: i64 }
+enum E { A(str), B(i64) }
+
+fn mkt(i: i64) -> (str, i64) { return ("t{i}-padpadpadpadpadpadpadpadpad", i) }
+fn mks(i: i64) -> str { return "s{i}-padpadpadpadpadpadpadpadpad" }
+fn mka(i: i64) -> [str] { return ["a{i}-padpadpadpadpadpadpad", "b{i}-padpadpadpadpadpadpad"] }
+fn mkp(i: i64) -> P { return P { name: "p{i}-padpadpadpadpadpadpadpadpad", n: i } }
+fn mke(i: i64) -> E { if i % 2 == 0 { return A("e{i}-padpadpadpadpadpadpadpadpad") } return B(i) }
+
+fn via_val(i: i64) -> (str, i64) { return match mkt(i) { x => x } }
+fn via_nsval(i: i64) -> (str, i64) { return match mkt(i) { ("zzz", 0) => ("q", 1) x => x } }
+fn via_nsret(i: i64) -> i64 {
+    match mkt(i) { ("zzz", 0) => { return 0 } x => { return len(x.0) + x.1 } }
+    return 0
+}
+fn via_ret(i: i64) -> i64 {
+    match mkt(i) { x => { return len(x.0) + x.1 } }
+    return 0
+}
+
+@capabilities(process)
+fn main() {
+    let iters = parse_int(env_get("LEAK_ITERS"))
+    let mode = env_get("LEAK_MODE")
+    let mut sink = 0
+    let mut outer = ("none", 0)
+    let mut i = 0
+    while i < iters {
+        if mode == "tuple" {
+            match mkt(i) { x => { sink = sink + x.1 } }
+        } elif mode == "str" {
+            match mks(i) { s => { sink = sink + len(s) } }
+        } elif mode == "arr" {
+            match mka(i) { a => { sink = sink + len(a) } }
+        } elif mode == "struct" {
+            match mkp(i) { p => { sink = sink + len(p.name) } }
+        } elif mode == "enum" {
+            match mke(i) { e => { sink = sink + 1 } }
+        } elif mode == "val_tup" {
+            let t = via_val(i)
+            sink = sink + len(t.0) + t.1
+        } elif mode == "val_str" {
+            let s = match mkt(i) { x => x.0 }
+            sink = sink + len(s)
+        } elif mode == "ret" {
+            sink = sink + via_ret(i)
+        } elif mode == "escape" {
+            match mkt(i) { x => { outer = x } }
+            sink = sink + len(outer.0) + outer.1
+        } elif mode == "push" {
+            let mut keep: [(str, i64)] = []
+            match mkt(i) { x => { keep = push(keep, x) } }
+            sink = sink + len(keep[0].0)
+        } elif mode == "closure" {
+            match mkt(i) { x => { let f = || len(x.0) + x.1  sink = sink + f() } }
+        } elif mode == "brk" {
+            let mut stop = false
+            match mkt(i) { x => { sink = sink + x.1  if i > 1000000000 { stop = true } } }
+            if stop { break }
+        } elif mode == "ns_str" {
+            match mks(i) { "zzz" => { sink = sink + 1 } other => { sink = sink + len(other) } }
+        } elif mode == "ns_tup" {
+            match mkt(i) { ("zzz", 0) => { sink = sink + 1 } x => { sink = sink + x.1 } }
+        } elif mode == "ns_enum" {
+            match mke(i) { B(-1) => { sink = sink + 1 } e => { sink = sink + 2 } }
+        } elif mode == "ns_arr" {
+            match mka(i) { z if len(z) == 0 => { sink = sink + 1 } a => { sink = sink + len(a) } }
+        } elif mode == "ns_struct" {
+            match mkp(i) { P { n: -1 } => { sink = sink + 1 } p => { sink = sink + len(p.name) } }
+        } elif mode == "ns_guard" {
+            match mkt(i) { x if x.1 >= 0 => { sink = sink + x.1 } }
+        } elif mode == "ns_val" {
+            let t = via_nsval(i)
+            sink = sink + len(t.0) + t.1
+        } elif mode == "ns_ret" {
+            sink = sink + via_nsret(i)
+        } elif mode == "ns_escape" {
+            match mkt(i) { ("zzz", 0) => { sink = sink + 1 } x => { outer = x } }
+            sink = sink + len(outer.0) + outer.1
+        } elif mode == "ns_push" {
+            let mut keep: [(str, i64)] = []
+            match mkt(i) { ("zzz", 0) => { sink = sink + 1 } x => { keep = push(keep, x) } }
+            sink = sink + len(keep[0].0)
+        } elif mode == "ns_closure" {
+            match mkt(i) { ("zzz", 0) => { sink = sink + 1 } x => { let f = || len(x.0) + x.1  sink = sink + f() } }
+        } elif mode == "ns_brk" {
+            let mut stop = false
+            match mkt(i) { ("zzz", 0) => { sink = sink + 1 } x => { sink = sink + x.1  if i > 1000000000 { stop = true } } }
+            if stop { break }
+        } elif mode == "fld_str" {
+            let p = mkp(i)
+            match p.name { s => { sink = sink + len(s) } }
+        } elif mode == "fld_str_ns" {
+            let p = mkp(i)
+            match p.name { "zzz" => { sink = sink + 1 } s => { sink = sink + len(s) } }
+        } elif mode == "fld_arr" {
+            let a = [mka(i)]
+            match a[0] { v => { sink = sink + len(v) } }
+        } elif mode == "fld_call" {
+            match mkp(i).name { "zzz" => { sink = sink + 1 } s => { sink = sink + len(s) } }
+        } elif mode == "mut_x" {
+            match mkt(i) { mut x => { x = ("r", 2)  sink = sink + len(x.0) + x.1 } }
+        }
+        i = i + 1
+    }
+    println("done {sink} {outer.1}")
+}

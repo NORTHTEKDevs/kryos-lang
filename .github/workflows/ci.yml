@@ -307,6 +307,11 @@ jobs:
         # Windows-only (PowerShell PeakWorkingSet64) -- SKIPs elsewhere.
         run: bash tests/mem_struct_field_read_gate.sh
 
+      - name: "Struct/enum array overwrite memory gate (A10)"
+        # Overwriting a [Struct] / [Enum] / [[Struct]] variable released only the
+        # array buffer, never the element boxes: peak RSS on both backends.
+        run: bash tests/mem_struct_array_overwrite_gate.sh
+
       - name: Struct-argument memory gate (LEDGER item 3)
         # Passing a heap-bearing struct to a function, and chaining
         # struct-returning methods, must stay flat on BOTH backends. Pre-fix
@@ -364,6 +369,17 @@ jobs:
         # reassignment release the tuple they consume. 81c61df6 at 1M: 10 of
         # 12 legs over the ceiling; fixed ~4MB. Windows-only -- SKIPs elsewhere.
         run: bash tests/mem_tuple_gate.sh
+
+      - name: Array of tuples holding a struct memory gate
+        # The array owns each tuple and the struct box inside it (A18); master at
+        # 1M: every leg over the ceiling. Windows-only -- SKIPs elsewhere.
+        run: bash tests/mem_tuple_struct_arr_gate.sh
+
+      - name: Whole-subject match bind memory gate
+        # `match <call> { x => body }` owns the call result like `let x = <call>`
+        # (A19); master at 1M: every non-copy leg over the ceiling. Windows-only --
+        # SKIPs elsewhere.
+        run: bash tests/mem_whole_subject_gate.sh
 
       - name: Aggregate-operation memory gate
         # Structural ==, to_string and assert_eq of structs/arrays/tuples, an
