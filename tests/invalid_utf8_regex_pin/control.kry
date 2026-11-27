@@ -1,0 +1,10 @@
+@capabilities(crypto)
+fn main() {
+    let a = "café"
+    println("{regex_match(regex_new("^$"), a)}")
+    println("{regex_match(regex_new("caf"), a)}")
+    println(regex_find(regex_new("caf."), a))
+    println("{regex_find_pos(regex_new("é"), a, 0)}")
+    println(regex_replace_all(regex_new("caf"), a, "X"))
+    println(regex_match(regex_new("^$"), ""))
+}

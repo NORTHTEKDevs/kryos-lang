@@ -26,14 +26,37 @@ unsafe fn handle_to_bytes(handle: i64) -> (*const u8, usize) {
     ((*s).data as *const u8, (*s).len as usize)
 }
 
-/// Decode a KryosString handle into a `&str`. Returns empty string on null/invalid UTF-8.
+/// Decode a KryosString handle into a `&str`. Returns empty string on a null/empty
+/// handle. A string holding invalid UTF-8 (typically `substr()` splitting a multibyte
+/// character) PANICS loudly, like the kryos-rt string builtins (`contains`, `split`,
+/// ...): collapsing it to "" made `regex_match(re, bad)` answer for the empty string
+/// (finish item A4). Byte-oriented consumers (digests, MACs, ed25519, pbkdf2,
+/// base64_encode) read `handle_to_raw` instead and never reach this check.
 unsafe fn handle_to_str<'a>(handle: i64) -> &'a str {
     let (ptr, len) = handle_to_bytes(handle);
     if ptr.is_null() || len == 0 {
         return "";
     }
     let slice = std::slice::from_raw_parts(ptr, len);
-    std::str::from_utf8(slice).unwrap_or("")
+    match std::str::from_utf8(slice) {
+        Ok(s) => s,
+        Err(_) => {
+            let msg = b"string operation requires valid UTF-8, but the string contains invalid byte sequences (a substr()/byte_at() call likely split a multibyte character mid-codepoint) -- use std::utf8::is_valid(s) to check first";
+            kryos_rt::panic::kryos_panic(msg.as_ptr(), msg.len());
+        }
+    }
+}
+
+/// Raw bytes of a KryosString handle, valid UTF-8 or not. Digest/MAC inputs must
+/// use this, not `handle_to_str`: a string built by `substr()` splitting a
+/// multibyte character (or a binary file) is not UTF-8, and `handle_to_str`
+/// collapses it to "", so `sha256` hashed the empty string (finish item A4).
+unsafe fn handle_to_raw<'a>(handle: i64) -> &'a [u8] {
+    let (ptr, len) = handle_to_bytes(handle);
+    if ptr.is_null() || len == 0 {
+        return &[];
+    }
+    std::slice::from_raw_parts(ptr, len)
 }
 
 /// Build a new KryosString handle from a byte slice. Returns 0 on null/alloc failure.
@@ -70,7 +93,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 #[cfg(feature = "crypto")]
 #[no_mangle]
 pub extern "C" fn kryos_sha256_ks(input_handle: i64) -> i64 {
-    let s = unsafe { handle_to_str(input_handle) };
+    let s = unsafe { handle_to_raw(input_handle) };
     let mut out = [0u8; 32];
     let rc = crate::crypto::kryos_sha256(s.as_ptr(), s.len(), out.as_mut_ptr());
     if rc != 0 {
@@ -83,7 +106,7 @@ pub extern "C" fn kryos_sha256_ks(input_handle: i64) -> i64 {
 #[cfg(feature = "crypto")]
 #[no_mangle]
 pub extern "C" fn kryos_sha512_ks(input_handle: i64) -> i64 {
-    let s = unsafe { handle_to_str(input_handle) };
+    let s = unsafe { handle_to_raw(input_handle) };
     let mut out = [0u8; 64];
     let rc = crate::crypto::kryos_sha512(s.as_ptr(), s.len(), out.as_mut_ptr());
     if rc != 0 {
@@ -389,12 +412,7 @@ pub extern "C" fn kryos_http_request_ks(
 
     let keys_handle = build_str_array(&["status", "headers", "body"]);
     let vals_handle = build_i64_array(&[status_node, headers_node, body_node]);
-    let obj = crate::json::kryos_json_object(keys_handle, vals_handle);
-    // The object took a reference of its own on each value.
-    for n in [status_node, headers_node, body_node] {
-        kryos_rt::arc::kryos_arc_release(n as *mut u8);
-    }
-    obj
+    crate::json::kryos_json_object(keys_handle, vals_handle)
 }
 
 /// `https_get(url: str) -> str` — body only, empty on failure. Convenience.
@@ -414,9 +432,7 @@ pub extern "C" fn kryos_https_get_ks(url_handle: i64) -> i64 {
     if body_node <= 0 {
         return str_to_handle("");
     }
-    let body = crate::json::kryos_json_to_str(body_node);
-    kryos_rt::arc::kryos_arc_release(resp as *mut u8);
-    body
+    crate::json::kryos_json_to_str(body_node)
 }
 
 fn do_http_request(
@@ -572,7 +588,7 @@ pub extern "C" fn kryos_fetch_text_ks(url: i64) -> i64 {
 #[cfg(feature = "crypto")]
 #[no_mangle]
 pub extern "C" fn kryos_sha1_hex_ks(input_handle: i64) -> i64 {
-    let s = unsafe { handle_to_str(input_handle) };
+    let s = unsafe { handle_to_raw(input_handle) };
     let mut out = [0u8; 20];
     let rc = crate::crypto::kryos_sha1(s.as_ptr(), s.len(), out.as_mut_ptr());
     if rc != 0 {
@@ -585,7 +601,7 @@ pub extern "C" fn kryos_sha1_hex_ks(input_handle: i64) -> i64 {
 #[cfg(feature = "crypto")]
 #[no_mangle]
 pub extern "C" fn kryos_sha1_base64_ks(input_handle: i64) -> i64 {
-    let s = unsafe { handle_to_str(input_handle) };
+    let s = unsafe { handle_to_raw(input_handle) };
     let mut out = [0u8; 20];
     let rc = crate::crypto::kryos_sha1(s.as_ptr(), s.len(), out.as_mut_ptr());
     if rc != 0 {
@@ -654,14 +670,21 @@ fn base64_decode(input: &str) -> Vec<u8> {
 /// `base64_encode(s: str) -> str` — encode the raw bytes of `s` as base64.
 #[no_mangle]
 pub extern "C" fn kryos_base64_encode_ks(input_handle: i64) -> i64 {
-    let s = unsafe { handle_to_str(input_handle) };
+    let raw = unsafe { handle_to_raw(input_handle) };
     // Read each CODEPOINT as one byte (latin-1), matching base64_decode_ks's
     // 1-codepoint-per-byte output (and the chr/byte_at binary model). The old
     // `s.as_bytes()` used the string's UTF-8 encoding, so a byte >= 0x80 that
     // decode produced as U+0080..U+00FF (2 UTF-8 bytes) re-encoded as 2 bytes ->
     // `base64_encode(base64_decode(x)) != x` for any binary payload. For pure
     // ASCII this is identical to as_bytes().
-    let bytes: Vec<u8> = s.chars().map(|c| c as u8).collect();
+    // Bytes that are NOT valid UTF-8 (a `substr()` that split a multibyte
+    // character) are taken raw, the same model `byte_at` uses; they used to
+    // collapse the whole string to "" (finish item A4).
+    let mut bytes: Vec<u8> = Vec::with_capacity(raw.len());
+    for chunk in raw.utf8_chunks() {
+        bytes.extend(chunk.valid().chars().map(|c| c as u8));
+        bytes.extend_from_slice(chunk.invalid());
+    }
     str_to_handle(&base64_encode(&bytes))
 }
 
@@ -803,10 +826,10 @@ fn hex_decode(s: &str) -> Option<Vec<u8>> {
 #[cfg(feature = "crypto")]
 #[no_mangle]
 pub extern "C" fn kryos_hmac_sha256_ks(key_handle: i64, data_handle: i64) -> i64 {
-    let key = unsafe { handle_to_str(key_handle) };
-    let data = unsafe { handle_to_str(data_handle) };
-    let k = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, key.as_bytes());
-    let tag = ring::hmac::sign(&k, data.as_bytes());
+    let key = unsafe { handle_to_raw(key_handle) };
+    let data = unsafe { handle_to_raw(data_handle) };
+    let k = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, key);
+    let tag = ring::hmac::sign(&k, data);
     str_to_handle(&hex_encode(tag.as_ref()))
 }
 
@@ -842,12 +865,12 @@ pub extern "C" fn kryos_ed25519_public_ks(pkcs8_handle: i64) -> i64 {
 #[no_mangle]
 pub extern "C" fn kryos_ed25519_sign_ks(pkcs8_handle: i64, msg_handle: i64) -> i64 {
     let pkcs8_hex = unsafe { handle_to_str(pkcs8_handle) };
-    let msg = unsafe { handle_to_str(msg_handle) };
+    let msg = unsafe { handle_to_raw(msg_handle) };
     let Some(pkcs8) = hex_decode(pkcs8_hex) else {
         return str_to_handle("");
     };
     match ring::signature::Ed25519KeyPair::from_pkcs8(&pkcs8) {
-        Ok(kp) => str_to_handle(&hex_encode(kp.sign(msg.as_bytes()).as_ref())),
+        Ok(kp) => str_to_handle(&hex_encode(kp.sign(msg).as_ref())),
         Err(_) => str_to_handle(""),
     }
 }
@@ -857,13 +880,13 @@ pub extern "C" fn kryos_ed25519_sign_ks(pkcs8_handle: i64, msg_handle: i64) -> i
 #[no_mangle]
 pub extern "C" fn kryos_ed25519_verify_ks(pub_handle: i64, msg_handle: i64, sig_handle: i64) -> i64 {
     let pub_hex = unsafe { handle_to_str(pub_handle) };
-    let msg = unsafe { handle_to_str(msg_handle) };
+    let msg = unsafe { handle_to_raw(msg_handle) };
     let sig_hex = unsafe { handle_to_str(sig_handle) };
     let (Some(pubkey), Some(sig)) = (hex_decode(pub_hex), hex_decode(sig_hex)) else {
         return 0;
     };
     let key = ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, pubkey);
-    match key.verify(msg.as_bytes(), &sig) {
+    match key.verify(msg, &sig) {
         Ok(()) => 1,
         Err(_) => 0,
     }
@@ -874,7 +897,7 @@ pub extern "C" fn kryos_ed25519_verify_ks(pub_handle: i64, msg_handle: i64, sig_
 #[cfg(feature = "crypto")]
 #[no_mangle]
 pub extern "C" fn kryos_pbkdf2_sha256_ks(pw_handle: i64, salt_handle: i64, iters: i64) -> i64 {
-    let pw = unsafe { handle_to_str(pw_handle) };
+    let pw = unsafe { handle_to_raw(pw_handle) };
     let salt_hex = unsafe { handle_to_str(salt_handle) };
     let Some(salt) = hex_decode(salt_hex) else {
         return str_to_handle("");
@@ -888,7 +911,7 @@ pub extern "C" fn kryos_pbkdf2_sha256_ks(pw_handle: i64, salt_handle: i64, iters
         ring::pbkdf2::PBKDF2_HMAC_SHA256,
         n,
         &salt,
-        pw.as_bytes(),
+        pw,
         &mut out,
     );
     str_to_handle(&hex_encode(&out))

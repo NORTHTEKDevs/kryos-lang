@@ -1,0 +1,6 @@
+@capabilities(crypto)
+fn main() {
+    let a = substr("café", 0, 4)
+    let re = regex_new("^$")
+    println("{regex_match(re, a)}")
+}
