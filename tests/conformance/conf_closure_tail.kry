@@ -1,0 +1,145 @@
+// Conformance (finish item mem_closure): the use-after-free / double-free direction of
+// tests/mem_closure_tail_gate.sh. A tuple bound by name from an enum payload takes its own owner
+// (struct field subject, local subject, fresh call subject), and a tuple holding a `shared` handle is an
+// owned tuple that releases the arc. Every value that leaves the match or the tuple (return, outer
+// assignment, array push, closure capture, field read, a second handle to the same arc) must survive
+// the churn that reuses freed blocks. An if-expression whose condition reads a str field must still
+// compute the same value. Run under KRYOS_FREE_DIAG on both backends and with real frees by
+// tests/no_double_free.sh.
+use std::option::{Option}
+
+struct Item { name: str }
+struct B { h: shared Item, k: i64 }
+struct H { o: Option<(str, i64)>, k: i64 }
+struct P { name: str, n: i64 }
+struct HI { o: Option<P> }
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn churn(i: i64) -> i64 {
+    let mut junk: [str] = []
+    let mut tot = 0
+    let mut j = 0
+    while j < 40 {
+        junk = push(junk, "junk{i}-{j}-padpadpadpadpadpadpadpad")
+        tot = tot + len(junk[j])
+        j = j + 1
+    }
+    return tot
+}
+
+fn mkh(i: i64) -> H { return H { o: Some(("t{i}-padpadpadpadpadpadpadpad", i)), k: i } }
+fn mko(i: i64) -> Option<(str, i64)> { return Some(("o{i}-padpadpadpadpadpadpadpad", i)) }
+fn mkb(i: i64) -> B { return B { h: shared Item { name: "a{i}-padpadpadpadpadpadpadpad" }, k: i } }
+
+fn ret_field(h: H) -> (str, i64) {
+    match h.o { Option.Some(p) => { return p }, Option.None => { return ("none", 0) } }
+}
+fn val_field(h: H) -> (str, i64) {
+    return match h.o { Option.Some(p) => p, Option.None => ("none", 0) }
+}
+fn read_field(h: H) -> i64 {
+    match h.o { Option.Some(p) => { return len(p.0) + p.1 }, Option.None => { return 0 } }
+}
+fn reuse_struct(h: H) -> i64 {
+    let mut r = 0
+    match h.o { Option.Some(p) => { r = len(p.0) }, Option.None => { r = 0 } }
+    churn(r)
+    match h.o { Option.Some(q) => { r = r + len(q.0) + q.1 }, Option.None => { r = r + 0 } }
+    return r + h.k
+}
+fn local_subject(i: i64) -> i64 {
+    let o = mko(i)
+    let mut r = 0
+    match o { Option.Some(p) => { r = len(p.0) + p.1 }, Option.None => { r = 0 } }
+    match o { Option.Some(p) => { r = r + len(p.0) }, Option.None => { r = r + 0 } }
+    return r
+}
+fn fresh_subject(i: i64) -> i64 {
+    match mko(i) { Option.Some(p) => { return len(p.0) + p.1 }, Option.None => { return 0 } }
+}
+fn ifexpr(p: P) -> i64 {
+    let a = if len(p.name) > 2 { 1 } else { 2 }
+    let b = if p.name == "zz" { 10 } else { 20 }
+    return a + b
+}
+fn ifarm(h: HI) -> i64 {
+    let mut r = 0
+    match h.o {
+        Option.Some(x) => { if len(x.name) > 2 { r = r + 1 } else { r = r + 2 } },
+        Option.None => { r = r + 0 }
+    }
+    return r
+}
+fn mkt(b: B) -> (shared Item, i64) { return (b.h, 3) }
+fn pass_tuple(t: (shared Item, i64)) -> i64 { return t.1 + len((*t.0).name) }
+
+fn main() {
+    let mut keep: [(str, i64)] = []
+    let mut fs: [fn() -> i64] = []
+    let mut outer = ("init", 0)
+    let mut i = 0
+    while i < 6 {
+        let h = mkh(i)
+        let r = ret_field(h)
+        let v = val_field(h)
+        churn(i)
+        match h.o {
+            Option.Some(p) => {
+                outer = p
+                keep = push(keep, p)
+                fs = push(fs, || len(p.0) + p.1)
+            },
+            Option.None => { outer = ("x", 0) }
+        }
+        churn(i + 1)
+        expect(r.0 == "t{i}-padpadpadpadpadpadpadpad" and r.1 == i, "return p from a field match")
+        expect(v.0 == "t{i}-padpadpadpadpadpadpadpad" and v.1 == i, "match value p")
+        expect(outer.0 == "t{i}-padpadpadpadpadpadpadpad" and outer.1 == i, "outer = p")
+        expect(read_field(h) == len("t{i}-padpadpadpadpadpadpadpad") + i, "read p")
+        expect(reuse_struct(h) == 2 * len("t{i}-padpadpadpadpadpadpadpad") + i + i, "struct reused after a bind")
+        expect(local_subject(i) == 2 * len("o{i}-padpadpadpadpadpadpadpad") + i, "local subject")
+        expect(fresh_subject(i) == len("o{i}-padpadpadpadpadpadpadpad") + i, "fresh subject")
+        expect(ifexpr(P { name: "p{i}-padpad", n: i }) == 21, "if expression over a str field")
+        expect(ifarm(HI { o: Some(P { name: "p{i}-padpad", n: i }) }) == 1, "if/else tail of a payload arm")
+        i = i + 1
+    }
+    churn(99)
+    let mut k = 0
+    let mut tot = 0
+    while k < 6 {
+        expect(keep[k].0 == "t{k}-padpadpadpadpadpadpadpad" and keep[k].1 == k, "pushed p")
+        tot = tot + fs[k]()
+        k = k + 1
+    }
+    expect(tot == 6 * len("t0-padpadpadpadpadpadpadpad") + 15, "closure capture of p")
+
+    // a tuple holding a shared handle
+    let mut ts: [shared Item] = []
+    let mut j = 0
+    while j < 6 {
+        let b = mkb(j)
+        let t = (b.h, 3)
+        let u = t
+        let w = mkt(b)
+        churn(j)
+        expect(t.1 == 3 and (*t.0).name == "a{j}-padpadpadpadpadpadpadpad", "read a shared tuple")
+        expect((*u.0).name == "a{j}-padpadpadpadpadpadpadpad", "alias of a shared tuple")
+        expect((*w.0).name == "a{j}-padpadpadpadpadpadpadpad" and w.1 == 3, "returned shared tuple")
+        expect(pass_tuple(t) == 3 + len("a{j}-padpadpadpadpadpadpadpad"), "shared tuple as an argument")
+        ts = push(ts, t.0)
+        j = j + 1
+    }
+    churn(98)
+    j = 0
+    while j < 6 {
+        expect((*ts[j]).name == "a{j}-padpadpadpadpadpadpadpad", "handle outlives the tuple")
+        j = j + 1
+    }
+    println("conformance closure tail: PASS")
+}

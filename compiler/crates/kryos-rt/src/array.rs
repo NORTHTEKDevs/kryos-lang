@@ -29,7 +29,7 @@ unsafe fn rc_atomic(arr: *mut KryosArray) -> &'static AtomicI64 {
 /// Release a TUPLE (a KryosArray of i64 slots) held in a struct field, from
 /// a generated struct drop helper: on the sole reference, release each
 /// element whose kind (4 bits per element, element 0 lowest: 1 str, 2 array,
-/// 3 map, 0 none) is heap, then the tuple itself (a struct holding a tuple
+/// 3 map, 4 shared arc, 0 none) is heap, then the tuple itself (a struct holding a tuple
 /// leaked it). Struct/enum elements are not released here.
 #[no_mangle]
 pub unsafe extern "C" fn kryos_tuple_release(t: *mut KryosArray, kinds: i64) {
@@ -48,6 +48,7 @@ pub unsafe extern "C" fn kryos_tuple_release(t: *mut KryosArray, kinds: i64) {
                 1 => crate::string::kryos_string_free(v as *mut crate::string::KryosString),
                 2 => kryos_array_free(v as *mut KryosArray),
                 3 => crate::map::kryos_map_free(v),
+                4 => crate::arc::kryos_arc_release(v as *mut u8),
                 _ => {}
             }
         }

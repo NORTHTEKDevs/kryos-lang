@@ -11199,3 +11199,64 @@ RESIDUAL (executed, NOT part of this item; all leak the same with no match invol
 - A block tail moving a local into a `let` (`let y = { let p = mkp(i)  p }`) leaks ~96MB / 1M, equal to `let y = match mkp(i) { p => p }`.
 - `match <tuple call> { _ => .. }` fails LLVM AOT codegen ("'%t8' defined with type 'ptr' but expected 'i64'") on this tree AND master.
 - Whole bind over a tuple / struct / enum FIELD read is not rewritten (only str / array / map reads are retained by the read).
+
+## mem_closure tail: 146 / 148 PASS; tuple payload binds, shared handles in tuples, if-expression conditions (2026-11-26, branch closeout/lane-mem)
+
+Starting point on this tree: `run.sh --only '^mem:closure[-:/]'` 140 PASS / 8 FAIL (n139_a_50, n139_e, n139_f, v139_g x2, x_tuple,
+v137_uaf, v139_tuple). Now 146 PASS / 2 FAIL, the two being the corpus entries that cannot pass with a correct compiler (below).
+
+ROOT CAUSES (read in lower.rs / the backends, then confirmed on `kryos build --emit-mir` and KRYOS_ALLOC_STATS)
+1. n139_f, v139_g (x2), v139_tuple: `match h.o { Some(p) => .. }` with an `Option<(str, i64)>` field. `enum_payloads_own_refs` is false for a
+   tuple payload, so the field read left the by-value struct param partially moved and its owner (the entry `kryos_struct_share`) was never
+   released: the struct box and the Option box leaked per call. Fix, one rule: an owned tuple bound by NAME from a payload takes its own
+   owner like a struct / enum / str payload (emit_struct_share, dropped per arm via arm_owned_payload_locals), tuples count in
+   `enum_payloads_own_refs`, and strip_escaping_tuple_drops treats an EnumPayload read followed by that share as an independent owner
+   (the same recognition a tuple FIELD / INDEX read already had). A nested pattern's temp is still an unowned alias.
+   The string inside the payload tuple still leaked afterwards (a plain `H { o: Some(("t", i)), n: i }` built and dropped, no match at
+   all): neither backend's enum drop released a tuple payload. That is the A16 rule, re-landed here from 3b358653 (see below).
+2. n139_e: NOT a match defect. `let v = if len(x.s) > 2 { 1 } else { 2 }` (any if-EXPRESSION, a match-arm tail included) never released the
+   retained str field read of its condition: `lower_if` drops the condition's heap temporaries before branching, the IfExpr arm of
+   lower_expr_to_rvalue did not. Fix: the same drop_unescaped_str_temps window around the IfExpr condition. 96MB / 1M on master with
+   `let v = if len(p.name) > 2 {..} else {..}` and `if p.name == "zz"`.
+3. x_tuple: `let t = (b.h, 3)`. A tuple with a `shared` element was not an owned tuple, so MIR stripped its Drop and the tuple's arc reference
+   was never released. Fix: `Shared` joins is_owned_tuple_ty; kryos_tuple_release gets kind 4 (arc release) and Cranelift's
+   tuple_release_kinds maps Shared to it (the local tuple Drop was already type-directed); LLVM emit_tuple_drop / emit_tuple_share release /
+   retain a Shared slot.
+
+A16 RE-LANDED: item 1 needs the enum-drop half, and 3b358653 ("a tuple stored as an enum payload is released with the enum") was verified
+sound by its verifier (no regression, no unsoundness) and refuted only for COVERAGE (struct / array / enum elements of the payload tuple,
+recursive enums). It is re-applied unchanged (cranelift + llvm codegen, strip_escaping EnumVariant hunk, tests/mem_tuple_payload_gate.sh,
+tests/mem/tuple_payload_leak.kry); the coverage gaps listed in the a16 entries above are still open and not claimed. A16 now PASSes on this
+tree (it failed before).
+
+EVIDENCE (executed)
+- run.sh '^mem:closure[-:/]': PASS 146 / FAIL 2 (n139_a_50, v137_uaf, both defective fixtures). Master binary: every other entry of the
+  eight fails the same way it did before (see the commit body for the pin comparison).
+- tests/mem_closure_tail_gate.sh (new, 9 modes x JIT + AOT, 1M iters, ceiling 40MB): this tree PASS, every leg 3-4MB; master binary FAIL
+  (14 FAIL lines: if_* 96-180MB, ptuple_* 120-249MB, shared_* JIT 280MB). tests/mem_tuple_payload_gate.sh: this tree PASS; master FAIL (16).
+- tests/conformance/conf_closure_tail.kry (use-after-free direction: return / outer = p / push / closure capture of a payload tuple from a
+  struct field, a local and a fresh call subject, the struct reused after a bind, shared-handle tuple read / alias / returned / passed /
+  handle outliving the tuple, if-expression values) prints PASS on JIT, with KRYOS_FREE_DIAG=1, and on master; no_double_free.sh "all
+  programs clean" with it added (both backends); run_conformance.sh 123/123.
+- Regression scan: run.sh '^mem:' 385 PASS / 4 FAIL (was 379 / 10; the 4 are c06, n03, n139_a_50, v137_uaf); the feature scan
+  '^(A[0-9]+|A[0-9]+\.ctl|leakmode.*|copy-assign-leak.*|13[5-9].*|137.*|M[0-9]|B[0-9]|41|6|122-typecheck|libm-constfold)$' 54 PASS / 33 FAIL on the
+  tree before this change and 55 / 32 after: the only difference is A16 FAIL -> PASS (diffed by id). 137-perf PASS x0.717 of master.
+  Gates PASS: mem_balance, mem_shared_rule, mem_struct_arg, mem_loop, mem_whole_subject, mem_tuple, mem_tuple_struct_arr, mem_element_read,
+  mem_enum_* (7), mem_field_assign_temp, mem_struct_field_read, mem_struct_array_overwrite, mem_json_handle, mem_pop_stmt,
+  mem_shadow_builtin, mem_string_interp, backend_divergence_pins, jit_symbols, builtin_borrow_mir, type_soundness, minilisp 22/22,
+  stdlib_compile 66/66, match_exhaustiveness, concurrency_smoke, wasm_differential 66/66, selfhost_wholeprogram, security_gate,
+  run_examples, ecosystem_check 259/259, diagnostics, cli_smoke 38/38. mem_tuple_field_overwrite_gate: field_global FAILs, identically on
+  the pre-change tree (160MB; the reverted A14 mutable-global overwrite), every other row PASS.
+- Not run: `cargo test` (lane rule), mem_agg_ops_gate (36 minutes), parity / fuzz gates, the full 1255-program runtime oracle diff (so no
+  closeout_targets.txt line was derived from it; no repo program is known to change output).
+
+RESIDUAL (executed, NOT covered)
+- An ARRAY of tuples holding a `shared` handle (`keep = push(keep, (b.h, 3))`, mode shared_push of the probe, NOT gated) still leaks the arc
+  (515MB / 2M on master and here): the array drop does not release the handle (tuple_array_elem_releasable excludes Shared).
+- A struct field of tuple type holding a `shared` handle is released through kryos_tuple_release kind 4 now, but only the paths that call it;
+  not executed beyond the enum payload and local tuple drops above.
+- The a16 coverage gaps (struct / array / nested-enum elements of a payload tuple) stay open.
+- Defective corpus entries, unchanged and documented above: v137_uaf (the frozen `tot 355349` / `tot 5047669` come from a calibration run of
+  a build with the use-after-free; the program's true sums are 2463990 at n=2200 and 38899290 at n=8800, which this tree prints) and
+  work/n139_a_50 (the file has `;` between statements, a hard parse error on every compiler: "Kryos does not use semicolons"). The
+  oracle files may not be edited from this lane; they need an excluded.txt line or a regenerated fixture.

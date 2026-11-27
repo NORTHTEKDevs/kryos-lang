@@ -1,0 +1,82 @@
+// A16: a tuple stored as an enum payload (Option<(str, i64)>, a user enum variant) is owned by the
+// variant; dropping the enum must release the tuple and its elements. Before the fix the enum drop
+// helpers had no Tuple arm on either backend, so `Some(ts[0])` (and every other tuple payload) leaked
+// the tuple handle and its string: 118MB per million iterations on the JIT, 72MB on AOT. A NAMED tuple
+// stored into a variant (`let o = Some(t)`) additionally lost its own scope-end release (the escape
+// analysis counted the shared copy as a move), which leaked one reference per iteration.
+// LEAK_MODE picks the shape; every mode returns the same answer: the number of iterations whose
+// payload read back intact (each adds 1).
+//   idx        let o = Some(ts[0]) after ts[0] = (..)           (the A16 probe)
+//   idx_match  the same, matched and read through the payload bind
+//   fresh      Some(("t{i}", i)): the literal moves into the variant
+//   named      let t = (..); let o = Some(t): t keeps its own reference, read afterwards
+//   copy       let b = o: the copy takes its own owner
+//   wrap       fn wrap(t) -> Option<(str, i64)> { return Some(t) } of a named tuple
+//   enum_idx   a user enum variant E.A(ts[0])
+//   enum_named a user enum variant E.A(t) of a named tuple
+//   control    ts[0] = (..) with no payload (already flat)
+use std::option::{Option, Some, None}
+enum E { A((str, i64)), B(i64) }
+fn wrap(t: (str, i64)) -> Option<(str, i64)> { return Some(t) }
+fn ok(o: Option<(str, i64)>, s: str, n: i64) -> i64 {
+    match o {
+        Some(x) => { if x.0 == s && x.1 == n { return 1 } return 0 }
+        None => { return 0 }
+    }
+}
+fn oke(e: E, s: str, n: i64) -> i64 {
+    match e {
+        E.A(x) => { if x.0 == s && x.1 == n { return 1 } return 0 }
+        E.B(k) => { return 0 }
+    }
+}
+@capabilities(process)
+fn main() {
+    let iters = parse_int(env_get("LEAK_ITERS"))
+    let mode = env_get("LEAK_MODE")
+    let mut ts: [(str, i64)] = [("a", 1)]
+    let mut sink = 0
+    let mut i = 0
+    while i < iters {
+        if mode == "idx" {
+            ts[0] = ("t{i}", i)
+            let o = Some(ts[0])
+            sink = sink + 1
+        } elif mode == "idx_match" {
+            ts[0] = ("t{i}", i)
+            let o = Some(ts[0])
+            sink = sink + ok(o, "t{i}", i)
+        } elif mode == "fresh" {
+            let o = Some(("t{i}", i))
+            sink = sink + ok(o, "t{i}", i)
+        } elif mode == "named" {
+            let t = ("t{i}", i)
+            let o = Some(t)
+            sink = sink + ok(o, "t{i}", i)
+            if t.1 != i { sink = 0 - 1 }
+        } elif mode == "copy" {
+            let o = Some(("t{i}", i))
+            let b = o
+            sink = sink + ok(b, "t{i}", i)
+        } elif mode == "wrap" {
+            let t = ("t{i}", i)
+            let o = wrap(t)
+            sink = sink + ok(o, "t{i}", i)
+            if t.1 != i { sink = 0 - 1 }
+        } elif mode == "enum_idx" {
+            ts[0] = ("t{i}", i)
+            let e = E.A(ts[0])
+            sink = sink + oke(e, "t{i}", i)
+        } elif mode == "enum_named" {
+            let t = ("t{i}", i)
+            let e = E.A(t)
+            sink = sink + oke(e, "t{i}", i)
+            if t.1 != i { sink = 0 - 1 }
+        } elif mode == "control" {
+            ts[0] = ("t{i}", i)
+            sink = sink + 1
+        }
+        i = i + 1
+    }
+    println("{sink}")
+}

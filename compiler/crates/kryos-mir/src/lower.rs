@@ -2988,6 +2988,9 @@ fn is_owned_tuple_ty(ctx: &LoweringContext, ty: &MirType) -> bool {
         | MirType::Array(_, _)
         | MirType::Map { .. } => true,
         MirType::Tuple(_) => is_owned_tuple_ty(ctx, e),
+        // A `shared` handle element: the literal took its own arc reference,
+        // and every tuple drop (local, enum payload, struct field) releases it.
+        MirType::Shared(_) => true,
         _ => is_owned_struct_ty(ctx, e),
     })
 }
@@ -6030,7 +6033,11 @@ fn strip_escaping_tuple_drops(
     let mut shared_copy_at: HashSet<(usize, usize)> = HashSet::new();
     for (bi, b) in blocks.iter().enumerate() {
         for (ii, inst) in b.instructions.iter().enumerate() {
-            if let Instruction::Assign { dest, value: value @ (RValue::Field { .. } | RValue::Index { .. }) } = inst {
+            if let Instruction::Assign {
+                dest,
+                value: value @ (RValue::Field { .. } | RValue::Index { .. } | RValue::EnumPayload { .. }),
+            } = inst
+            {
                 // An element read of an array of tuples is the binding's own
                 // only when the destination is a NAMED local: an unnamed temp
                 // followed by a share is a container store's (`push(ys,
@@ -6111,8 +6118,10 @@ fn strip_escaping_tuple_drops(
                 {
                     continue;
                 }
-                Instruction::Assign { value: RValue::Field { .. } | RValue::Index { .. }, .. }
-                    if shared_copy_at.contains(&(bi, ii)) =>
+                Instruction::Assign {
+                    value: RValue::Field { .. } | RValue::Index { .. } | RValue::EnumPayload { .. },
+                    ..
+                } if shared_copy_at.contains(&(bi, ii)) =>
                 {
                     continue;
                 }
@@ -6217,6 +6226,32 @@ fn strip_escaping_tuple_drops(
                     if tuples.contains(&u.0) && !elems.iter().any(|e| matches!(e, Operand::Local(l) if *l == u)) {
                         unowned.insert(u.0);
                         unowned.insert(root(u.0));
+                    }
+                }
+                continue;
+            }
+            // An enum variant takes ownership of a tuple payload. A tuple the
+            // block shared right before the construction gave the variant its
+            // own reference (`Some(t)` of a named `t`), so `t` keeps its own
+            // scope-end release; an unshared tuple is moved in (an escape).
+            // The variant's drop releases the payload tuple.
+            if let Instruction::Assign { value: RValue::EnumVariant { fields, .. }, .. } = inst {
+                for f in fields {
+                    let Operand::Local(v) = f else { continue };
+                    if !tuples.contains(&v.0) {
+                        continue;
+                    }
+                    let shared_before = b.instructions[..ii]
+                        .iter()
+                        .rev()
+                        .take_while(|j| !matches!(j, Instruction::Assign { dest: d2, value: v2 }
+                            if d2 == v && !matches!(v2, RValue::Call { func, .. } if func == STRUCT_SHARE_FN)))
+                        .any(|j| matches!(j, Instruction::Assign { value: RValue::Call { func, args }, .. }
+                            if func == STRUCT_SHARE_FN && args.len() == 1
+                                && matches!(&args[0], Operand::Local(l) if l == v)));
+                    if !shared_before {
+                        unowned.insert(v.0);
+                        unowned.insert(root(v.0));
                     }
                 }
                 continue;
@@ -12287,6 +12322,7 @@ fn enum_payloads_own_refs(ctx: &LoweringContext, ty: &MirType) -> bool {
                 )
                 || is_owned_struct_ty(ctx, f)
                 || is_owned_enum_ty(ctx, f)
+                || is_owned_tuple_ty(ctx, f)
         })
     })
 }
@@ -13396,7 +13432,8 @@ fn lower_match_inner(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast
                         &field_type,
                         MirType::Str | MirType::Array(_, _) | MirType::Map { .. }
                     ) || is_owned_struct_ty(ctx, &field_type)
-                        || is_owned_enum_ty(ctx, &field_type);
+                        || is_owned_enum_ty(ctx, &field_type)
+                        || is_owned_tuple_ty(ctx, &field_type);
                     if !is_copy_type(ctx, &field_type) {
                         if field_gets_independent_ref {
                             arm_owned_payload_locals.push(local);
@@ -13465,7 +13502,13 @@ fn lower_match_inner(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast
                             });
                         }
                     }
-                    _ if is_owned_struct_ty(ctx, &field_type) || is_owned_enum_ty(ctx, &field_type) => {
+                    _ if is_owned_struct_ty(ctx, &field_type)
+                        || is_owned_enum_ty(ctx, &field_type)
+                        // An owned tuple bound by name takes its own owner like
+                        // every other owned payload (a nested pattern's temp is
+                        // an alias and is never dropped, so it takes none).
+                        || (ident_bind_name.is_some() && is_owned_tuple_ty(ctx, &field_type)) =>
+                    {
                         emit_struct_share(ctx, dest);
                     }
                     MirType::Struct(struct_name) if !is_copy_type(ctx, &field_type) => {
@@ -17236,7 +17279,27 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             // else-branch's tail, then to I64 as a last resort.
             let result_ty = infer_if_value_type(ctx, then_branch, else_branch.as_ref());
             let result_local = ctx.alloc_temp(result_ty);
+            // The condition's own heap temporaries are released before the
+            // branch, as in `lower_if`: `if len(x.s) > 2 { .. } else { .. }`
+            // as a value (a match-arm tail, `let v = if ..`) leaked the
+            // retained field read once per evaluation.
+            let cond_inst_mark = ctx.current_instructions.len();
+            let cond_block_mark = ctx.next_block;
+            let cond_locals_mark = ctx.locals.len();
+            let cond_partial_moved = ctx.partial_moved_locals.clone();
             let cond_op = lower_expr_to_operand(ctx, condition);
+            let cond_escaping = match &cond_op {
+                Operand::Local(id) => Some(id.0),
+                _ => None,
+            };
+            drop_unescaped_str_temps(
+                ctx,
+                cond_inst_mark,
+                cond_block_mark,
+                cond_locals_mark,
+                &cond_partial_moved,
+                cond_escaping,
+            );
             let then_bb = ctx.alloc_block();
             let else_bb = ctx.alloc_block();
             let merge_bb = ctx.alloc_block();
