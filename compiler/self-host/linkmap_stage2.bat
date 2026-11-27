@@ -16,6 +16,6 @@ link.exe /NOLOGO /SUBSYSTEM:CONSOLE /ENTRY:mainCRTStartup /STACK:33554432 /Brepr
     "%HERE%..\target\release\kryos_stdlib_native.lib" ^
     /NODEFAULTLIB:libcmt.lib msvcrt.lib vcruntime.lib ucrt.lib ^
     legacy_stdio_definitions.lib kernel32.lib ws2_32.lib advapi32.lib ^
-    userenv.lib bcrypt.lib ntdll.lib user32.lib
+    userenv.lib bcrypt.lib ntdll.lib user32.lib synchronization.lib
 if errorlevel 1 ( echo LINK_FAILED errorlevel %errorlevel% & exit /b 1 )
 echo LINK_OK %OUT%

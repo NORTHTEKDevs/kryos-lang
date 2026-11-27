@@ -22,7 +22,7 @@ sed 's/define internal i64 @agent_query_c/define dllexport i64 @agent_query_c/' 
 zig cc -target x86_64-windows-msvc -shared -o agent_lib.dll agent_lib_exp.ll \
     compiler/target/release/kryos_rt.lib \
     compiler/target/release/kryos_stdlib_native.lib \
-    -lntdll -luserenv -lws2_32 -ldbghelp -luser32 -lbcrypt -ladvapi32 \
+    -lntdll -luserenv -lws2_32 -ldbghelp -luser32 -lbcrypt -ladvapi32 -lsynchronization \
     -Wno-override-module
 
 # 4. Build C harness

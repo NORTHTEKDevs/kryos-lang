@@ -127,6 +127,9 @@ pub fn system_libs(target: &kryos_linker::Target) -> (Vec<String>, Vec<String>) 
                 "user32".into(),
                 "bcrypt".into(),
                 "advapi32".into(),
+                // Rust >= 1.100 std parks threads with WaitOnAddress /
+                // WakeByAddress*, exported by synchronization.lib.
+                "synchronization".into(),
             ],
             vec![],
         ),
@@ -140,6 +143,9 @@ pub fn system_libs(target: &kryos_linker::Target) -> (Vec<String>, Vec<String>) 
                 "user32".into(),
                 "bcrypt".into(),
                 "advapi32".into(),
+                // Rust >= 1.100 std parks threads with WaitOnAddress /
+                // WakeByAddress*, exported by synchronization.lib.
+                "synchronization".into(),
                 "gcc".into(),
                 "pthread".into(),
             ],
@@ -169,5 +175,26 @@ pub fn system_libs(target: &kryos_linker::Target) -> (Vec<String>, Vec<String>) 
             ],
         ),
         _ => (vec![], vec![]),
+    }
+}
+
+#[cfg(test)]
+mod system_libs_tests {
+    use super::system_libs;
+    use kryos_linker::{Arch, Env, Os, Target};
+
+    /// Rust >= 1.100 std calls WaitOnAddress / WakeByAddress*, which live in
+    /// synchronization.lib; a Windows link line without it fails LNK2019 for
+    /// every AOT program (CI-WIN-1).
+    #[test]
+    fn windows_link_line_has_synchronization() {
+        for env in [Env::Msvc, Env::Gnu] {
+            let target = Target { arch: Arch::X86_64, os: Os::Windows, env };
+            let (libs, _) = system_libs(&target);
+            assert!(
+                libs.iter().any(|l| l == "synchronization"),
+                "{env:?}: {libs:?}"
+            );
+        }
     }
 }
