@@ -10327,3 +10327,5 @@ Residual: other docs repeating the same claim were not swept (only CLAUDE.md che
 ## Closeout docs lane: B5, B6, B7, B9, 41, B-latent-intrinsics (documented, not fixed)
 
 STABILITY.md gains a "Documented capability limitations" table (before section 6) with one row per id, each carrying a `Workaround:` line. Nothing in the compiler changed; B9 and the intrinsics stay real limitations. Executed: `finish/run.sh <tree> -j 2 --only '^(B5|B6|B7|B9|41|B-latent-intrinsics)$'` printed 6 FAIL on the unmodified tree (master has no such rows) and 6 PASS after.
+
+Closeout docs lane, verifier fix: STABILITY.md B6 workaround replaced with the docs/THREAT-MODEL.md 4.5 wording (the earlier text named an fn-type `@capabilities(...)` bound that does not parse, E0009); B-latent-intrinsics row now lists only the registered syscall1, syscall2, syscall3, syscall6 (syscall4/5 give E0102). Docs only. Executed: finish/run.sh -j 2 --only '^(B5|B6|B7|B9|41|B-latent-intrinsics)$' (see commit).
