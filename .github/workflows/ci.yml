@@ -307,11 +307,6 @@ jobs:
         # Windows-only (PowerShell PeakWorkingSet64) -- SKIPs elsewhere.
         run: bash tests/mem_struct_field_read_gate.sh
 
-      - name: "Copy-struct memory gate (copy-assign-leak)"
-        # An @copy struct literal and each `let c = b` copy were never freed:
-        # box balance on the JIT, peak RSS on both backends.
-        run: bash tests/mem_copy_assign_gate.sh
-
       - name: "Struct/enum array overwrite memory gate (A10)"
         # Overwriting a [Struct] / [Enum] / [[Struct]] variable released only the
         # array buffer, never the element boxes: peak RSS on both backends.

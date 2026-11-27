@@ -136,9 +136,6 @@ pub struct LlvmCodegen {
     /// no store-into-aggregate, no AddrOf, etc.).  Cleared and recomputed per
     /// function by `compute_stackable_locals`.
     stackable_locals: HashSet<u32>,
-    /// `@copy` struct locals that solely own their value (kryos_mir::copy_own):
-    /// their scope-exit Drop frees the cloned heap fields.
-    owned_copy_locals: HashSet<u32>,
     /// Struct locals loaded from a GLOBAL's heap box -> that box pointer, so a
     /// field store (`CUR.inner = ..`) writes the global, not a local copy.
     global_struct_ptrs: HashMap<u32, String>,
@@ -180,7 +177,6 @@ impl LlvmCodegen {
             current_fn_dbg_md: None,
             current_fn_loc_md: None,
             stackable_locals: HashSet::new(),
-            owned_copy_locals: HashSet::new(),
             global_struct_ptrs: HashMap::new(),
         }
     }
@@ -3413,8 +3409,6 @@ impl LlvmCodegen {
         // Compute stack-promotable locals before any emission so we can gate
         // on `self.stackable_locals` inside emit_aggregate_array, Drop, etc.
         self.stackable_locals = Self::compute_stackable_locals(func);
-        self.owned_copy_locals =
-            kryos_mir::copy_own::owned_copy_locals(func, &self.copy_structs, &self.struct_defs);
 
         let fn_text_start = self.output.len();
         // Build the local type map for this function.
@@ -4206,22 +4200,7 @@ impl LlvmCodegen {
                     Some(MirType::Struct(name)) => {
                         // @copy structs are passed by value and share field pointers;
                         // do not free them here -- the original owner will free.
-                        if self.copy_structs.contains(name) {
-                            // An @copy struct that solely owns its value
-                            // (copy_own): free the str fields it cloned. Only
-                            // an in-register aggregate carries them here.
-                            let local_llvm = self.local_type(*local);
-                            if self.owned_copy_locals.contains(&local.0)
-                                && local_llvm.starts_with('%')
-                            {
-                                let agg = local_llvm;
-                                let buf = self.next_temp();
-                                self.emit_line(&format!("  {buf} = alloca {agg}"));
-                                self.emit_line(&format!("  store {agg} {val}, ptr {buf}"));
-                                let name = name.clone();
-                                self.emit_struct_drop(&buf, &name, func);
-                            }
-                        } else {
+                        if !self.copy_structs.contains(name) {
                             let local_llvm = self.local_type(*local);
                             if local_llvm.starts_with('%') {
                                 // SSA aggregate struct value - spill to alloca to
