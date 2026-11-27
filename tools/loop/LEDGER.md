@@ -10440,3 +10440,8 @@ Residual shapes (still E0003 on the tree and on master):
 - **Files:** `docs/BUGS-mini-parser-double-free.md`, pin `tests/mini_parser_doublefree_doc_pin.sh`.
 - **Evidence both ways:** `run.sh --only '^(M7)$'` before: `FAIL M7 ... /\A(?:[^\n]*\n){0,6}...(FIXED|RESOLVED...)/ not found`; after: `PASS M7`, `PASS M7.ctl`. Pin with the OLD doc (git show HEAD:doc) and the master binary: `FAIL doc: no RESOLVED marker in first 7 lines`; pin on this tree: `PASS mini_parser_doublefree_doc_pin`.
 - **NOT covered:** the pin's binary half (rc=0, no double-free) also passes on the master binary because master already ran clean, so only the doc half discriminates. I did not identify which commit fixed the double-frees. I did not run the double-free diagnostic on any program other than `stage1_mini_parser.kry`.
+
+## m4: REOPENED -- fix refuted by verifier (first attempt 29d37d7f reverted by aaf8b82a)
+
+- The first m4 fix, 29d37d7f ("map literal with a negative or parenthesised first key parses as a map"), was reverted in aaf8b82a. The second attempt 713911cc was reverted earlier in 9e25344a (see the m4 REOPENED entry above, which holds the verifier findings and the residual shapes).
+- m4 is OPEN. No m4 fix is on this branch. After both reverts the lane tree was rebuilt (kbuild green) and the dependent items RUN-TMP-1, ASI-nonW0001-tokens, 2c-hardrule6, import-shadows-builtin, import-struct-reachability and M7 were re-run with `run.sh -j 2 --only`: all PASS. I did not re-run M4 after the reverts and make no claim about its state.
