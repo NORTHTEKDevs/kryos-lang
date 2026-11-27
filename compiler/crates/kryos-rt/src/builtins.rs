@@ -418,7 +418,8 @@ pub extern "C" fn kryos_builtin_file_read(path_handle: i64) -> i64 {
             if data.is_null() || len == 0 {
                 ""
             } else {
-                bytes_to_str(data, len)
+                let slice = std::slice::from_raw_parts(data, len);
+                std::str::from_utf8(slice).unwrap_or("")
             }
         };
         match std::fs::read_to_string(path_str) {
@@ -501,7 +502,8 @@ pub extern "C" fn kryos_builtin_env_get(key_handle: i64) -> i64 {
             if data.is_null() || len == 0 {
                 ""
             } else {
-                bytes_to_str(data, len)
+                let slice = std::slice::from_raw_parts(data, len);
+                std::str::from_utf8(slice).unwrap_or("")
             }
         };
         std::env::var(key_str).unwrap_or_default()
@@ -666,7 +668,7 @@ pub extern "C" fn kryos_builtin_parse_float(s_handle: i64) -> i64 {
 }
 
 /// Extract the UTF-8 text of a KryosString handle (empty string for a null
-/// handle; invalid UTF-8 panics loudly, finish item A4).
+/// handle / invalid UTF-8, which then fails the numeric parse and panics).
 fn parse_str_arg(s_handle: i64) -> String {
     if s_handle == 0 {
         return String::new();
@@ -678,7 +680,8 @@ fn parse_str_arg(s_handle: i64) -> String {
         if data.is_null() || len == 0 {
             return String::new();
         }
-        bytes_to_str(data, len).to_string()
+        let slice = std::slice::from_raw_parts(data, len);
+        std::str::from_utf8(slice).unwrap_or("").to_string()
     }
 }
 

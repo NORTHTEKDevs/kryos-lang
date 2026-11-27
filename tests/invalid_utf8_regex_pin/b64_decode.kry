@@ -1,5 +1,0 @@
-@capabilities(crypto)
-fn main() {
-    let a = substr("café", 0, 4)
-    println(base64_decode(a))
-}

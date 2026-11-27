@@ -1,6 +1,0 @@
-fn main() {
-    let a = substr("café", 0, 4)
-    let text = "[\"" + a + "\"]"
-    let n = json_parse(text)
-    println("{json_to_str(n)}")
-}

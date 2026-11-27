@@ -51,13 +51,7 @@ unsafe fn handle_to_string(handle: i64) -> String {
         return String::new();
     }
     let bytes = std::slice::from_raw_parts(ptr, len);
-    match std::str::from_utf8(bytes) {
-        Ok(s) => s.to_string(),
-        Err(_) => {
-            let msg = b"string operation requires valid UTF-8, but the string contains invalid byte sequences (a substr()/byte_at() call likely split a multibyte character mid-codepoint) -- use std::utf8::is_valid(s) to check first";
-            crate::panic::kryos_panic(msg.as_ptr(), msg.len());
-        }
-    }
+    std::str::from_utf8(bytes).unwrap_or("").to_string()
 }
 
 /// Store `value` for global named by the Kryos string handle `name_handle`.

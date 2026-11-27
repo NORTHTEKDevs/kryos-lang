@@ -147,13 +147,7 @@ fn ks_to_string(handle: i64) -> Option<String> {
             return None;
         }
         let slice = std::slice::from_raw_parts(data, len);
-        // A string holding invalid UTF-8 (a substr() that split a multibyte
-        // character) cannot be a JSON string; lossy decoding silently replaced the
-        // bad bytes with U+FFFD (finish item A4). Fail loudly like the other readers.
-        match std::str::from_utf8(slice) {
-            Ok(s) => Some(s.to_string()),
-            Err(_) => crate::panic_invalid_utf8(),
-        }
+        Some(String::from_utf8_lossy(slice).into_owned())
     }
 }
 

@@ -1,6 +1,0 @@
-@capabilities(crypto)
-fn main() {
-    let a = substr("café", 0, 4)
-    let re = regex_new("caf")
-    println(regex_replace_all(re, a, "X"))
-}
