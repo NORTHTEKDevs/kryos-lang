@@ -12352,3 +12352,47 @@ NOT COVERED (leaks as before, safely; the analysis keeps rejecting them)
 - Struct fields that are arrays, maps, enums, tuples, closures or shared handles; a throw before the scope-exit drop; async and wasm.
 - Unrelated and untouched: `p.n + len(p.name)` (a str field read as a call argument inside a binary expression) leaks one str
   reference per evaluation for any struct, @copy or not (same MIR on a plain struct); the new fixture avoids that shape.
+
+## copy_assign_leak: arm-declared @copy local (verifier residual) fixed (2026-11-27, branch closeout/r2-mem, lane r2-mem)
+
+The verifier of 5d1f376c found one more shape of the same defect class: an @copy struct local declared INSIDE an arm of a
+value-producing if/else or else-if chain (`fn f(i){ if i>5 { let q = Q{..}; q.a+q.b } else { 1 } }`, `let r = if c { let q = ..; q.a } else { 4 }`)
+leaked its box every call (JIT box live 994/1000 for tail_q, let_q, decl_in_tail; 995 for elif_val).
+
+ROOT CAUSE (MIR dump, `kryos build --emit-mir`): lowering emits the scope-exit `drop(q)` on EVERY arm. In `tail_q`, `bb3: drop(_3) return 1`
+is the else path, where `_3` is never defined; in `let_q` the single `drop(_3)` sits at the join `bb4`, where `_3` is defined on one path only.
+copy_own required every Drop to see the local DEFINITELY defined and NOT possibly dropped, so both disqualified the local and the
+then-arm's box was never freed.
+
+FIX
+- kryos-mir/src/copy_own.rs: a may-defined (union) dataflow beside the must-defined one. A Drop at a point NO path defines the local is
+  a no-op: it is not an event and `drop_overwritten_copies` now also deletes it (so no backend names a slot or SSA value that does not
+  exist). A Drop at a point where the local is defined on some paths only, or possibly dropped already (the join of `let r = if ..`;
+  the end of a loop body whose arm declares it), no longer disqualifies the local: both backends free-then-zero, an unwritten
+  variable reads as null (cranelift-frontend 0.116.1 `use_var` zero default, LLVM slots are zeroinitializer), and a free of null does
+  nothing. READS (Use events) still must be definitely defined and not dropped.
+- kryos-codegen-llvm: after the real free of an owned @copy local held in an alloca slot, store zeroinitializer to the slot (Cranelift
+  already did `def_var(var, 0)`); without this a stale slot would be freed again on the next loop iteration.
+
+EVIDENCE (executed)
+- Pin: tests/mem_copy_assign_decl_gate.sh (fixture tests/mem/copy_assign_decl_arm_leak.kry, 12 shapes: tail if/else, let r = if, three-arm
+  else-if with a local per arm, str field, copy-then-read, else-only arm, overwrite in an arm, arm local in a while loop, loop with
+  continue/break, nested arm locals, early return out of an arm, two arm locals in a loop). Master binary: box leg FAIL (no alloc-stats),
+  AOT peak RSS 185MB, JIT 471MB (ceiling 40MB). This tree: box allocs=24949 frees=24949 live=0, AOT 4MB, JIT 4MB, PASS. Output identical
+  to master (`tot 12553235`). Before this change on this tree (previous HEAD): box live=9952 of 9964 on the first 8-shape fixture.
+- Per-shape JIT box live at 1000 iters, before -> after: tail_q 994 -> 0, let_q 994 -> 0, elif_val 995 -> 0, arm_in_loop 2000 -> 0
+  (arm_str / arm_copy / arm_else_only / arm_overwrite 0 -> 0).
+- Adversarial probe .scratch (arm local in a loop with continue/break, nested arm locals, return from an arm, overwrite in an arm, two
+  arm locals per loop iteration, 400 iterations): identical output (`tot 1469168`) on master, tree JIT, Cranelift AOT and LLVM release;
+  KRYOS_FREE_DIAG=1 reports no double free on any of them; JIT box live=0.
+- finish run.sh --only '^(copy-assign-leak|...:cp_copy_const|...:cp_copy_ints|...:cp_struct_nocopyvar)$': 4 PASS 0 FAIL.
+- Regression: finish run.sh -j 2 --only '^(mem|leakmode|copy-assign-leak|137|138|139|A[0-9]+|M[0-9]+|B[0-9]+)([:.\-/]|$)': 464 PASS / 6 FAIL
+  of 470; the 6 (A4, A5, A17, A20, M4, mem:closure v137_uaf) are the known failing rows listed above, identical FAIL lines; no row that
+  passed before fails. Gates: the three earlier mem_copy_assign gates, no_double_free, mem_balance_gate (16 rows), mem_shared_rule_gate
+  (28 rows), mem_struct_arg, mem_struct_field_read, mem_field_assign_temp, mem_leakmode_unwind, backend_divergence_pins,
+  selfhost_wholeprogram, minilisp 22/22, stdlib_compile 66/66, concurrency_smoke, conformance 129/129.
+  `compiler/self-host/test_bootstrap.sh` is 14/16 (elf.kry, coff.kry rc=139), unchanged from the entry above (predates this change).
+
+STILL NOT COVERED (leaks safely, unchanged): see the NOT COVERED list of the previous copy_assign_leak entry (nested @copy fields,
+@copy values passed to calls / returned / pushed / captured, aggregate-typed fields, throw before the scope-exit drop, async, wasm).
+Not confirmed here: an LLVM-release box balance (the RSS leg of the new gate covers it; the box counter is JIT-only).

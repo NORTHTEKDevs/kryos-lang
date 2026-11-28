@@ -4301,6 +4301,15 @@ impl LlvmCodegen {
                                 self.emit_line(&format!("  store {agg} {val}, ptr {buf}"));
                                 let name = name.clone();
                                 self.emit_struct_drop(&buf, &name, func);
+                                // A drop on a path where the local is stale
+                                // (declared in one arm, dropped at the join or
+                                // at the end of a loop body) must free nothing.
+                                if self.mutable_locals.contains(&local.0) {
+                                    self.emit_line(&format!(
+                                        "  store {agg} zeroinitializer, ptr %_{}.addr",
+                                        local.0
+                                    ));
+                                }
                             }
                         } else {
                             let local_llvm = self.local_type(*local);

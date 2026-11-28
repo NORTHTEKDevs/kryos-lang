@@ -23,10 +23,20 @@
 //! the local out of the set and keeps the old leak-only behaviour, which is
 //! memory safe.
 //!
-//! Two dataflow checks keep a real free from ever running twice or on
-//! nothing: at every drop and every read the local must be DEFINITELY defined
-//! (on every path from entry) and NOT possibly already dropped. A local that
-//! fails either is dropped from the set.
+//! A dataflow check keeps a read from ever seeing nothing: at every read the
+//! local must be DEFINITELY defined (on every path from entry) and NOT possibly
+//! already dropped. A local that fails is dropped from the set.
+//!
+//! A `drop(q)` at a point NO path defines `q` (the else arm of a value-producing
+//! if/else whose then arm declared `q`: lowering emits the scope-exit drop on
+//! every arm) does nothing at run time. It is neither an event that
+//! disqualifies the local nor left in the MIR: `drop_overwritten_copies`
+//! deletes it (the SSA value may not even exist). A drop where `q` is defined
+//! on some paths but not all (`let r = if c { let q = ..; q.a } else { 4 }`,
+//! the scope-exit drop at the join; a loop body that declares it in one arm)
+//! or possibly dropped already stays: both backends zero the variable / slot
+//! after a real free and an unwritten one reads as null, so that drop frees
+//! at most once. Reads still must be definitely defined and not dropped.
 //!
 //! Blocks no path from the entry reaches are ignored: lowering leaves them
 //! behind after a tail if/else / else-if / match whose arms all `return`, each
@@ -76,6 +86,10 @@ enum Ev {
 pub struct CopyOwn {
     pub owned: HashSet<u32>,
     pub overwrites: Vec<(usize, usize, u32)>,
+    /// `drop(local)` of an owned local at a point no path defines it (the
+    /// other arm of an if/else whose first arm declared it): a no-op that the
+    /// driver deletes so no backend ever frees an undefined slot.
+    pub undefined_drops: Vec<(usize, usize, u32)>,
 }
 
 /// The `@copy` struct locals of `func` whose `Drop` may free the value.
@@ -87,7 +101,8 @@ pub fn owned_copy_locals(
     analyze(func, copy_structs, struct_defs).owned
 }
 
-/// Insert `drop(local)` before every definition of an owned `@copy` local that
+/// Delete the `drop(local)` of an owned local at a point no path defines it
+/// and insert `drop(local)` before every definition of an owned `@copy` local that
 /// would overwrite a live value of it (`p = P { .. }` on a `let mut p`): the
 /// overwritten value was never freed by anything. Only a local that is
 /// DEFINITELY defined and NOT possibly dropped at that point qualifies, so the
@@ -102,13 +117,24 @@ pub fn drop_overwritten_copies(module: &mut MirModule) {
     let copy_structs = module.copy_structs.clone();
     let struct_defs = module.struct_defs.clone();
     for func in module.functions.iter_mut() {
-        let mut pts = analyze(func, &copy_structs, &struct_defs).overwrites;
-        // back to front so earlier indices stay valid
+        let res = analyze(func, &copy_structs, &struct_defs);
+        // (block, instruction, local, insert?) back to front so earlier
+        // indices stay valid
+        let mut pts: Vec<(usize, usize, u32, bool)> = res
+            .overwrites
+            .iter()
+            .map(|&(b, i, l)| (b, i, l, true))
+            .chain(res.undefined_drops.iter().map(|&(b, i, l)| (b, i, l, false)))
+            .collect();
         pts.sort_by(|a, b| (b.0, b.1).cmp(&(a.0, a.1)));
-        for (bi, ii, l) in pts {
-            func.blocks[bi]
-                .instructions
-                .insert(ii, Instruction::Drop { local: LocalId(l) });
+        for (bi, ii, l, insert) in pts {
+            if insert {
+                func.blocks[bi]
+                    .instructions
+                    .insert(ii, Instruction::Drop { local: LocalId(l) });
+            } else {
+                func.blocks[bi].instructions.remove(ii);
+            }
         }
     }
 }
@@ -308,12 +334,18 @@ fn analyze(
     let all: HashSet<u32> = cands.keys().copied().collect();
     let mut def_in: Vec<Option<HashSet<u32>>> = vec![None; nb];
     let mut drop_in: Vec<HashSet<u32>> = vec![HashSet::new(); nb];
+    // `may`: defined on SOME path (union)
+    let mut may_in: Vec<HashSet<u32>> = vec![HashSet::new(); nb];
     def_in[0] = Some(HashSet::new());
-    let step = |evs: &[(u32, Ev, usize)], d: &mut HashSet<u32>, x: &mut HashSet<u32>| {
+    let step = |evs: &[(u32, Ev, usize)],
+                d: &mut HashSet<u32>,
+                x: &mut HashSet<u32>,
+                m: &mut HashSet<u32>| {
         for (l, e, _) in evs {
             match e {
                 Ev::Def => {
                     d.insert(*l);
+                    m.insert(*l);
                     x.remove(l);
                 }
                 Ev::Drop => {
@@ -332,7 +364,8 @@ fn analyze(
             let Some(din) = def_in[bi].clone() else { continue };
             let mut d = din;
             let mut x = drop_in[bi].clone();
-            step(&block_evs[bi], &mut d, &mut x);
+            let mut m = may_in[bi].clone();
+            step(&block_evs[bi], &mut d, &mut x, &mut m);
             for s in func.blocks[bi].successors() {
                 let Some(&si) = idx_of.get(&s.0) else { continue };
                 let new_def = match &def_in[si] {
@@ -348,6 +381,11 @@ fn analyze(
                 if drop_in[si].len() != before {
                     changed = true;
                 }
+                let before = may_in[si].len();
+                may_in[si].extend(m.iter().copied());
+                if may_in[si].len() != before {
+                    changed = true;
+                }
             }
         }
     }
@@ -359,6 +397,7 @@ fn analyze(
 
     // Check every event against the state it sees.
     let mut overwrites: Vec<(usize, usize, u32)> = Vec::new();
+    let mut undefined_drops: Vec<(usize, usize, u32)> = Vec::new();
     for bi in 0..nb {
         let Some(din) = def_in[bi].clone() else {
             // Unreachable block (no events were recorded for it above).
@@ -366,6 +405,7 @@ fn analyze(
         };
         let mut d = din;
         let mut x = drop_in[bi].clone();
+        let mut m = may_in[bi].clone();
         for (l, e, ii) in &block_evs[bi] {
             match e {
                 Ev::Def => {
@@ -379,6 +419,7 @@ fn analyze(
                         }
                     }
                     d.insert(*l);
+                    m.insert(*l);
                     x.remove(l);
                 }
                 Ev::Use => {
@@ -387,9 +428,16 @@ fn analyze(
                     }
                 }
                 Ev::Drop => {
-                    if !d.contains(l) || x.contains(l) {
-                        bad.insert(*l);
+                    if !m.contains(l) {
+                        // no path defines it here: a no-op, removed later
+                        undefined_drops.push((bi, *ii, *l));
+                        continue;
                     }
+                    // Defined on only some paths, or possibly dropped
+                    // already: both backends null the variable / slot after
+                    // a real free and read an unwritten one as null, and a
+                    // free of null does nothing, so the drop frees the value
+                    // at most once.
                     x.insert(*l);
                 }
             }
@@ -401,6 +449,7 @@ fn analyze(
             out.insert(*l);
         }
     }
+    res.undefined_drops = undefined_drops.into_iter().filter(|(_, _, l)| out.contains(l)).collect();
     res.overwrites = overwrites.into_iter().filter(|(_, _, l)| out.contains(l)).collect();
     res.owned = out;
     res

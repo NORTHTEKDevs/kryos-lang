@@ -334,6 +334,12 @@ jobs:
         # and an overwritten `let mut` @copy local, must be freed.
         run: bash tests/mem_copy_assign_tail_gate.sh
 
+      - name: Arm-declared @copy struct memory gate (LEDGER item copy-assign-leak)
+        # An @copy local declared inside an arm of a value-producing if/else or
+        # else-if chain, or in a loop body arm, must be freed (box balance +
+        # peak RSS on both backends).
+        run: bash tests/mem_copy_assign_decl_gate.sh
+
       - name: Struct-argument memory gate (LEDGER item 3)
         # Passing a heap-bearing struct to a function, and chaining
         # struct-returning methods, must stay flat on BOTH backends. Pre-fix
