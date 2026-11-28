@@ -605,6 +605,15 @@ narrowing leaves, not for its declared ceiling. Each rule covers the one shape i
 callback held in a local, forwarded through a relay or read out of a container still needs the older
 workaround (invariants 25 to 27 of [capability-soundness.md](capability-soundness.md)).
 
+A fourth over-rejection (ASSAULT round 2, finding F6) was closed on 2026-11-27 (gate: `tests/assault_f6_receiver_pin.sh`, PASS).
+The capability layer filed every method under its bare name, so a call to a capability-free `PlainFormatter.run`
+was charged the `fs:read` of an unrelated `SecretLoader.run` and refused inside `deny!(fs:read)`. A call is now
+charged the method of the receiver's own declared type when the calling function proves the type (a typed
+parameter, `Self`, a `let` with an annotation or a struct literal, every binding of the name agreeing); a
+`dyn`, a generic bound, a field, a call result, a rebound name or a name a blanket impl answers keeps the
+union over every method of that name, so the change accepts only calls on a receiver whose method is known
+(invariant 28 of [capability-soundness.md](capability-soundness.md)).
+
 ### 4.3 Deferred alternate roots R6 and R7
 
 Two closures of the shape layer's fail-open defaults were prototyped and not

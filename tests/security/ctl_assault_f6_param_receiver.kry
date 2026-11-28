@@ -1,0 +1,48 @@
+// ASSAULT-F6 control: the receiver is a typed parameter and `self`, through an unannotated helper whose
+// capabilities are inferred. `p.twice()` and the two `self.run()` calls are on a PlainFormatter, so the
+// helper needs nothing and the call inside deny!(fs:read) is accepted. Accepted in both modes; `run` prints
+// the marker. Master rejects it (the helper inherits the fs:read of the unrelated SecretLoader.run).
+@capabilities(fs:read)
+fn load_secret() -> str {
+    return file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+trait Loader {
+    fn run(self: Self) -> str
+}
+
+struct SecretLoader {}
+impl Loader for SecretLoader {
+    @capabilities(fs:read)
+    fn run(self: SecretLoader) -> str {
+        return load_secret()
+    }
+}
+
+trait Formatter {
+    fn run(self: Self) -> str
+}
+
+struct PlainFormatter {}
+impl Formatter for PlainFormatter {
+    fn run(self: PlainFormatter) -> str {
+        return "formatted"
+    }
+}
+
+impl PlainFormatter {
+    fn twice(self: PlainFormatter) -> str {
+        return self.run() + self.run()
+    }
+}
+
+fn render(p: PlainFormatter) -> str {
+    return p.twice()
+}
+
+@capabilities(fs:read)
+fn main() {
+    deny!(fs:read) {
+        println("ASSAULT-F6-PARAM-OK " + render(PlainFormatter {}))
+    }
+}

@@ -1,0 +1,38 @@
+// ASSAULT-F6 attack: the receiver IS a SecretLoader, so the call is charged SecretLoader.run (fs:read)
+// and the deny!(fs:read) block rejects it (E0507) in both modes. Receiver-directed resolution must not make
+// this call cheaper than the method it runs.
+@capabilities(fs:read)
+fn load_secret() -> str {
+    return file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+trait Loader {
+    fn run(self: Self) -> str
+}
+
+struct SecretLoader {}
+impl Loader for SecretLoader {
+    @capabilities(fs:read)
+    fn run(self: SecretLoader) -> str {
+        return load_secret()
+    }
+}
+
+trait Formatter {
+    fn run(self: Self) -> str
+}
+
+struct PlainFormatter {}
+impl Formatter for PlainFormatter {
+    fn run(self: PlainFormatter) -> str {
+        return "formatted"
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    deny!(fs:read) {
+        let f = SecretLoader {}
+        println("ASSAULT-F6-LEAK " + f.run())
+    }
+}

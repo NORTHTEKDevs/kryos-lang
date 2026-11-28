@@ -292,6 +292,33 @@ enum CallForm {
     Static,
 }
 
+/// LEDGER ASSAULT-F6. Where a function or method is declared, as far as
+/// receiver-directed method resolution needs to know it.
+#[derive(Debug, Clone, Default)]
+struct MethodCtx {
+    /// `Self` inside an `impl` of a declared struct/enum. `None` for a free
+    /// function, a trait body, and an impl whose target is anything else (a
+    /// primitive, a generic parameter, a type alias, a trait).
+    self_owner: Option<String>,
+    /// The generic parameter names of the enclosing `impl` / `trait`.
+    generics: Vec<String>,
+    /// The declared types whose `(owner, method)` entry this declaration's
+    /// capability set feeds: the impl target for an impl method, every
+    /// implementor of the trait for a trait method (a default body or an
+    /// annotated declaration), nothing for a free function.
+    qowners: Vec<String>,
+}
+
+/// One function or method that has a body, with the context it was declared in.
+struct FnEntry<'a> {
+    name: String,
+    annotated: bool,
+    body: &'a kryos_ast::Block,
+    params: &'a [Param],
+    fn_generics: &'a [kryos_ast::GenericParam],
+    ctx: MethodCtx,
+}
+
 /// LEDGER ASSAULT-F2. One declaration with a callback parameter that it
 /// invokes inside a `deny!` block: a parameter used ONLY as the callee of a
 /// direct call (`cb(x)`), with at least one such call inside a `deny!`.
@@ -1201,6 +1228,34 @@ struct CapabilityChecker {
     current_actor_delegated_fields: HashSet<String>,
     /// ASSAULT-F1: the declared capabilities of the actor being checked.
     current_actor_ceiling: CapabilitySet,
+    /// LEDGER ASSAULT-F6 (receiver-directed method resolution). Every
+    /// `(owner, method)` pair that a call on a receiver whose static type is
+    /// the declared struct/enum `owner` can dispatch to: the methods of every
+    /// `impl` block whose target is `owner` (inherent or trait impl), plus the
+    /// default-bodied methods of every trait `owner` implements.
+    method_owners: HashSet<(String, String)>,
+    /// Method names that are never resolved by receiver type: a name declared
+    /// by an `impl` whose target is a generic parameter (a blanket impl), a
+    /// type alias or a trait, or by a trait such an impl implements. Such an
+    /// impl can answer a call on a receiver of ANY declared type, so a
+    /// `(owner, method)` entry would not bound the dispatch.
+    unqualifiable_methods: HashSet<String>,
+    /// Trait name -> the declared structs/enums with an `impl Trait for T`.
+    trait_implementors: HashMap<String, Vec<String>>,
+    /// Trait and type-alias names: a name in this set is not a struct/enum
+    /// even if a struct/enum of that name is also declared.
+    non_struct_type_names: HashSet<String>,
+    /// Every top-level `let` / `let mut` name. An identifier that names one is
+    /// a global, never a local whose type a function body can prove.
+    global_value_names: HashSet<String>,
+    /// ASSAULT-F6. The method-call nodes whose receiver has a statically
+    /// proven declared type (see `resolve_method_receivers`), keyed by the
+    /// ADDRESS of the `Expr::MethodCall` node in the module being checked
+    /// (stable: the module is borrowed for the whole run), valued by the
+    /// owner. A node that is not in the map (a clone of an expression, a call
+    /// on a `dyn`, a generic or a call result) is charged by bare method name,
+    /// the union over every method of that name, exactly as before.
+    resolved_calls: HashMap<usize, String>,
     /// The active enforcement mode.
     mode: CapabilityMode,
 }
@@ -1242,6 +1297,12 @@ impl CapabilityChecker {
             stored_fn_params: HashMap::new(),
             current_actor_delegated_fields: HashSet::new(),
             current_actor_ceiling: CapabilitySet::empty(),
+            method_owners: HashSet::new(),
+            unqualifiable_methods: HashSet::new(),
+            trait_implementors: HashMap::new(),
+            non_struct_type_names: HashSet::new(),
+            global_value_names: HashSet::new(),
+            resolved_calls: HashMap::new(),
             mode,
         }
     }
@@ -1898,6 +1959,444 @@ impl CapabilityChecker {
                 _ => {}
             }
         }
+    }
+
+    // ---------------------------------------------------------------------
+    // LEDGER ASSAULT-F6: receiver-directed method resolution.
+    //
+    // The capability layer sees the AST only, and every method table below
+    // (`fn_capabilities`, the inference map, ...) is keyed by BARE method
+    // name, so `PlainFormatter.run` was charged what the unrelated
+    // `SecretLoader.run` needs. Every method is now ALSO filed under
+    // `qkey(owner, method)`, and a method call whose receiver has a type that
+    // its own function body proves (a typed parameter, `Self`, a `let` with
+    // an annotation or a struct literal initializer, with EVERY binding of
+    // that name in the function agreeing) is charged the owner's entry. The
+    // bare-name entry stays the union over every method of the name and still
+    // answers every call that is not resolved: a `dyn`, a generic bound, a
+    // call result, a field, a name bound twice with different types. An entry
+    // is never larger than the bare-name union, so the change can only turn a
+    // rejection of a call on a proven type into an acceptance, never the
+    // reverse; `resolve_method_receivers` and `collect_method_owners` say why
+    // that acceptance is sound.
+    // ---------------------------------------------------------------------
+
+    /// The key under which the capability set of `method` as declared on the
+    /// declared type `owner` is filed, beside the bare-name entry. `::` cannot
+    /// occur in an identifier, so a qualified key never collides with the name
+    /// of a function.
+    fn qkey(owner: &str, method: &str) -> String {
+        format!("{owner}::{method}")
+    }
+
+    /// The key a method CALL node is charged under: the qualified
+    /// `(owner, method)` entry when `resolve_method_receivers` proved the
+    /// receiver's declared type, the bare method name otherwise.
+    fn method_caps_key(&self, call: &Expr, method: &str) -> String {
+        match self.resolved_calls.get(&(call as *const Expr as usize)) {
+            Some(owner) => Self::qkey(owner, method),
+            None => method.to_string(),
+        }
+    }
+
+    /// Record, once per module, which declared types answer which method names
+    /// (`method_owners`), which structs/enums implement which trait
+    /// (`trait_implementors`), and which method names must keep answering by
+    /// the whole-name union (`unqualifiable_methods`). Needs
+    /// `declared_type_names`, so it runs right after `collect_defined_fns`.
+    ///
+    /// For a receiver whose static type is the declared struct/enum `T` (never
+    /// a `dyn`, a generic parameter or a trait, which are not in
+    /// `declared_type_names` or are shadowed), a call `x.m()` dispatches
+    /// statically to a method named `m` of an `impl` block whose target is `T`
+    /// (inherent or trait impl: the type checker rejects a second `m` on one
+    /// type, and the entries of several blocks are unioned anyway), or to a
+    /// default body `m` of a trait that `T` implements. Those are exactly the
+    /// `(T, m)` pairs recorded here. An `impl` whose target is a generic
+    /// parameter (`impl<T> Tr for T`), a type alias or a trait is NOT filed
+    /// under any one type: it can answer a call on a receiver of any declared
+    /// type, so its method names (and, for a trait impl, every method name of
+    /// that trait, defaults included) stay unqualifiable.
+    fn collect_method_owners(&mut self, decls: &[Decl]) {
+        // Every method name of each trait, and the default-bodied subset.
+        let mut trait_methods: HashMap<String, Vec<String>> = HashMap::new();
+        let mut trait_defaults: HashMap<String, Vec<String>> = HashMap::new();
+        for d in decls {
+            match d {
+                Decl::Trait { name, methods, .. } => {
+                    self.non_struct_type_names.insert(name.clone());
+                    for m in methods {
+                        if let Decl::Function {
+                            name: mname, body, ..
+                        } = m
+                        {
+                            trait_methods
+                                .entry(name.clone())
+                                .or_default()
+                                .push(mname.clone());
+                            if body.is_some() {
+                                trait_defaults
+                                    .entry(name.clone())
+                                    .or_default()
+                                    .push(mname.clone());
+                            }
+                        }
+                    }
+                }
+                Decl::TypeAlias { name, .. } => {
+                    self.non_struct_type_names.insert(name.clone());
+                }
+                Decl::Const { name, .. } => {
+                    self.global_value_names.insert(name.clone());
+                }
+                _ => {}
+            }
+        }
+        for d in decls {
+            let Decl::Impl {
+                target,
+                trait_name,
+                generics,
+                methods,
+                ..
+            } = d
+            else {
+                continue;
+            };
+            let blanket = generics.iter().any(|g| g.name == *target)
+                || self.non_struct_type_names.contains(target);
+            if blanket {
+                for m in methods {
+                    if let Decl::Function { name, .. } = m {
+                        self.unqualifiable_methods.insert(name.clone());
+                    }
+                }
+                if let Some(all) = trait_name.as_ref().and_then(|t| trait_methods.get(t)) {
+                    self.unqualifiable_methods.extend(all.iter().cloned());
+                }
+                continue;
+            }
+            if !self.declared_type_names.contains(target) {
+                // A primitive, an array, a builtin: never the static type of a
+                // struct/enum receiver.
+                continue;
+            }
+            for m in methods {
+                if let Decl::Function { name, .. } = m {
+                    self.method_owners.insert((target.clone(), name.clone()));
+                }
+            }
+            if let Some(tr) = trait_name {
+                let implementors = self.trait_implementors.entry(tr.clone()).or_default();
+                if !implementors.contains(target) {
+                    implementors.push(target.clone());
+                }
+                if let Some(defaults) = trait_defaults.get(tr) {
+                    for dm in defaults {
+                        self.method_owners.insert((target.clone(), dm.clone()));
+                    }
+                }
+            }
+        }
+    }
+
+    /// The `MethodCtx` of the methods of `impl <target>`: filed under
+    /// `(target, name)` only when `collect_method_owners` filed the block's
+    /// methods under the target (a declared struct/enum that no generic
+    /// parameter of the block, alias or trait shadows).
+    fn impl_method_ctx(&self, target: &str, generics: &[kryos_ast::GenericParam]) -> MethodCtx {
+        let qualifiable = self.declared_type_names.contains(target)
+            && !self.non_struct_type_names.contains(target)
+            && !generics.iter().any(|g| g.name == target);
+        MethodCtx {
+            self_owner: qualifiable.then(|| target.to_string()),
+            generics: generics.iter().map(|g| g.name.clone()).collect(),
+            qowners: if qualifiable {
+                vec![target.to_string()]
+            } else {
+                Vec::new()
+            },
+        }
+    }
+
+    /// The `MethodCtx` of the methods of `trait <name>`: a default body or an
+    /// annotated declaration feeds the `(implementor, method)` entry of every
+    /// declared type that implements the trait.
+    fn trait_method_ctx(&self, name: &str, generics: &[kryos_ast::GenericParam]) -> MethodCtx {
+        MethodCtx {
+            self_owner: None,
+            generics: generics.iter().map(|g| g.name.clone()).collect(),
+            qowners: self
+                .trait_implementors
+                .get(name)
+                .cloned()
+                .unwrap_or_default(),
+        }
+    }
+
+    /// `collect_functions` with the context each function was declared in.
+    /// Same traversal: every function with a body, in `impl` and `trait` blocks
+    /// too (not actor handlers).
+    fn collect_functions_ex<'a>(
+        &self,
+        decls: &'a [Decl],
+        ctx: &MethodCtx,
+        out: &mut Vec<FnEntry<'a>>,
+    ) {
+        for d in decls {
+            match d {
+                Decl::Function {
+                    name,
+                    annotations,
+                    body: Some(b),
+                    params,
+                    generics,
+                    ..
+                } => out.push(FnEntry {
+                    name: name.clone(),
+                    annotated: Self::has_capabilities_annotation(annotations),
+                    body: b,
+                    params: params.as_slice(),
+                    fn_generics: generics.as_slice(),
+                    ctx: ctx.clone(),
+                }),
+                Decl::Impl {
+                    target,
+                    generics,
+                    methods,
+                    ..
+                } => {
+                    let ictx = self.impl_method_ctx(target, generics);
+                    self.collect_functions_ex(methods, &ictx, out);
+                }
+                Decl::Trait {
+                    name,
+                    generics,
+                    methods,
+                    ..
+                } => {
+                    let tctx = self.trait_method_ctx(name, generics);
+                    self.collect_functions_ex(methods, &tctx, out);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// The declared struct/enum a type expression denotes as a method
+    /// receiver, if it provably denotes exactly one: a plain or generic
+    /// reference to a declared type that is not shadowed by a generic
+    /// parameter in scope, a trait or an alias, `Self` inside an `impl` of a
+    /// declared type, or a reference `&T` to either. A `dyn Trait`, an
+    /// optional, an array, a function type, a pointer, a generic parameter
+    /// and everything else is `None`.
+    fn recv_type_of(
+        &self,
+        ty: &TypeExpr,
+        generics: &HashSet<&str>,
+        self_owner: Option<&str>,
+    ) -> Option<String> {
+        match ty {
+            TypeExpr::Simple { name, .. } | TypeExpr::Generic { name, .. } => {
+                if name == "Self" {
+                    return self_owner.map(str::to_string);
+                }
+                if generics.contains(name.as_str())
+                    || self.non_struct_type_names.contains(name)
+                    || !self.declared_type_names.contains(name)
+                {
+                    return None;
+                }
+                Some(name.clone())
+            }
+            TypeExpr::Reference { inner, .. } => self.recv_type_of(inner, generics, self_owner),
+            _ => None,
+        }
+    }
+
+    /// The declared struct a struct literal `Name { .. }` builds, when the
+    /// name denotes nothing else in scope.
+    fn recv_struct_literal_type(&self, name: &str, generics: &HashSet<&str>) -> Option<String> {
+        if generics.contains(name)
+            || self.non_struct_type_names.contains(name)
+            || self.enum_variant_names.contains(name)
+            || !self.declared_type_names.contains(name)
+        {
+            return None;
+        }
+        Some(name.to_string())
+    }
+
+    /// The names of one function whose EVERY binding in the body agrees on one
+    /// declared struct/enum, mapped to it. Flat and flow-insensitive on
+    /// purpose: a name bound twice (shadowing, two branches, a loop variable,
+    /// a lambda parameter, a `match`/`catch`/`select` binder, a destructuring
+    /// pattern, the bare target of an assignment) with different types, or
+    /// once with a type the function does not state, is dropped. A parameter
+    /// counts as one binding, with its declared type; a name that is also a
+    /// top-level `let` is dropped (before its local binding the name means the
+    /// global). The walk is the exhaustive `walk_block_deep`, so no nested
+    /// block, lambda, spawn or `deny!` body is skipped.
+    fn build_recv_locals(
+        &self,
+        params: &[Param],
+        fn_generics: &[kryos_ast::GenericParam],
+        ctx: &MethodCtx,
+        body: &kryos_ast::Block,
+    ) -> HashMap<String, String> {
+        use std::collections::hash_map::Entry;
+        let generics: HashSet<&str> = ctx
+            .generics
+            .iter()
+            .map(String::as_str)
+            .chain(fn_generics.iter().map(|g| g.name.as_str()))
+            .collect();
+        let self_owner = ctx.self_owner.as_deref();
+        // name -> Some(type) while every binding seen so far agrees, None once
+        // two disagree or one is not a declared type.
+        let state: std::cell::RefCell<HashMap<String, Option<String>>> =
+            std::cell::RefCell::new(HashMap::new());
+        let bind = |name: &str, ty: Option<String>| match state.borrow_mut().entry(name.to_string())
+        {
+            Entry::Occupied(mut e) => {
+                if *e.get() != ty {
+                    *e.get_mut() = None;
+                }
+            }
+            Entry::Vacant(v) => {
+                v.insert(ty);
+            }
+        };
+        for p in params {
+            let t = p
+                .ty
+                .as_ref()
+                .and_then(|t| self.recv_type_of(t, &generics, self_owner));
+            bind(&p.name, t);
+        }
+        walk_block_deep(
+            body,
+            &mut Vec::new(),
+            &mut |s, _| match s {
+                Stmt::Let {
+                    name,
+                    ty,
+                    value,
+                    pattern,
+                    ..
+                } => match pattern {
+                    Some(p) => {
+                        let mut names = HashSet::new();
+                        Self::pattern_names(p, &mut names);
+                        for n in &names {
+                            bind(n, None);
+                        }
+                        bind(name, None);
+                    }
+                    None => {
+                        let t = match (ty, value) {
+                            (Some(t), _) => self.recv_type_of(t, &generics, self_owner),
+                            (None, Some(Expr::StructLiteral { name: sname, .. })) => {
+                                self.recv_struct_literal_type(sname, &generics)
+                            }
+                            _ => None,
+                        };
+                        bind(name, t);
+                    }
+                },
+                Stmt::Assign {
+                    target: Expr::Identifier { name, .. },
+                    ..
+                } => bind(name, None),
+                Stmt::For { pattern, .. } => {
+                    let mut names = HashSet::new();
+                    Self::pattern_names(pattern, &mut names);
+                    for n in &names {
+                        bind(n, None);
+                    }
+                }
+                Stmt::TryCatch { catch_name, .. } => bind(catch_name, None),
+                Stmt::Select { branches, .. } => {
+                    for b in branches {
+                        bind(&b.pattern, None);
+                    }
+                }
+                _ => {}
+            },
+            &mut |e, _| match e {
+                Expr::Lambda { params, .. } => {
+                    for p in params {
+                        bind(&p.name, None);
+                    }
+                }
+                Expr::MatchExpr { arms, .. } => {
+                    for arm in arms {
+                        let mut names = HashSet::new();
+                        Self::pattern_names(&arm.pattern, &mut names);
+                        for n in &names {
+                            bind(n, None);
+                        }
+                    }
+                }
+                _ => {}
+            },
+        );
+        state
+            .into_inner()
+            .into_iter()
+            .filter_map(|(k, v)| v.map(|t| (k, t)))
+            .filter(|(k, _)| !self.global_value_names.contains(k))
+            .collect()
+    }
+
+    /// Fill `resolved_calls`: for every function with a body, every method call
+    /// `x.m(..)` whose receiver is a bare identifier that `build_recv_locals`
+    /// proved to be the declared type `T`, and for which `(T, m)` is a known
+    /// method of `T` (`method_owners`) that no blanket impl can also answer
+    /// (`unqualifiable_methods`).
+    ///
+    /// Why charging `(T, m)` instead of the bare-name union is sound: the type
+    /// checker gives the call a static `Struct`/`Enum` receiver type, there is
+    /// no subtyping between declared types (`dyn`, generic bounds and trait
+    /// objects are the polymorphism, and a receiver of those types is never
+    /// resolved here), so the call can only run a method `collect_method_owners`
+    /// filed under `(T, m)`, and the entry of that pair is the union of every
+    /// such method's declared or inferred capabilities. Keyed by the address
+    /// of the call node, so an expression the checker clones or reads out of
+    /// ANOTHER function's body (a literal returned by a factory, say) is never
+    /// resolved against the wrong function's bindings: it is simply absent.
+    fn resolve_method_receivers(&mut self, decls: &[Decl]) {
+        let mut fns: Vec<FnEntry> = Vec::new();
+        self.collect_functions_ex(decls, &MethodCtx::default(), &mut fns);
+        let mut resolved: HashMap<usize, String> = HashMap::new();
+        for f in &fns {
+            let locals = self.build_recv_locals(f.params, f.fn_generics, &f.ctx, f.body);
+            if locals.is_empty() {
+                continue;
+            }
+            walk_block_deep(
+                f.body,
+                &mut Vec::new(),
+                &mut |_, _| {},
+                &mut |e, _| {
+                    let Expr::MethodCall { object, method, .. } = e else {
+                        return;
+                    };
+                    let Expr::Identifier { name, .. } = object.as_ref() else {
+                        return;
+                    };
+                    let Some(owner) = locals.get(name) else {
+                        return;
+                    };
+                    if self.method_owners.contains(&(owner.clone(), method.clone()))
+                        && !self.unqualifiable_methods.contains(method)
+                    {
+                        resolved.insert(e as *const Expr as usize, owner.clone());
+                    }
+                },
+            );
+        }
+        self.resolved_calls = resolved;
     }
 
     /// Whether a parameter's declared type is a function type (`fn(...) -> ...`).
@@ -5849,6 +6348,15 @@ impl CapabilityChecker {
     /// Build a map from function names to their declared capability sets.
     /// Only includes functions with explicit `@capabilities(...)` annotations.
     fn build_fn_capability_map(&mut self, declarations: &[Decl]) {
+        self.build_fn_capability_map_in(declarations, &[]);
+    }
+
+    /// `build_fn_capability_map` for the declarations of one block. `qowners`
+    /// are the declared types whose `(owner, method)` entry each annotated
+    /// method of the block feeds besides the bare-name entry (ASSAULT-F6): the
+    /// impl target for an impl block, every implementor for a trait block, none
+    /// at the top level.
+    fn build_fn_capability_map_in(&mut self, declarations: &[Decl], qowners: &[String]) {
         for decl in declarations {
             match decl {
                 Decl::Function {
@@ -5864,6 +6372,15 @@ impl CapabilityChecker {
                     if name != "main" {
                         caps = Self::charged_ceiling(caps, body.as_ref());
                     }
+                    // ASSAULT-F6: the same set, filed under each owner's own key.
+                    for owner in qowners {
+                        let key = Self::qkey(owner, name);
+                        let merged = match self.fn_capabilities.get(&key) {
+                            Some(existing) => existing.union(&caps),
+                            None => caps.clone(),
+                        };
+                        self.fn_capabilities.insert(key, merged);
+                    }
                     // UNION on a name collision, not overwrite: impl methods
                     // are keyed by bare name here, so two structs each with an
                     // annotated `write` must contribute BOTH sets. Overwriting
@@ -5876,8 +6393,23 @@ impl CapabilityChecker {
                     };
                     self.fn_capabilities.insert(name.clone(), merged);
                 }
-                Decl::Impl { methods, .. } | Decl::Trait { methods, .. } => {
-                    self.build_fn_capability_map(methods);
+                Decl::Impl {
+                    target,
+                    generics,
+                    methods,
+                    ..
+                } => {
+                    let q = self.impl_method_ctx(target, generics).qowners;
+                    self.build_fn_capability_map_in(methods, &q);
+                }
+                Decl::Trait {
+                    name,
+                    generics,
+                    methods,
+                    ..
+                } => {
+                    let q = self.trait_method_ctx(name, generics).qowners;
+                    self.build_fn_capability_map_in(methods, &q);
                 }
                 // An actor's message handlers are message-passing entry points:
                 // invoking a handler from outside (`w.dump(..)`) exercises the
@@ -5993,15 +6525,18 @@ impl CapabilityChecker {
         &self,
         declarations: &[Decl],
     ) -> HashMap<String, CapabilitySet> {
-        let mut fns: Vec<(String, bool, &kryos_ast::Block, &[Param])> = Vec::new();
-        Self::collect_functions(declarations, &mut fns);
+        let mut fns: Vec<FnEntry> = Vec::new();
+        self.collect_functions_ex(declarations, &MethodCtx::default(), &mut fns);
 
         // Seed the working map with annotated functions' declared ceilings.
         let mut working: HashMap<String, CapabilitySet> = self.fn_capabilities.clone();
 
         loop {
             let mut changed = false;
-            for (name, is_annotated, body, params) in &fns {
+            for f in &fns {
+                let name = &f.name;
+                let body = f.body;
+                let params = f.params;
                 // Skip only THIS function if it is annotated (its declaration is
                 // the ceiling, never widened by its own body). Do NOT skip an
                 // UNANNOTATED method just because a DIFFERENT method sharing its
@@ -6010,7 +6545,7 @@ impl CapabilityChecker {
                 // unannotated one's fs:write), which both false-rejected the
                 // unannotated body and let a caller under-declare. Its inferred
                 // caps are UNIONED into the shared name entry.
-                if *is_annotated {
+                if f.annotated {
                     continue;
                 }
                 let own_params: HashSet<String> = params
@@ -6045,6 +6580,21 @@ impl CapabilityChecker {
                 if merged.len() != cur.len() {
                     working.insert(name.clone(), merged);
                     changed = true;
+                }
+                // ASSAULT-F6: the same set, filed under each owner's own key,
+                // so a call on a receiver of a proven type is charged this
+                // method alone and not every method sharing its name.
+                for owner in &f.ctx.qowners {
+                    let key = Self::qkey(owner, name);
+                    let curq = working
+                        .get(&key)
+                        .cloned()
+                        .unwrap_or_else(CapabilitySet::empty);
+                    let mergedq = curq.union(&collected);
+                    if mergedq.len() != curq.len() {
+                        working.insert(key, mergedq);
+                        changed = true;
+                    }
                 }
             }
             if !changed {
@@ -6340,8 +6890,11 @@ impl CapabilityChecker {
                 args,
                 ..
             } => {
-                // The method's own (declared or inferred) requirement.
-                if let Some(caps) = working.get(method) {
+                // The method's own (declared or inferred) requirement. A call
+                // on a receiver of a proven declared type reads that type's
+                // own entry (ASSAULT-F6); every other call reads the union
+                // over every method of the name.
+                if let Some(caps) = working.get(&self.method_caps_key(expr, method)) {
                     acc = acc.union(caps);
                 }
                 self.accumulate_hot_extra_caps(
@@ -6500,6 +7053,11 @@ impl CapabilityChecker {
         // can require the corresponding capability (see extern_fns).
         self.collect_extern_fns(&module.declarations);
         self.collect_defined_fns(&module.declarations);
+        // ASSAULT-F6: which types answer which method names, and which method
+        // calls have a receiver of a proven declared type. Structural (no
+        // capability dependency), so every later pass sees the complete table.
+        self.collect_method_owners(&module.declarations);
+        self.resolve_method_receivers(&module.declarations);
         self.collect_fn_signatures(&module.declarations);
         self.collect_struct_field_types(&module.declarations);
         self.transparent_accessor_paths = Self::collect_transparent_accessor_paths(&module.declarations);
@@ -7164,7 +7722,10 @@ impl CapabilityChecker {
                 // 18). No-op outside an actor handler body (the tracked set
                 // is empty there).
                 extra = extra.union(&self.resolve_actor_self_field_invoke_caps(object, method));
-                self.enforce_callee_name(method, *span, false, &extra, args);
+                // ASSAULT-F6: a receiver of a proven declared type is charged
+                // that type's own method, not every method of the name.
+                let caps_key = self.method_caps_key(expr, method);
+                self.enforce_callee_name_keyed(method, *span, false, &extra, args, &caps_key);
                 self.check_deny_callback_args(method, args, CallForm::Method, *span);
                 self.check_stored_fn_param_args(method, args, CallForm::Method, *span);
 
@@ -7521,6 +8082,24 @@ impl CapabilityChecker {
         extra: &CapabilitySet,
         call_args: &[Expr],
     ) {
+        self.enforce_callee_name_keyed(name, call_span, is_builtin_name, extra, call_args, name);
+    }
+
+    /// `enforce_callee_name`, charging the callee's capability set read from
+    /// `fn_capabilities[caps_key]`. `caps_key` is `name` for every call except a
+    /// method call on a receiver of a proven declared type (ASSAULT-F6), which
+    /// passes the qualified `(owner, method)` key; everything else about the
+    /// call (the builtin and extern gates, the hot-argument `extra`
+    /// authority, the diagnostic) is unchanged.
+    fn enforce_callee_name_keyed(
+        &mut self,
+        name: &str,
+        call_span: Span,
+        is_builtin_name: bool,
+        extra: &CapabilitySet,
+        call_args: &[Expr],
+        caps_key: &str,
+    ) {
         if !(self.strict_mode() || self.has_annotated_scope()) {
             return;
         }
@@ -7576,7 +8155,7 @@ impl CapabilityChecker {
         // no capability of its own in `fn_capabilities`.
         let base_callee_caps = self
             .fn_capabilities
-            .get(name)
+            .get(caps_key)
             .cloned()
             .unwrap_or_else(CapabilitySet::empty);
         let callee_caps = base_callee_caps.union(extra);
