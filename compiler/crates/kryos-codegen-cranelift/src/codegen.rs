@@ -6012,15 +6012,7 @@ fn translate_rvalue<M: Module>(
                 let val_i64 = if is_float_type(val_ty) {
                     builder.ins().bitcast(types::I64, MemFlags::new(), val)
                 } else if val_ty.is_int() && val_ty.bits() < 64 {
-                    // The slot is the canonical 64-bit value of its element,
-                    // so an unsigned element must ZERO-extend: a tuple read
-                    // back at a wider element type (`(u8, u8)` into an
-                    // `(i64, i64)` slot) sees 200, not -56.
-                    if is_unsigned_operand(elem, &translator.mir_func.locals) {
-                        builder.ins().uextend(types::I64, val)
-                    } else {
-                        builder.ins().sextend(types::I64, val)
-                    }
+                    builder.ins().sextend(types::I64, val)
                 } else {
                     val
                 };
