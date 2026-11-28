@@ -206,6 +206,74 @@ impl Parser {
         self.tokens[idx].kind
     }
 
+    /// At the first token inside `{`: does an expression start here and end
+    /// at a `:` at bracket depth 0 before any statement boundary? A block
+    /// statement never has a bare top-level `:` (type annotations live behind
+    /// `let`/`fn` keywords, struct-literal / call / pattern colons sit inside
+    /// their own brackets, a closure's `|x: T|` starts with `|`), so any
+    /// expression-shaped first key (`-a`, `(a) - 1`, `a + 1`, `f(a)`, `*p`,
+    /// an interpolated string, an `if` expression, a key continued on the next
+    /// line by a binary operator) is a map. There is no first-token whitelist:
+    /// the scan itself rejects what cannot be a key, and it is linear, with no
+    /// speculative parse (which would be exponential on nested blocks).
+    fn first_key_then_colon(&self) -> bool {
+        let mut depth = 0usize;
+        let mut i = self.pos;
+        while i < self.tokens.len() {
+            let k = self.tokens[i].kind;
+            match k {
+                TokenKind::LParen
+                | TokenKind::LBracket
+                | TokenKind::LBrace
+                | TokenKind::InterpStart => depth += 1,
+                TokenKind::RParen
+                | TokenKind::RBracket
+                | TokenKind::RBrace
+                | TokenKind::InterpEnd => {
+                    if depth == 0 {
+                        return false;
+                    }
+                    depth -= 1;
+                }
+                TokenKind::Eof => return false,
+                _ if depth > 0 => {}
+                TokenKind::Colon => return true,
+                TokenKind::Semicolon
+                | TokenKind::Comma
+                | TokenKind::Eq
+                | TokenKind::PlusEq
+                | TokenKind::MinusEq
+                | TokenKind::StarEq
+                | TokenKind::SlashEq
+                | TokenKind::PercentEq
+                | TokenKind::Pipe
+                | TokenKind::PipePipe
+                | TokenKind::Arrow
+                | TokenKind::FatArrow => return false,
+                _ if k.is_keyword()
+                    && !matches!(
+                        k,
+                        TokenKind::If
+                            | TokenKind::Else
+                            | TokenKind::Match
+                            | TokenKind::As
+                            | TokenKind::And
+                            | TokenKind::Or
+                            | TokenKind::Not
+                            | TokenKind::True
+                            | TokenKind::False
+                            | TokenKind::None
+                    ) =>
+                {
+                    return false
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        false
+    }
+
     /// At a `(`: is its balanced group followed by `=>` or `if`? That shape
     /// can only be a match-arm pattern (a call is never followed by either).
     fn paren_group_starts_arm(&self) -> bool {
@@ -3634,11 +3702,12 @@ impl Parser {
 
         // Peek ahead to distinguish map `{key: value}` from block `{ stmts }`
         // If we see `ident :` or `literal :`, it's a map.
-        if (self.check(TokenKind::Ident)
+        if ((self.check(TokenKind::Ident)
             || self.check(TokenKind::TypeIdent)
             || self.check(TokenKind::String)
             || self.check(TokenKind::Integer))
-            && self.peek_nth(1) == TokenKind::Colon
+            && self.peek_nth(1) == TokenKind::Colon)
+            || self.first_key_then_colon()
         {
             return self.parse_map_literal_body(start);
         }
