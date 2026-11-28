@@ -12213,3 +12213,327 @@ Commits a599a168 and 58d0441d reverted (772fa876). Verifier findings:
 - **Evidence both ways:** pin with the master binary: 21 FAIL (neg paren negid negexpr parenop parenop2 addkey callkey charkey floatkey interpkey interpkey2 interponly derefkey ifkey nlkey bitorkey boolorkey bitorchain pipecall awaitkey, all E0003 unexpected token ':'); on this tree `PASS map_negkey_pin (... 29 names ...)`. `run.sh -j 2 --only '^(M4)$'`: `PASS M4`. Scratch program `{a | b: 1}`, `{a < b || b > 1: 9}`, `{a | b | 8: 4, 1: 2}`, `{(a < b) || (b > 1): 7}` printed `1 9 4 2 7` on the JIT and on the LLVM AOT exe.
 - **Regression:** `run.sh -j 2 --only` over all 69 acceptance regexes of this lane (4 chunks, 4680 items): 4663 PASS / 17 FAIL; the 17 (6, A14, A17, A20, A4, A5, ASSAULT-F6, CI-WIN-1, copy-assign-leak x4, leakmode x2, mem v137_uaf, swa a2_ret_ctor_unannot_fn, swa m1_method_len) are all FAIL in finish/master_run1.txt too; M4 is no longer among them. `parser_nesting_gate`, `diagnostics_gate`, `asi_nonw0001_pin`, `audit_parse_failure_gate` 15/15, `stdlib_compile_gate` 66/66, conformance 129/129 pass. `kryos check` over the 825 tracked non-stdlib .kry files containing `|`: the sorted set of E000x parse errors is byte-identical between the master binary and this tree, so no repo program changes meaning; closeout_targets.txt unchanged.
 - **NOT covered:** tuple-keyed map literals give wrong lookups (`{(1, 2): 3}` then `m[(1, 2)]` prints 0; master with an assignment form prints the same), a separate pre-existing bug the verifier confirmed is not caused by this change; I did not investigate or fix it. A block whose first statement has a depth-0 `|` after an operand followed later by a depth-0 `:` would be read as a map; I know of no such construct in the grammar and none in the 825 repo programs scanned.
+## a14 (round 3): a mutable global holding a struct / tuple / enum / Option never released its old value on overwrite (2026-11-27, branch closeout/r2-mem)
+
+Item A14 (`jit|aot leaks.kry glob_struct_reassign | glob_tuple_reassign | glob_enum_reassign | glob_opt_reassign`, peak commit +84MB at n 250000 -> 1000000).
+Rounds 1 (a0ff2892) and 2 (dc7e8a98) were refuted by the verifier and reverted (cd7b77f7, 1f0b4b50). This is the third attempt; the root cause the
+verifier named for round 2 is addressed directly rather than by another per-shape special case.
+
+Root cause (lower.rs, plain assignment to a mutable global): `kryos_global_set` is a raw i64 slot store, and only str / array / map globals released
+the old value. A struct / enum / tuple global owns exactly one reference of its value, so every overwrite orphaned the old box and its fields. The
+release itself is a one-line rule; what failed twice was deciding who owns the NEW value. Rounds 1 and 2 classified the right-hand side from the
+hidden result local of an `if` / `match` (`owned_slot_src` / `struct_value_owned`), but that local's ownership differs per branch: a literal or call
+hands it a reference, a named local is shared into it, and a READ OF A NAMED PLACE (`h.g`) is an alias that partially moves its source. No single
+consumer-side rule fits a mix, so `GS = if c { h.g } else { Gin{..} }` / `match` (verifier: 117MB AOT / 193MB JIT at 1M, the same on master) kept leaking.
+
+The rule now (one rule, MIR only, no backend change):
+- An owned struct / enum / tuple global assigned from an `if` / `match` / block value is lowered as one assignment PER BRANCH (`assign_per_branch`,
+  the same desugar `return_per_branch` uses for a returned branch value): `G = if c { a } else { b }` is `if c { G = a } else { G = b }`, nested tails
+  recurse because each branch assignment re-enters this rule. There is no hidden result local, so every branch value is classified on its own.
+- Plain assignment, per value: a fresh owned result (literal, variant, `None`, call result, closure call, fresh clone) moves in; an alias takes its own
+  reference first (a bare local or global name, a read of a named place `G = h.g` / `xs[i]`, a map element, any `Use(named or non-fresh temp)`), exactly
+  as `let y = <same expr>` does. The source keeps its owner and its drop; the read's partial-move mark is undone (`assign_rhs_owns_read`, the helper the
+  local-variable path now shares, extracted unchanged).
+- The old value is read back as a raw i64 handle AFTER the right-hand side ran (a callee that reassigned the global does not leave a stale snapshot) and
+  released through `Instruction::DropIfNe`; when the new value took its own reference it is released unconditionally (Cranelift can store the same box).
+  `G = G` is a no-op.
+- The two consumers of a bare global read that took no reference of their own and so freed memory the slot still held once the slot releases:
+  `Some(G)` / `W.Has(G)` / `Ok(G)` (`suppress_enum_field_arg_drops`) and `s.f = G` (field assignment, both the owned-root and the aliased-root path)
+  now share it. Every other consumer was probed, see below.
+
+Files: compiler/crates/kryos-mir/src/lower.rs; tests/mem/global_aggregate_leak.kry, tests/mem_global_aggregate_gate.sh (23 modes, 46 rows).
+
+Evidence (executed):
+- finish line `--only '^(A14|A14\.ctl)$'`: `PASS A14`, 1 PASS 0 FAIL, RESULT: ALL PASS.
+- tests/mem_global_aggregate_gate.sh (1M iterations, JIT and AOT, ceiling 24MB, answer 7888890 checked): this tree PASS, all 46 rows 4-5MB. The master
+  binary (KRYOS_BIN=kryos-co-nov) FAILs 44 of 46 rows (glob_struct AOT 110MB / JIT 102MB; the verifier's shapes glob_if_field AOT 223MB / JIT 360MB,
+  glob_match_field 221MB / 360MB); control 4MB on both. Modes: the round 1/2 set plus glob_if_field, glob_match_field, glob_if_named, glob_if_glob,
+  glob_if_nested (three-way if / elif / else with a field read, a fresh value and a global), glob_if_block, glob_mapread, glob_tup_if, glob_enum_if, glob_try.
+- Allocation balance (KRYOS_ALLOC_STATS box live, 1000 iterations; "live" must stay at the count of initial globals): 106 scratch programs on the JIT and
+  the AOT, each overwriting a global from one shape, all constant (no growth) and KRYOS_FREE_DIAG reporting 0 double frees / use-after-free:
+  sources (field, param field, `h.g` in `if` / `match` / elif / block / guard / nested / two named places, named local, global, map element, array
+  element, pop, closure call, user call, shared deref `*sh`, `None` / unit variant in a branch, try / catch around a throwing branch, `return` in a
+  branch, tuple field, enum, Option, `(Gin, i64)` tuple) and the fifteen consumers of a bare global read before an overwrite (`let x = G`, push, array
+  / tuple / struct literal, call arg, `return G`, `idg(G)`, closure capture, map insert, element set, `GS2 = G`, `Some(G)`, `b.g = G`, match subject,
+  swap). Output of every program is byte-identical to master's.
+- Regression: finish `--only '^mem:'` 387 PASS / 1 FAIL (v137_uaf, the frozen-total defective fixture, unchanged). Feature scan
+  `^(A[0-9]+|A[0-9]+\.ctl|leakmode.*|copy-assign-leak.*|13[5-9].*|137.*|M[0-9]|B[0-9]|41|6|122-typecheck|libm-constfold)$` 75 PASS / 12 FAIL; the 12
+  are 6, A4, A5, A20, M4, A17, leakmode:throw_locals, leakmode:clo_nested_tuple_arr and the four copy-assign-leak rows: other lanes' items and the
+  reverted lane fixes, and the same 12 FAIL with the same reasons on the kryos-integ binary of the same HEAD (A14 also fails there; A10-A16, A18, A19,
+  135-139 PASS here, 137-perf x0.665 of master).
+  Gates PASS: mem_balance, mem_shared_rule, no_double_free, backend_divergence_pins, builtin_borrow_mir, jit_symbols, mem_struct_arg, mem_loop, mem_tuple,
+  mem_struct_array_overwrite, mem_enum_{array_push,overwrite,arg,nested,recursive,recursive_call,str_push}, mem_field_assign_temp, mem_struct_field_read,
+  mem_pop_stmt, mem_json_handle, mem_shadow_builtin, mem_string_interp, mem_shared_field_store, mem_whole_subject, mem_tuple_payload,
+  mem_tuple_struct_arr, mem_closure_tail, mem_element_read, mem_tuple_field_overwrite (its field_global row, which failed on the tree because of the
+  reverted A14, now passes), minilisp 22/22, stdlib_compile 66/66, selfhost_wholeprogram, concurrency_smoke, match_exhaustiveness, run_examples,
+  wasm_differential 66/66, ecosystem_check 259/259, conformance 129/129. type_soundness: 4 probes FAIL (to_array E0110 holes), 9 on master, unchanged
+  by this change (not run on the integ binary). Not run: mem_agg_ops_gate (36 minutes), cargo test (lane rule).
+- 39 repo programs that declare a top-level `let mut` (tests, examples, ecosystem; the task_api server skipped) print the same under this tree as under the
+  kryos-integ binary built from the same HEAD (0 diffs); no closeout_targets.txt line.
+
+RESIDUAL (executed, NOT closed, NOT claimed)
+- A `@copy` struct global overwritten in a loop (`G = Cp { a: i, b: 2 }`) leaks its box per assignment (live grows 1:1 on the JIT and AOT). That is the
+  open copy-assign-leak family (`@copy` drop is a no-op, same as a local); not touched.
+- Structs / enums / tuples the backends cannot share (`is_owned_value_ty` false) keep the old behaviour: the old value of such a global is not released.
+  None of the aggregate shapes probed in scratch other than `@copy` (nested struct, array / Option / tuple fields, struct-in-enum, recursive enum, tuple of struct,
+  nested tuple, Option of tuple, Result) fell into it on either backend.
+- The LOCAL-variable form `loc = if c { h.g } else { Gin{..} }` / `match` (not a global) still leaks on the JIT (live grows 2.5 boxes per iteration);
+  the local assignment path was only refactored (the owns_read predicate is shared), not changed.
+- A `spawn` / actor thread reading a global while another overwrites it is not synchronised with the release (as for the str / array / map globals).
+
+## a14 (round 4): a call result that is the global itself, and a bare global read as an if / match branch value (2026-11-27, branch closeout/r2-mem)
+
+Item A14, after the verifier refuted round 3 (17630afa). Residual shapes it listed, all executed and reproduced before the change (1M / 300k iterations, KRYOS_ALLOC_STATS box live):
+`GS = ident(GS)` with `fn ident(g: Gin) -> Gin { return g }` (JIT live 1000001 / 300000, AOT clean), the same for an enum, a nested struct (2 boxes per iteration) and an
+`Option<str>`; `GS = pick(GS, o, c)` (JIT live 500002); `let k = if c { GS } else { Gin{..} }` (JIT live 150002 at 300k, AOT 12MB peak). The fourth shape it listed,
+`GB.g = if c { h.g } else {..}` on a field of a global, is the admitted local field-assign family and is NOT touched.
+
+Root cause 1 (lower.rs, plain assignment to an owned global): round 3 declared every call result "fresh" and released the old value through `DropIfNe`, whose pointer-
+inequality guard skips the release when old and new are the same box. A call result always carries a reference of its own, and when the callee returns its argument
+that box is the one the slot holds: the slot's old reference and the result's reference are two references to one box, and the guard released neither. LLVM stores a
+fresh box per store (never the same pointer), which is why AOT was clean. Fix: `global_new_is_call_result` (a user fn / closure call result, directly or through an
+unnamed temp) releases the old reference unconditionally, exactly as the shared-alias case already did. Literals / variants / tuples keep the guarded release.
+
+Root cause 2 (lower.rs, value-branch tails): a bare mutable-global name as an if / match / block tail was not shared into the hidden result slot (only a named LOCAL
+was: take_tail_identifier / arm_names_outer_owned_struct), and `struct_value_owned` treated the whole value as "not owned", so the `let` cloned the slot and nobody
+released it: every fresh branch value leaked (JIT). For an enum / tuple / Option global the same read was an unshared alias that the round 3 release then freed while the
+`let` still used it: a use-after-free (wrong answer 994445 vs master 2138890 for `let n = if c { GN } else {..}` then `GN = ..`; a str double free on Option). Fix:
+`take_tail_identifier` and `arm_names_outer_owned_struct` share a bare owned-struct / enum / tuple global read into the result slot (`is_owned_global_value_ident`), and
+`struct_value_owned` counts a bare struct global tail as owned (`is_owned_global_struct_ident`), so the slot owns one reference in every branch. A bare `let k = GS`
+is untouched (the top-level Identifier case is not widened).
+
+Files: compiler/crates/kryos-mir/src/lower.rs; tests/mem/global_aggregate_leak.kry (+10 modes), tests/mem_global_aggregate_gate.sh (33 modes, 68 rows; MODES env var selects a subset).
+
+Evidence (executed):
+- New modes glob_call_id / _enum / _nested / _opt / _pick, glob_let_if / _match / _enum / _tup / _opt: this tree, all 20 rows 4MB; kryos-co-nov master binary: all 20 rows
+  FAIL (glob_call_id AOT 140MB / JIT 108-110MB, glob_call_nested 276 / 307MB, glob_let_if 178 / 193MB, glob_let_tup JIT 346MB), control 4MB. Full gate on the tree: 68 rows,
+  all 4MB, `mem-global-aggregate: PASS`.
+- KRYOS_ALLOC_STATS box live, JIT and AOT, 300k iterations: id1 / more (ident, idn, idb, ido, pick, unit-variant call, `GS = getg()`) live 1..7 on both backends and
+  KRYOS_FREE_DIAG clean; let-if / match probes for struct (if, match, block tail, nested elif, mutated copy, `if c { k = GS }`, `return if c { GS } ..`) live 1 on both; enum / tuple / Option
+  forms live 3 on both; the combined probe letif3 (struct + enum + tuple + Option, if / match / block, global overwritten after the read) prints 13583340 on this tree, JIT and AOT, = master.
+- finish `--only '^(A14|A14\.ctl|A1[0-9]|A1[0-9]\.ctl|137.*|138|139|135|136)$'`: 31 PASS / 1 FAIL (A17 field_of_if_temp, the open item that fails the same way on the integ binary). `^mem:closure`: 146 PASS / 1 FAIL
+  (v137_uaf, the frozen defective fixture). `^(mem:attacks.*|A19|A16|137.*|138|139|137-perf|leakmode.*|copy-assign-leak.*|M[0-9]|B[0-9])$`: 279 PASS / 7 FAIL, the seven being M4,
+  leakmode:throw_locals, leakmode:clo_nested_tuple_arr and the four copy-assign-leak rows, all listed as failing identically before this change.
+
+RESIDUAL (executed, NOT closed, NOT claimed)
+- A LOCAL enum / Option named in a match / if branch next to a fresh variant (`let n = match i % 3 { 0 => lN, 1 => Op.Num(i), _ => Op.Name(..) }`, `lN` a local) leaks on the JIT
+  (live 200004 at 300k); the same shape with the global (`GN`) leaks 300003 on the JIT, with correct answers. It is the local-variable if / match family, not global-specific; AOT clean.
+- `pick(GS, mkb(i).g, c)` (a field read of a temporary as a call argument) leaks on both backends (155MB / 308MB at 1M); not global-specific, not touched. The gate uses a named local there.
+- `GB.g = if c { h.g } else { .. }` and the local `bx.g = ..` analog (the admitted field-assign family), `@copy` globals, unshareable types and threads are unchanged from round 3.
+
+## a17: REOPENED (round 2) -- fix refuted by verifier (2026-11-27, branch closeout/r2-mem)
+
+Reverted fix commits d35bc38f and dc0296e7 (newest first, no conflicts). Verifier findings:
+
+- Step 1 (run.sh --only '^(A17)$' -j 2): PASS A17; '# summary: 1 PASS, 0 FAIL of 1 ... RESULT: ALL PASS'. kbuild was a no-op (kryos 1.3.0).
+- Step 4: tests/mem_field_of_temp_gate.sh on the tree printed 'mem-field-of-temp: PASS' (every mode 4MB, ceiling 24MB). With KRYOS_BIN set to the master binary it printed 80 FAIL lines and no PASS. The pin is real and its answers match.
+- Step 2 (diff): the commit touched only lower.rs, the pin .kry, the gate script (modes and want_for answers added, nothing weakened), and LEDGER.md. It did not touch kryos-oracle, and no test-name special-casing was found. The fix is consumer-by-consumer: separate patches for the global store, return/tail, let, struct-literal tuple field, the dyn let, and the field-chain read. Only the operand-copy registration is a general rule. A consumer that was not patched still leaks.
+- Step 3 (verifier variants, AOT, 300k iterations, answers identical to master). Clean at 1MB on AOT: if inside match, enum with struct payload, early return, tail expression, method with args, method returning enum, assigning the whole if/match struct to a global, push of a tuple read, nested .q.name, for loop, two whole-struct args, let of the whole struct, a struct literal with enum and tuple fields, and `h.s = match..{}.name`.
+- STILL LEAKS (field assignment): `let mut h = H{..}; h.k = match i%2 { 0 => mke(i), _ => mke(i+1) }.k` leaks on AOT. `h.t = ...{}.t` does the same with a tuple. Peaks: fa_k 33MB at 300k iterations, 16MB at 150k, 67MB at 600k. fa_t 21MB, 11MB and 41MB. The leak scales linearly with iterations.
+- The control for that leak, `let e = mke(i); h.k = e.k`, is 1MB at every size. Master leaks 140MB at 300k for these shapes. So the tree was better than master, but the defect class was not closed. The pin had no field-assign mode and the fixer's residual list did not mention one. `h.s = ...name` (a str read) is clean, so the leak is specific to the enum/tuple field-assign consumer.
+- On JIT the verifier's H-struct programs sit at about 110MB even for the named-local control. That is a baseline difference that could not be separated, so the AOT numbers were relied on.
+
+Residual shapes:
+- Enum field read off an if/match struct assigned to a field of a local struct: `h.k = match c {..}.k` leaks about 110 bytes per iteration on AOT (33MB at 300k, 67MB at 600k). A named-local source stays flat.
+- Tuple field read off an if/match struct assigned to a field of a local struct: `h.t = if c {..} else {..}.t` leaks about 70 bytes per iteration on AOT (21MB at 300k, 41MB at 600k).
+- Residuals the fixer already listed: an operand temp defined before an if/match operand's blocks, an if/match operand inside an arm of another if/match, an array literal of enum reads, and a read off an if/match whose branches do not all own a fresh struct.
+- mem_agg_ops_gate was not run to completion by the fixer (595s limit hit three times). Not re-run by the verifier.
+
+Item result: REFUTED. The A17 finish row passes, and the item is reopened.
+
+## leakmode: third attempt, exception unwinding and closure-env release (2026-11-27, lane r2-mem)
+
+Two earlier attempts (b19b40d8, bbb8bdeb) were reverted after the verifier refuted them as too narrow. This one fixes the cause
+they shared and runs every shape the verifier named, plus the neighbours found while measuring them. No ownership rule changed.
+
+ROOT CAUSES (all one class: the unwind exit of a frame did not release what the normal exit releases)
+1. A frame that leaves through an exception released nothing it owned unless the codegen safety net happened to run. Three exits:
+   a. a `throw` outside a try returned without any drop;
+   b. a `throw` inside a try jumped to the catch block, skipping the try body's scope-end drops;
+   c. a call that throws inside a try (callee-thrown, caught in the same function, the verifier's shape 1) is followed by the MIR
+      check, which jumped to the catch block the same way. The Cranelift post-call cleanup is skipped there on purpose
+      (`next_is_mir_exc_check`), so nothing released the try body's locals or `for` iterables.
+2. A freshly built thrown message (`throw "x{i}"`, `throw a + b`, `throw 42`) was retained at the throw site; the reference was
+   never released (the runtime copies the value outside a try, the catch binding drops one reference inside a try).
+3. The closure-env dropper and the struct / enum drop helpers released a tuple (and the tuples inside an array nest) one level
+   deep with fixed-width kind nibbles: a capture of `[[(str, i64)]]`, a tuple holding a struct, a closure, or a nested tuple, or
+   a struct field of those types, kept everything below the first level (verifier shape 2, and the 16-node / single-leaf limits
+   of the descriptor approach of bbb8bdeb).
+
+FIX
+- kryos-mir/src/lower.rs: `LoweringContext::unwind_drop_list(scope_start, iter_start, skip)` = the named, owned locals declared
+  from `scope_start` that no closed scope has released (`dropped_locals`, params, borrowed, partially moved, owned params excluded)
+  plus the for-loop iterables entered since `iter_start`. It is used on all three exits: `Stmt::Throw` outside a try (scope 0),
+  `Stmt::Throw` inside a try (from the try's scope start; `TryCatchTarget` now carries `scope_start` / `iter_start`), and the
+  handler edge of `emit_exception_check` for every unwind-source call inside a try (the call's own destination is excluded: it was
+  never assigned). The drops are path-local (not recorded in `dropped_locals`, like break / continue) and each released local is
+  cleared with `Assign local = 0` (`emit_unwind_release`), because the Cranelift unwind cleanup of a LATER throwing call drops every
+  non-null named heap local: without the clear, a local released on the catch path was released again (KRYOS_FREE_DIAG reports it;
+  `outer_throw` in the pin). Tuple locals are not cleared (the cleanup never touches them, and an assignment makes the tuple-drop
+  pass treat them as escaping, which leaked them).
+- Throw message: a fresh message (interpolation, binary op, user fn call, or a stringified non-str value) is not retained; in a
+  try the Err / catch binding owns it; outside a try the throw call now runs FIRST (the runtime copies the value), then the unwind
+  drops, then the temp is dropped.
+- kryos-codegen-cranelift/src/codegen.rs: the closure dropper releases a capture whose type holds a tuple at any depth
+  (`ty_holds_tuple`), and the struct / enum drop helpers release a field of such a type (`field_needs_typed_drop`), through
+  `emit_drop_for_value`, the same type-directed drop a local's scope end uses (a stand-in `FuncTranslator` over an empty
+  `MirFunction`). No descriptor, no depth limit, any leaf type.
+- A first try cleared every local after every Cranelift `Drop`. That broke 16 items (A2.ctl, A3.ctl, 14 shared-ownership
+  crashes, 0xC0000005): the match-bind lowering emits `retain; drop(x); use(x)`, so a Drop is not always the last use. Removed; the
+  clear is only at the unwind sites above.
+
+FILES
+compiler/crates/kryos-mir/src/lower.rs, compiler/crates/kryos-codegen-cranelift/src/codegen.rs, tests/mem/leakmode_unwind.kry,
+tests/mem_leakmode_unwind_gate.sh, .github/workflows/ci.yml.
+
+EVIDENCE (executed)
+- `finish/run.sh -j 2 --only '^(leakmode:throw_locals|leakmode:clo_nested_tuple_arr)$'`: FAIL both before (jit +133.6MB,
+  +355.4MB); after: PASS leakmode:throw_locals, PASS leakmode:clo_nested_tuple_arr.
+- Pin `tests/mem_leakmode_unwind_gate.sh` (17 modes x JIT and Cranelift AOT at 300k iters, ceiling 12MB, plus a KRYOS_FREE_DIAG leg):
+  master binary rc=1, 34 FAIL lines (every mode, both legs); this tree rc=0, every leg 4MB, 0 free-diag reports.
+- Shapes measured on Cranelift AOT, peak RSS growth 50k -> 200k iters, master -> here: callee-thrown caught in the same function
+  +63MB -> 0; throw in try +51 -> 0; struct / tuple / array / map locals in the try +86 -> 0; for-loop iterable in the try +63 -> 0;
+  nested try +61 -> 0; throw from a catch block +51 -> 0; dynamic message +14 -> 0; direct throw caught by the caller +38 -> 0;
+  `[[(str,i64)]]` capture +71 -> 0, depth 3 +99 -> 0, tuple holding a struct +17 -> 0, array of (struct, str) +73 -> 0, nested tuple
+  +78 -> 0, 4-deep array nest +67 -> 0, struct with a `[[tuple]]` field captured +52 -> 0, `[S]` reset of a struct with tuple / `[[tuple]]`
+  fields +158 -> 0. Output of every probe is identical to master; KRYOS_FREE_DIAG reports 0 on all of them.
+- Regression: `finish/run.sh -j 2 --only '^(mem|leakmode|copy-assign-leak|137|138|139|A[0-9]+|M[0-9]+|B[0-9]+)([:.\-/]|$)'` 460 PASS / 10 FAIL
+  of 470; no item that passes on master_run1.txt fails. The 10 (A17, A20, A4, A5, M4, copy-assign-leak x4, mem:closure v137_uaf)
+  also fail on master. Also 42 items of ASSAULT / NaN / RUN / CI / import / turbofish / misc / docs / libm / bare / buf_ / 2c / 122 / numbered /
+  escape_status (137-perf passes): 39 PASS, the 3 FAIL (6, ASSAULT-F6, CI-WIN-1) are other lanes' rows and fail on master.
+  tests/conformance/run_conformance.sh 129/129 PASS. no_double_free.sh clean. mem_*_gate.sh PASS (all 30 but mem_agg_ops_gate, which
+  exceeded the 595s limit with every leg printed so far in range, as on master). tests/security attack_uncaught_throw_* and
+  tests/mem/throw_unwind_leak.kry: same output as master, 0 free-diag reports.
+
+NOT COVERED (measured, still leaks, not claimed)
+- A frame with NO try that an exception passes THROUGH (callee throws, this frame only has locals). Cranelift: the post-call
+  cleanup (`emit_exception_cleanup_drops`) skips tuple locals and owned struct params (`mid_tuple` +52MB, `mid_ownedparam` +29MB at 200k,
+  unchanged from master). LLVM (`build --release`): the post-call check drops nothing at all, so every such frame leaks its locals
+  (`mid_str` +37MB master, +24MB here: the callee's own locals are now released, the passing frame's are not). The same class makes the
+  LLVM `outer_throw` / `f1` shapes (a try in a frame that a LATER call unwinds) leak the frame's non-try locals. Fixing it means a MIR-level
+  handler after every unwind-source call outside a try (the same `unwind_drop_list`); it was not attempted because it adds a block after
+  every call and would interact with the tail-call pass and the 137-perf budget.
+- A pre-existing double free: a local released at scope end (success path, or an if-block's local) and then released again by the
+  Cranelift unwind cleanup of a later throwing call (`succ` / `block` probes, KRYOS_FREE_DIAG 61 reports on master and here). The
+  match-bind `retain; drop; use` shape means a Drop cannot simply clear its local; not changed.
+- `E.A((P { .. }, "s"))` (an enum whose payload is a tuple holding a struct) still leaks ~85B per value on Cranelift (+17MB at 200k, master +43MB);
+  the drop helper now releases the field type-directed, the remainder is in the enum / tuple literal construction, not the drop.
+- LLVM-only: a tuple holding a closure captured by a closure (`tuple_fn`, +21MB, identical on master), `[E]` of enums with tuple payloads (`e_arr`).
+
+## copy_assign_leak: re-landed with the verifier's residuals fixed (2026-11-27, branch closeout/r2-mem, lane r2-mem)
+
+The two refuted commits (58aa4f2e base fix, dbc63587 BlockId-as-index fix) are re-applied with the same design, plus two more
+changes that close the residual shapes the verifier listed. Nothing else about the `@copy` model changed: a Drop is a real free
+only for a local `copy_own` proves is the sole owner of its value.
+
+ROOT CAUSE of the residuals (c1 tail if/else, c4 early `return`, c5/b2 tail else-if, b1/a4 tail match)
+- NOT the `terminator_uses -> bad.insert` path the verifier suspected (that path only fires for a branch / return that names the
+  local itself). Dumping the MIR (`kryos build --emit-mir`) of `fn f(i) { let q = Q{..}; if i > 5 { q.a } else { q.b } }` shows
+  `bb2: .. drop(_1) return`, `bb3: .. drop(_1) return`, and three blocks (bb5, bb6, bb4) NO PATH REACHES, one of them ending
+  `drop(_1) return _2`. `owned_copy_locals` treated every candidate event in an unreachable block as unprovable and marked the
+  local bad, so any function whose tail expression is an if/else, else-if chain or match (or has an early `return` in an if) lost
+  every @copy local it declared. The reads were fine; the dead join block disqualified them.
+- a5 (overwrite): `p = P { .. }` on a `let mut` @copy local emitted no drop of the replaced value, and the analysis rightly did
+  not invent one. The old box and its str fields leaked per overwrite.
+
+FIX
+- kryos-mir/src/copy_own.rs: compute reachability from the entry block; events in unreachable blocks are ignored (they never
+  execute) instead of disqualifying the local.
+- kryos-mir/src/copy_own.rs `drop_overwritten_copies` (called from kryos-driver pipeline.rs right after `own_shared_refs_module`):
+  for an owned local, a definition reached while the local is DEFINITELY defined and NOT possibly dropped, whose new value is not
+  built from the local itself, gets a `drop(local)` inserted in front of it. The backends re-run the analysis on the final MIR and
+  free only locals it accepts, so an inserted drop that stops qualifying is a no-op (leak, never a double free). wasm ignores Drop.
+- Backends (as in 58aa4f2e): Cranelift `emit_drop_for_value` + null the variable; LLVM spill + `emit_struct_drop`. The three
+  `FuncTranslator` initialisers that build closure droppers / thunks set `owned_copy_locals: HashSet::new()`.
+
+FILES
+compiler/crates/kryos-mir/src/{copy_own,lib}.rs, kryos-codegen-cranelift/src/codegen.rs, kryos-codegen-llvm/src/codegen.rs,
+kryos-driver/src/pipeline.rs, tests/mem/copy_assign_{leak,xblock_leak,tail_leak}.kry, tests/mem_copy_assign{,_xblock,_tail}_gate.sh,
+.github/workflows/ci.yml.
+
+EVIDENCE (both ways, executed)
+- finish run.sh --only '^(copy-assign-leak|...cp_copy_const|...cp_copy_ints|...cp_struct_nocopyvar)$': tree before: 0 PASS 4 FAIL
+  (jit +107.1 / +46.0 / +46.0 / +84.2 MB); after: 4 PASS 0 FAIL.
+- Verifier's residual probes, KRYOS_ALLOC_STATS=1, 1000 iters, JIT box live (with the base fix re-landed only -> with this change):
+  c1 1000 -> 0, c4 1000 -> 0, c5 1000 -> 0, b2 (P{str,n}) 1000 -> 0, b1 (match) 1000 -> 0, a5 (reassign in one arm) 994 -> 0.
+- Pin: tests/mem_copy_assign_tail_gate.sh (fixture tests/mem/copy_assign_tail_leak.kry, 10 shapes: tail if/else, early return,
+  tail else-if with i64 and str, tail match with i64 and str, early return after a copy, overwrite in a branch, overwrite in a loop,
+  overwrite by copy). master binary (kryos-co-nov): box leg FAIL (no alloc-stats), AOT 427MB, JIT 686MB (ceiling 40MB). This tree:
+  box allocs=16994 frees=16994 live=0, AOT 4MB, JIT 4MB, PASS. Output identical to master (`tot 2436702`).
+- Adversarial probe (alias copy then overwrite, overwrite in a loop with continue/break, passed to a call then overwritten,
+  returned through `id` then overwritten, captured by a closure then overwritten, overwrite in try with a throw, `q = q`,
+  `p = p` then pushed): identical output to master on JIT, Cranelift AOT and LLVM release; KRYOS_FREE_DIAG=1 reports no double free.
+- Regression scan, same binary: finish run.sh '^(leakmode|copy-assign-leak|A[0-9])' 52 PASS / 4 FAIL (A4, A5, A17, A20: identical
+  FAIL lines to oracle last_run.txt, none involves @copy); '^mem:closure' 146 / 1 (only v137_uaf, the known failing row);
+  '^mem:(attacks|legit)' 241 / 0; the remaining mem / M rows 13 / 2 (6 and M4: identical to last_run.txt). Gates: conformance
+  129/129, no_double_free, mem_balance_gate (16 rows), mem_shared_rule_gate (28 rows), mem_struct_arg, mem_struct_field_read,
+  mem_field_assign_temp, mem_leakmode_unwind, backend_divergence_pins, selfhost_wholeprogram, minilisp 22/22, stdlib_compile 66/66,
+  concurrency_smoke, self-host test_regressions, and the three mem_copy_assign gates.
+- Reported, not caused by this change: `compiler/self-host/test_bootstrap.sh` is 14/16 (elf.kry and coff.kry rc=139) on this tree.
+  With the whole copy_own analysis switched off (a temporary env check, since removed) it is the same 14/16, so it predates this
+  change on this branch. `tests/type_soundness.sh`: 4 to_array E0110 holes (unchanged, see the ledger above).
+
+NOT COVERED (leaks as before, safely; the analysis keeps rejecting them)
+- A nested @copy struct field (`struct W { q: Q, tag: str }`): the nested value is a shared box and every read of it is an unnamed
+  deep-copy temp with no drop; probes a1 / a3 still leak (live=2994 / 3000 per 1000). Separate cause (needs drops for the
+  field-read temps and a recursive free of the nested box); the verifier noted it as separate.
+- An @copy value passed to a call, returned, pushed, captured by a closure, stored in an aggregate or global, or a parameter
+  (`use_ret`, `use_arg` probes: live=1000 per 1000). Freeing those needs a callee-side borrow / return summary.
+- Struct fields that are arrays, maps, enums, tuples, closures or shared handles; a throw before the scope-exit drop; async and wasm.
+- Unrelated and untouched: `p.n + len(p.name)` (a str field read as a call argument inside a binary expression) leaks one str
+  reference per evaluation for any struct, @copy or not (same MIR on a plain struct); the new fixture avoids that shape.
+
+## copy_assign_leak: arm-declared @copy local (verifier residual) fixed (2026-11-27, branch closeout/r2-mem, lane r2-mem)
+
+The verifier of 5d1f376c found one more shape of the same defect class: an @copy struct local declared INSIDE an arm of a
+value-producing if/else or else-if chain (`fn f(i){ if i>5 { let q = Q{..}; q.a+q.b } else { 1 } }`, `let r = if c { let q = ..; q.a } else { 4 }`)
+leaked its box every call (JIT box live 994/1000 for tail_q, let_q, decl_in_tail; 995 for elif_val).
+
+ROOT CAUSE (MIR dump, `kryos build --emit-mir`): lowering emits the scope-exit `drop(q)` on EVERY arm. In `tail_q`, `bb3: drop(_3) return 1`
+is the else path, where `_3` is never defined; in `let_q` the single `drop(_3)` sits at the join `bb4`, where `_3` is defined on one path only.
+copy_own required every Drop to see the local DEFINITELY defined and NOT possibly dropped, so both disqualified the local and the
+then-arm's box was never freed.
+
+FIX
+- kryos-mir/src/copy_own.rs: a may-defined (union) dataflow beside the must-defined one. A Drop at a point NO path defines the local is
+  a no-op: it is not an event and `drop_overwritten_copies` now also deletes it (so no backend names a slot or SSA value that does not
+  exist). A Drop at a point where the local is defined on some paths only, or possibly dropped already (the join of `let r = if ..`;
+  the end of a loop body whose arm declares it), no longer disqualifies the local: both backends free-then-zero, an unwritten
+  variable reads as null (cranelift-frontend 0.116.1 `use_var` zero default, LLVM slots are zeroinitializer), and a free of null does
+  nothing. READS (Use events) still must be definitely defined and not dropped.
+- kryos-codegen-llvm: after the real free of an owned @copy local held in an alloca slot, store zeroinitializer to the slot (Cranelift
+  already did `def_var(var, 0)`); without this a stale slot would be freed again on the next loop iteration.
+
+EVIDENCE (executed)
+- Pin: tests/mem_copy_assign_decl_gate.sh (fixture tests/mem/copy_assign_decl_arm_leak.kry, 12 shapes: tail if/else, let r = if, three-arm
+  else-if with a local per arm, str field, copy-then-read, else-only arm, overwrite in an arm, arm local in a while loop, loop with
+  continue/break, nested arm locals, early return out of an arm, two arm locals in a loop). Master binary: box leg FAIL (no alloc-stats),
+  AOT peak RSS 185MB, JIT 471MB (ceiling 40MB). This tree: box allocs=24949 frees=24949 live=0, AOT 4MB, JIT 4MB, PASS. Output identical
+  to master (`tot 12553235`). Before this change on this tree (previous HEAD): box live=9952 of 9964 on the first 8-shape fixture.
+- Per-shape JIT box live at 1000 iters, before -> after: tail_q 994 -> 0, let_q 994 -> 0, elif_val 995 -> 0, arm_in_loop 2000 -> 0
+  (arm_str / arm_copy / arm_else_only / arm_overwrite 0 -> 0).
+- Adversarial probe .scratch (arm local in a loop with continue/break, nested arm locals, return from an arm, overwrite in an arm, two
+  arm locals per loop iteration, 400 iterations): identical output (`tot 1469168`) on master, tree JIT, Cranelift AOT and LLVM release;
+  KRYOS_FREE_DIAG=1 reports no double free on any of them; JIT box live=0.
+- finish run.sh --only '^(copy-assign-leak|...:cp_copy_const|...:cp_copy_ints|...:cp_struct_nocopyvar)$': 4 PASS 0 FAIL.
+- Regression: finish run.sh -j 2 --only '^(mem|leakmode|copy-assign-leak|137|138|139|A[0-9]+|M[0-9]+|B[0-9]+)([:.\-/]|$)': 464 PASS / 6 FAIL
+  of 470; the 6 (A4, A5, A17, A20, M4, mem:closure v137_uaf) are the known failing rows listed above, identical FAIL lines; no row that
+  passed before fails. Gates: the three earlier mem_copy_assign gates, no_double_free, mem_balance_gate (16 rows), mem_shared_rule_gate
+  (28 rows), mem_struct_arg, mem_struct_field_read, mem_field_assign_temp, mem_leakmode_unwind, backend_divergence_pins,
+  selfhost_wholeprogram, minilisp 22/22, stdlib_compile 66/66, concurrency_smoke, conformance 129/129.
+  `compiler/self-host/test_bootstrap.sh` is 14/16 (elf.kry, coff.kry rc=139), unchanged from the entry above (predates this change).
+
+STILL NOT COVERED (leaks safely, unchanged): see the NOT COVERED list of the previous copy_assign_leak entry (nested @copy fields,
+@copy values passed to calls / returned / pushed / captured, aggregate-typed fields, throw before the scope-exit drop, async, wasm).
+Not confirmed here: an LLVM-release box balance (the RSS leg of the new gate covers it; the box counter is JIT-only).
+
+## 2026-11-27 r2-mem: mem_closure v137_uaf (WALL: defective oracle expectation, no compiler change)
+
+Re-executed on this tree (HEAD 5385e8ba, rebuilt via kbuild.sh): `finish/run.sh -j 2 --only 'mem:closure/mem-shared-ownership-e7f16887/v137_uaf'`
+-> FAIL `jit iters=2200: stdout=tot 2463990 want tot 355349`. The row's recorded expectation (`tot 355349` @2200, `tot 5047669` @8800) is the
+output of a use-after-free, not the program's value. Independent python sum of `i + len("node-i-padpadpad") + 2` over i<2200 is 2463990 and
+over i<8800 is 38899290; this tree prints exactly those (master binary prints 359153 / 5243312 and varies run to run; earlier oracle runs
+recorded 348323, 349347). Memory is bounded on this tree: KRYOS_ALLOC_STATS arc allocs=frees=90200 live=0 and box allocs=frees=94600 live=0 at
+n=2200; arc 360800/360800 and box 378400/378400 live=0 at n=8800. The row cannot pass with a correct compiler; fixing it needs the expectation
+in kryos-oracle/finish/items.json changed to the true totals, which this lane may not edit. Rest of the family unchanged:
+`--only '^(mem:closure[-:/]|137-perf$)'` 147 PASS / 1 FAIL (this row), 137-perf PASS.

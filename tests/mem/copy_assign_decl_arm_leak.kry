@@ -1,0 +1,116 @@
+// LEDGER item copy-assign-leak (arm-declared local follow-up): an @copy struct
+// local declared INSIDE an arm of a value-producing if/else / else-if chain
+// leaked its box on every call. The lowering emits `drop(q)` on the other
+// arm(s) too, where `q` is never defined; copy_own saw a drop of a local that
+// is not definitely defined and disqualified the local. A drop of a local that
+// no path to that point defines is a no-op and must neither disqualify the
+// local nor reach a backend (an uninitialised slot is not a null pointer).
+//
+// Run:  LEAK_ITERS=<n> ./copy_assign_decl_arm_leak   (default 1000)
+// Reader: tests/mem_copy_assign_decl_gate.sh
+@copy
+struct Q { a: i64, b: i64 }
+@copy
+struct P { name: str, n: i64 }
+
+fn tail_q(i: i64) -> i64 {
+    if i > 5 { let q = Q { a: i, b: 2 }
+        q.a + q.b } else { 1 }
+}
+fn let_q(i: i64) -> i64 {
+    let r = if i > 5 { let q = Q { a: i, b: 3 }
+        q.a * q.b } else { 4 }
+    r + 1
+}
+fn elif_val(i: i64) -> i64 {
+    if i > 9 { let q = Q { a: i, b: 2 }
+        q.a } else if i > 5 { let q = Q { a: 1, b: i }
+        q.b } else { let q = Q { a: 7, b: 7 }
+        q.a + q.b }
+}
+fn arm_str(i: i64) -> i64 {
+    if i > 5 { let p = P { name: "abcdefghijklmnop" + to_string(i), n: i }
+        p.n } else { 2 }
+}
+fn arm_copy(i: i64) -> i64 {
+    if i > 5 { let a = Q { a: i, b: 5 }
+        let c = a
+        c.a + a.b } else { 3 }
+}
+fn arm_else_only(i: i64) -> i64 {
+    if i > 5 { 9 } else { let q = Q { a: i, b: 2 }
+        q.a + q.b }
+}
+fn arm_overwrite(i: i64) -> i64 {
+    if i > 5 { let mut p = P { name: "abcdefghijklmnop" + to_string(i), n: i }
+        p = P { name: "zyxwvutsrqponmlk" + to_string(i), n: 1 }
+        p.n } else { 2 }
+}
+fn arm_in_loop(i: i64) -> i64 {
+    let mut k = 0
+    let mut t = 0
+    while k < 3 {
+        t = t + if k > 0 { let q = Q { a: k, b: i }
+            q.a + q.b } else { 1 }
+        k = k + 1
+    }
+    t
+}
+
+fn loop_arm_cont(i: i64) -> i64 {
+    let mut k = 0
+    let mut t = 0
+    while k < 8 {
+        k = k + 1
+        if k % 3 == 0 { continue }
+        let v = if (k + i) % 2 == 0 { let p = P { name: "zyxwvutsrqponmlk" + to_string(k), n: k }
+            let c = p
+            len(c.name) + p.n } else { let q = Q { a: k, b: i }
+            q.a * q.b }
+        t = t + v
+        if t > 100000 { break }
+    }
+    t
+}
+
+fn nested(i: i64) -> i64 {
+    let r = if i > 2 { let q = Q { a: i, b: 1 }
+        if i > 5 { let w = P { name: "abcdefghijklmnop" + to_string(i), n: i }
+            len(w.name) + q.a } else { q.b } } else { 0 }
+    r + 1
+}
+
+fn arm_ret(i: i64) -> i64 {
+    let r = if i > 5 { let q = Q { a: i, b: 1 }
+        if i > 8 { return q.a }
+        q.b } else { 0 }
+    r + 2
+}
+
+fn two_defs(i: i64) -> i64 {
+    let mut j = 0
+    let mut t = 0
+    while j < 3 {
+        let v = if j == i % 3 { let q = Q { a: j, b: 10 }
+            q.a + q.b } else { let q2 = Q { a: 100, b: j }
+            q2.a - q2.b }
+        t = t + v
+        j = j + 1
+    }
+    t
+}
+
+@capabilities(process)
+fn main() {
+    let raw = env_get("LEAK_ITERS")
+    let iters = if len(raw) == 0 { 1000 } else { parse_int(raw) }
+    let mut tot = 0
+    let mut i = 0
+    while i < iters {
+        tot = tot + tail_q(i) + let_q(i) + elif_val(i) + arm_str(i)
+        tot = tot + arm_copy(i) + arm_else_only(i) + arm_overwrite(i) + arm_in_loop(i)
+        tot = tot + loop_arm_cont(i) + nested(i) + arm_ret(i) + two_defs(i)
+        i = i + 1
+    }
+    println("tot {tot}")
+}

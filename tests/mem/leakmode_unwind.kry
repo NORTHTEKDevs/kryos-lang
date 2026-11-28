@@ -1,0 +1,253 @@
+// Peak-RSS / double-free probe for exception unwinding and closure-env release
+// (LEDGER "leakmode" entry, 2026-11-27). Every mode loops LEAK_ITERS times:
+//
+//   unwind modes   a `throw` (direct, in a try body, or from a callee caught in
+//                  the SAME function) used to leave the named locals, `for`
+//                  iterables and fresh thrown message of the frame unreleased:
+//                  the try body's scope-end drops are never reached on the
+//                  catch path, a direct throw returned without any drop
+//   outer_throw /
+//   succ / block   a local the MIR already released was dropped a second time by
+//                  the codegen's unwind cleanup when a LATER call threw
+//                  (KRYOS_FREE_DIAG reports it)
+//   clo_* / w_clo  a closure env, or a struct field, holding a tuple (nested in
+//                  arrays, holding structs / strs / arrays) was released one
+//                  level deep
+//
+// Run:  LEAK_MODE=<mode> LEAK_ITERS=<n> ./leakmode_unwind
+// Gate: tests/mem_leakmode_unwind_gate.sh
+struct P { name: str, n: i64 }
+struct W { rows: [[(str, i64)]], tag: str }
+struct S { t: (P, str), rows: [[(str, i64)]], tag: str }
+
+fn callee(i: i64) {
+    let s = "c{i}-padpadpad"
+    if len(s) > 0 {
+        throw "calleeboom"
+    }
+}
+
+fn ok(i: i64) -> i64 { return i % 3 }
+
+fn mk_s(i: i64) -> S {
+    return S { t: (P { name: "p{i}-padpadpad", n: i }, "s{i}-padpad"), rows: [[("a{i}-padpad", i)], [("b{i}-padpad", i)]], tag: "t{i}-pad" }
+}
+
+fn f_callee_in_try(i: i64) -> i64 {
+    try {
+        let a = "a{i}-padpadpad"
+        let arr = ["x{i}-padpad", "y{i}-padpad"]
+        callee(i)
+        return len(a) + len(arr)
+    } catch e {
+        return len(e)
+    }
+}
+
+fn f_throw_in_try(i: i64) -> i64 {
+    try {
+        let a = "a{i}-padpadpad"
+        let arr = ["x{i}-padpad", "y{i}-padpad"]
+        if len(a) > 0 { throw "inline" }
+        return len(a) + len(arr)
+    } catch e {
+        return len(e)
+    }
+}
+
+fn f_struct_tuple(i: i64) -> i64 {
+    try {
+        let p = P { name: "p{i}-padpadpad", n: i }
+        let t = ("t{i}-padpad", i)
+        let ps = [P { name: "q{i}-padpad", n: 1 }]
+        callee(i)
+        return p.n + t.1 + len(ps)
+    } catch e {
+        return len(e)
+    }
+}
+
+fn f_loop_in_try(i: i64) -> i64 {
+    let mut acc = 0
+    try {
+        let xs = ["a{i}-padpad", "b{i}-padpad"]
+        for x in xs {
+            let tmp = "t-" + x
+            acc = acc + len(tmp)
+            callee(i)
+        }
+    } catch e {
+        acc = acc + len(e)
+    }
+    return acc
+}
+
+fn f_nested(i: i64) -> i64 {
+    let mut acc = 0
+    try {
+        let o = "o{i}-padpadpad"
+        try {
+            let inn = "i{i}-padpadpad"
+            callee(i)
+            acc = len(inn)
+        } catch e1 {
+            acc = acc + len(e1) + len(o)
+        }
+        callee(i)
+    } catch e2 {
+        acc = acc + len(e2)
+    }
+    return acc
+}
+
+fn f_throw_in_catch(i: i64) -> i64 {
+    try {
+        let a = "a{i}-padpadpad"
+        try {
+            callee(i)
+        } catch e {
+            let w = "w{i}-padpadpad" + e
+            throw w
+        }
+        return len(a)
+    } catch e2 {
+        return len(e2)
+    }
+}
+
+fn f_dyn_throw(i: i64) -> i64 {
+    try {
+        throw "dyn msg {i}-padpadpad"
+    } catch e {
+        return len(e)
+    }
+}
+
+fn f_try_then_outer_throw(i: i64) -> i64 {
+    let mut acc = 0
+    try {
+        let a = "a{i}-padpadpad"
+        callee(i)
+        acc = len(a)
+    } catch e {
+        acc = len(e)
+    }
+    let after = "after{i}-padpadpad"
+    acc = acc + len(after)
+    callee(i)
+    return acc
+}
+
+fn f_direct_throw_ret(i: i64) -> i64 {
+    let a = "a{i}-padpadpad"
+    if i < 0 { return 1 }
+    let b = [a, "z{i}-padpad"]
+    throw "direct"
+    return len(b)
+}
+
+fn f_direct_catch(i: i64) -> i64 {
+    try { return f_direct_throw_ret(i) } catch e { return len(e) }
+}
+
+fn mk_nta(i: i64) -> fn() -> str {
+    let ys = [[("a{i}", i)], [("b{i}", i), ("c{i}", i)]]
+    return || ys[0][0].0 + ys[1][1].0
+}
+
+fn mk_nta3(i: i64) -> fn() -> str {
+    let ys = [[[("a{i}", i)]], [[("b{i}", i), ("c{i}", i)]]]
+    return || ys[0][0][0].0 + ys[1][0][1].0
+}
+
+fn mk_tuple_struct(i: i64) -> fn() -> i64 {
+    let t = (P { name: "p{i}-padpadpad", n: i }, "s{i}-padpad", [1, 2, 3])
+    return || len(t.0.name) + len(t.1) + t.2[0]
+}
+
+fn mk_arr_tuple_struct(i: i64) -> fn() -> i64 {
+    let ts = [(P { name: "p{i}-padpadpad", n: i }, "s{i}-padpad"), (P { name: "q{i}-padpadpad", n: i }, "z")]
+    return || len(ts[0].0.name) + len(ts[1].1)
+}
+
+fn mk_tuple_nested(i: i64) -> fn() -> i64 {
+    let t = (("a{i}-padpad", ["x{i}-padpad", "y"]), ("b{i}-padpad", 7))
+    return || len(t.0.0) + len(t.0.1[0]) + len(t.1.0) + t.1.1
+}
+
+fn mk_deep(i: i64) -> fn() -> i64 {
+    let d = [[[[("a{i}-padpad", [i])]]]]
+    return || len(d[0][0][0][0].0)
+}
+
+fn mk_w_clo(i: i64) -> fn() -> i64 {
+    let w = W { rows: [[("a{i}-padpad", i)], [("b{i}-padpad", i)]], tag: "t{i}-pad" }
+    return || len(w.rows[0][0].0) + len(w.tag)
+}
+
+fn f_succ_then_throw(i: i64) -> i64 {
+    let mut acc = 0
+    try {
+        let a = "a{i}-padpadpad"
+        let arr = ["x{i}-padpad", a]
+        ok(i)
+        acc = len(a) + len(arr)
+    } catch e {
+        acc = len(e)
+    }
+    callee(i)
+    return acc
+}
+
+fn f_block_then_throw(i: i64) -> i64 {
+    let mut acc = 0
+    if i >= 0 {
+        let a = "a{i}-padpadpad"
+        acc = len(a)
+    }
+    callee(i)
+    return acc
+}
+
+@capabilities(process)
+fn main() {
+    let mode = env_get("LEAK_MODE")
+    let raw = env_get("LEAK_ITERS")
+    let iters = if len(raw) == 0 { 300000 } else { parse_int(raw) }
+    let mut keep: [S] = []
+    let mut sink = 0
+    let mut i = 0
+    while i < iters {
+        if mode == "callee_in_try" { sink = sink + f_callee_in_try(i) }
+        elif mode == "throw_in_try" { sink = sink + f_throw_in_try(i) }
+        elif mode == "struct_tuple" { sink = sink + f_struct_tuple(i) }
+        elif mode == "loop_in_try" { sink = sink + f_loop_in_try(i) }
+        elif mode == "nested" { sink = sink + f_nested(i) }
+        elif mode == "throw_in_catch" { sink = sink + f_throw_in_catch(i) }
+        elif mode == "dyn_throw" { sink = sink + f_dyn_throw(i) }
+        elif mode == "direct_catch" { sink = sink + f_direct_catch(i) }
+        elif mode == "outer_throw" {
+            try { sink = sink + f_try_then_outer_throw(i) } catch e { sink = sink + len(e) }
+        }
+        elif mode == "succ" {
+            try { sink = sink + f_succ_then_throw(i) } catch e { sink = sink + len(e) }
+        }
+        elif mode == "block" {
+            try { sink = sink + f_block_then_throw(i) } catch e { sink = sink + len(e) }
+        }
+        elif mode == "clo_nta" { let f = mk_nta(i)  sink = sink + len(f()) }
+        elif mode == "clo_nta3" { let f = mk_nta3(i)  sink = sink + len(f()) }
+        elif mode == "clo_tuple_struct" { let f = mk_tuple_struct(i)  sink = sink + f() }
+        elif mode == "clo_arr_tuple_struct" { let f = mk_arr_tuple_struct(i)  sink = sink + f() }
+        elif mode == "clo_tuple_nested" { let f = mk_tuple_nested(i)  sink = sink + f() }
+        elif mode == "clo_deep" { let f = mk_deep(i)  sink = sink + f() }
+        elif mode == "clo_struct_rows" { let f = mk_w_clo(i)  sink = sink + f() }
+        elif mode == "s_reset" { keep = [mk_s(i)]  sink = sink + len(keep[0].tag) }
+        else {
+            println("unknown LEAK_MODE: " + mode)
+            exit(2)
+        }
+        i = i + 1
+    }
+    println("{mode} iters={iters} sink={sink} {len(keep)}")
+}

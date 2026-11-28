@@ -312,6 +312,34 @@ jobs:
         # array buffer, never the element boxes: peak RSS on both backends.
         run: bash tests/mem_struct_array_overwrite_gate.sh
 
+      - name: "Exception unwind and closure-env release gate (leakmode)"
+        # A throw (direct, in a try body, or from a callee caught in the same
+        # function) leaked the frame's locals; a closure env / struct field
+        # holding a tuple was released one level deep; a released local was
+        # released again by a later throwing call's unwind cleanup.
+        run: bash tests/mem_leakmode_unwind_gate.sh
+
+      - name: "Copy-struct memory gate (copy-assign-leak)"
+        # An @copy struct literal and each `let c = b` copy were never freed:
+        # box balance on the JIT, peak RSS on both backends.
+        run: bash tests/mem_copy_assign_gate.sh
+
+      - name: Cross-block @copy struct memory gate (LEDGER item copy-assign-leak)
+        # An @copy local read in a different basic block than its definition
+        # (if/else, loop, continue) must be freed: box balance + peak RSS.
+        run: bash tests/mem_copy_assign_xblock_gate.sh
+
+      - name: Tail / return / overwrite @copy struct memory gate (LEDGER item copy-assign-leak)
+        # A tail if/else, else-if, match or early `return` over an @copy local,
+        # and an overwritten `let mut` @copy local, must be freed.
+        run: bash tests/mem_copy_assign_tail_gate.sh
+
+      - name: Arm-declared @copy struct memory gate (LEDGER item copy-assign-leak)
+        # An @copy local declared inside an arm of a value-producing if/else or
+        # else-if chain, or in a loop body arm, must be freed (box balance +
+        # peak RSS on both backends).
+        run: bash tests/mem_copy_assign_decl_gate.sh
+
       - name: Struct-argument memory gate (LEDGER item 3)
         # Passing a heap-bearing struct to a function, and chaining
         # struct-returning methods, must stay flat on BOTH backends. Pre-fix

@@ -1,0 +1,87 @@
+// LEDGER item copy-assign-leak (tail / return / overwrite follow-up): an @copy
+// struct local whose scope-exit `drop` sits in a block no path reaches (the
+// join block of an if/else / else-if / match whose arms all `return`, a
+// trailing `goto`) was never freed: copy_own treated every candidate event in
+// an unreachable block as unprovable and disqualified the local. A tail
+// if/else, an early `return`, an else-if chain and a tail match over a local
+// all leaked it. Separately, overwriting a `let mut` @copy local
+// (`p = P { .. }`) leaked the value it replaced.
+//
+// Run:  LEAK_ITERS=<n> ./copy_assign_tail_leak   (default 1000)
+// Reader: tests/mem_copy_assign_tail_gate.sh
+@copy
+struct Q { a: i64, b: i64 }
+@copy
+struct P { name: str, n: i64 }
+
+fn tail_ifelse(i: i64) -> i64 {
+    let q = Q { a: i, b: 2 }
+    if i > 5 { q.a } else { q.b }
+}
+fn early_return(i: i64) -> i64 {
+    let q = Q { a: i, b: 2 }
+    if i > 5 { return q.a }
+    q.b
+}
+fn tail_elseif(i: i64) -> i64 {
+    let q = Q { a: i, b: 2 }
+    if i > 9 { q.a } else if i > 5 { q.b } else { 7 }
+}
+fn tail_elseif_str(i: i64) -> i64 {
+    let p = P { name: "abcdefghijklmnop" + to_string(i), n: i }
+    if i > 9 { len(p.name) } else if i > 5 { p.n } else { 7 }
+}
+fn tail_match(i: i64) -> i64 {
+    let q = Q { a: i, b: 2 }
+    let k = i % 3
+    match k { 0 => q.a, 1 => q.b, _ => 5 }
+}
+fn tail_match_str(i: i64) -> i64 {
+    let p = P { name: "abcdefghijklmnop" + to_string(i), n: i }
+    let k = i % 3
+    match k { 0 => len(p.name), 1 => p.n, _ => 5 }
+}
+fn early_return_copy(i: i64) -> i64 {
+    let b = P { name: "abcdefghijklmnop" + to_string(i), n: i }
+    let c = b
+    if i > 5 { return len(c.name) }
+    c.n + b.n
+}
+fn overwrite_branch(i: i64) -> i64 {
+    let mut p = P { name: "abcdefghijklmnop" + to_string(i), n: i }
+    if i > 5 { p = P { name: "zyxwvutsrqponmlk" + to_string(i), n: 1 } }
+    let l = len(p.name)
+    p.n + l
+}
+fn overwrite_loop(i: i64) -> i64 {
+    let mut p = P { name: "abcdefghijklmnop" + to_string(i), n: i }
+    let mut k = 0
+    while k < 3 {
+        p = P { name: "zyxwvutsrqponmlk" + to_string(k), n: k }
+        k = k + 1
+    }
+    let l = len(p.name)
+    p.n + l
+}
+fn overwrite_by_copy(i: i64) -> i64 {
+    let a = P { name: "abcdefghijklmnop" + to_string(i), n: i }
+    let mut b = P { name: "zyxwvutsrqponmlk" + to_string(i), n: 1 }
+    b = a
+    let l = len(b.name)
+    b.n + l
+}
+
+@capabilities(process)
+fn main() {
+    let raw = env_get("LEAK_ITERS")
+    let iters = if len(raw) == 0 { 1000 } else { parse_int(raw) }
+    let mut tot = 0
+    let mut i = 0
+    while i < iters {
+        tot = tot + tail_ifelse(i) + early_return(i) + tail_elseif(i) + tail_elseif_str(i)
+        tot = tot + tail_match(i) + tail_match_str(i) + early_return_copy(i)
+        tot = tot + overwrite_branch(i) + overwrite_loop(i) + overwrite_by_copy(i)
+        i = i + 1
+    }
+    println("tot {tot}")
+}
