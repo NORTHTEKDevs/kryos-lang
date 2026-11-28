@@ -25,11 +25,33 @@
 //   let_if_cond      `let v = if len(match ..{}.name) > 1 { 3 } else { 4 }`
 //   match_subj       `match len(if ..{}.name) { .. }`           two_one_stmt   two if / match reads in ONE statement
 //   let_q / ret_q    a STRUCT-valued field (`.q`): deep-copied before the slot is released, then owned by the let / return
-// Not covered: a tuple / enum / closure value that is itself the result, a struct-valued read stored into a field.
+// Round 4 (the same defect when the read is not a str / array / scalar, or the if / match struct is not read at all):
+//   enum_f / tuple_f  `let k = match ..{}.k` (enum field) / `let t = match ..{}.t` (tuple field: shared, then the slot is released)
+//   ret_enum / ret_tuple  returned from a function              arg_tuple   the tuple field passed to a user fn
+//   glob_str / glob_enum / glob_tuple  assigned to a mutable global (the global takes the read's own reference)
+//   meth / meth_int   a method call whose receiver is the if / match struct (`match ..{}.label()`)
+//   whole_match / whole_if  the if / match struct passed whole to a user fn (`lene(match ..{})`)
+// Not covered: a closure-valued field, a struct-valued read stored into a field, an array literal of enum reads, an earlier
+// operand temp defined before an if / match operand's blocks (`f(mk(i), match ..{})`), if / match operands inside an arm.
 struct P { name: str, n: i64, tags: [str] }
 struct R { s: str }
 struct Q { name: str, n: i64 }
 struct W { name: str, q: Q, t: (str, i64), tags: [str] }
+enum K { A(str), B }
+struct E { name: str, k: K, t: (str, i64) }
+impl E {
+    fn label(self: E) -> str { return self.name }
+    fn num(self: E) -> i64 { return len(self.name) }
+}
+fn mke(i: i64) -> E { return E { name: "e{i}", k: K.A("k{i}"), t: ("t{i}", i) } }
+fn lene(e: E) -> i64 { return len(e.name) }
+fn kl(k: K) -> i64 { return match k { A(s) => len(s), B => 0 } }
+fn tl(t: (str, i64)) -> i64 { return len(t.0) + t.1 }
+fn retk(i: i64) -> K { return match i % 2 { 0 => mke(i), _ => mke(i + 1) }.k }
+fn rett(i: i64) -> (str, i64) { return match i % 2 { 0 => mke(i), _ => mke(i + 1) }.t }
+let mut GS: str = ""
+let mut GK: K = K.B
+let mut GT: (str, i64) = ("", 0)
 fn mkp(i: i64) -> P { return P { name: "p{i}", n: i, tags: ["a{i}", "b"] } }
 fn mkw(i: i64) -> W { return W { name: "w{i}", q: Q { name: "q{i}", n: i }, t: ("t{i}", i), tags: ["a{i}", "b"] } }
 fn pick(i: i64) -> str { return match i % 2 { 0 => mkp(i), _ => mkp(i + 1) }.name }
@@ -134,6 +156,35 @@ fn main() {
         } elif mode == "ret_q" {
             let q = retq(i)
             sink = sink + len(q.name)
+        } elif mode == "enum_f" {
+            let k = match i % 2 { 0 => mke(i), _ => mke(i + 1) }.k
+            sink = sink + kl(k)
+        } elif mode == "tuple_f" {
+            let t = match i % 2 { 0 => mke(i), _ => mke(i + 1) }.t
+            sink = sink + tl(t)
+        } elif mode == "ret_enum" {
+            sink = sink + kl(retk(i))
+        } elif mode == "ret_tuple" {
+            sink = sink + tl(rett(i))
+        } elif mode == "arg_tuple" {
+            sink = sink + tl(match i % 2 { 0 => mke(i), _ => mke(i + 1) }.t)
+        } elif mode == "glob_str" {
+            GS = if i % 2 == 0 { mkp(i) } else { mkp(i + 1) }.name
+            sink = sink + len(GS)
+        } elif mode == "glob_enum" {
+            GK = match i % 2 { 0 => mke(i), _ => mke(i + 1) }.k
+            sink = sink + kl(GK)
+        } elif mode == "glob_tuple" {
+            GT = match i % 2 { 0 => mke(i), _ => mke(i + 1) }.t
+            sink = sink + tl(GT)
+        } elif mode == "meth" {
+            sink = sink + len(match i % 2 { 0 => mke(i), _ => mke(i + 1) }.label())
+        } elif mode == "meth_int" {
+            sink = sink + match i % 2 { 0 => mke(i), _ => mke(i + 1) }.num()
+        } elif mode == "whole_match" {
+            sink = sink + lene(match i % 2 { 0 => mke(i), _ => mke(i + 1) })
+        } elif mode == "whole_if" {
+            sink = sink + lene(if i % 2 == 0 { mke(i) } else { mke(i + 1) })
         } elif mode == "named" {
             sink = sink + len(match i % 2 { 0 => a, _ => b }.name) + len(a.name) + len(b.name)
         } else {

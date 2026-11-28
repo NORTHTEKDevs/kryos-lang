@@ -8,6 +8,9 @@
 # if / elif / while condition and a `return`, an arm / let block that returns its own local, and nested
 # `.q.name` / `.t.0` reads. Round 3 modes: the read consumed mid-statement (behind `&&` / `||`, a match subject,
 # two reads in one statement) and a struct-valued `.q` taken by a `let` / `return` (see the probe header).
+# Round 4 modes: an enum / tuple field read, a read assigned to a mutable global, a method call on an if / match
+# struct and the if / match struct passed whole to a user fn (the operand copy of an owned if / match struct is
+# released by the sub-expression that consumed it, like the result of a call).
 # Windows-only (PowerShell PeakWorkingSet64).
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"; cd "$ROOT"
@@ -25,6 +28,8 @@ want_for() {
     let_if_cond) echo 3000000 ;;
     two_one_stmt) echo 13777804 ;;
     let_q|ret_q) echo 6888896 ;;
+    enum_f|ret_enum|glob_str|glob_enum|meth|meth_int|whole_match|whole_if) echo 6888896 ;;
+    tuple_f|ret_tuple|arg_tuple|glob_tuple) echo 500006888896 ;;
     blk_let) echo 6888890 ;;
     match_int) echo 500000000000 ;;
     match_arr) echo 2000000 ;;
@@ -51,7 +56,7 @@ if ! "$KRYOS" build --release "$ROOT/$probe" -o "$aot_bin" >/dev/null 2>&1; then
   echo "mem-field-of-temp: AOT build FAILED"; exit 1
 fi
 
-for mode in match_str if_str match_int match_arr let_str lit_arr struct_lit ret_str twice cond_str elif_str while_str ret_if blk_arm blk_let nested_q tuple_t and_if or_if and_while and_elif ret_and ret_or let_if_cond match_subj two_one_stmt let_q ret_q named control; do
+for mode in match_str if_str match_int match_arr let_str lit_arr struct_lit ret_str twice cond_str elif_str while_str ret_if blk_arm blk_let nested_q tuple_t and_if or_if and_while and_elif ret_and ret_or let_if_cond match_subj two_one_stmt let_q ret_q enum_f tuple_f ret_enum ret_tuple arg_tuple glob_str glob_enum glob_tuple meth meth_int whole_match whole_if named control; do
   WANT="$(want_for "$mode")"
   aot_bytes=$(powershell -NoProfile -Command \
     "\$env:LEAK_ITERS='$ITERS'; \$env:LEAK_MODE='$mode'; \$p=Start-Process -FilePath '$win_aot' -PassThru -NoNewWindow -RedirectStandardOutput \$env:TEMP\mfot_${mode}_aot.txt; \$m=0; while(-not \$p.HasExited){try{\$p.Refresh(); if(\$p.PeakWorkingSet64 -gt \$m){\$m=\$p.PeakWorkingSet64}}catch{}; Start-Sleep -Milliseconds 20}; try{\$p.Refresh(); if(\$p.PeakWorkingSet64 -gt \$m){\$m=\$p.PeakWorkingSet64}}catch{}; \$m" 2>/dev/null | tr -d '\r')

@@ -3368,6 +3368,11 @@ fn assign_rhs_owns_read(ctx: &mut LoweringContext, value: &ast::Expr, dest_ty: &
 fn global_use_is_fresh(ctx: &LoweringContext, src: LocalId) -> bool {
     let mut t = src;
     for _ in 0..8 {
+        // A read off an if / match value that took its own reference before the slot
+        // was released (`G = match ..{}.k`).
+        if ctx.slot_read_temps.contains(&t.0) {
+            return true;
+        }
         if !ctx.locals.iter().any(|l| l.id == t && l.name.is_none()) {
             return false;
         }
@@ -3848,7 +3853,7 @@ pub fn lower_function(
             // Same as a `return` of a tuple that is not freshly built.
             if let Operand::Local(src) = tail_val.clone() {
                 let src_ty = ctx.locals.iter().find(|l| l.id == src).map(|l| l.ty.clone());
-                if let Some(t) = src_ty.filter(|t| is_owned_tuple_ty(ctx, t)) {
+                if let Some(t) = src_ty.filter(|t| is_owned_tuple_ty(ctx, t) && !ctx.slot_read_temps.contains(&src.0)) {
                     if matches!(
                         expr,
                         ast::Expr::Identifier { .. }
@@ -5280,6 +5285,19 @@ fn drop_unescaped_str_temps(
                         }
                         continue 'cand;
                     }
+                    // A non-@copy struct literal that shared the tuple for its field (the
+                    // share comes right before it) took its own owner: the temp still
+                    // holds, and drops, its own.
+                    RValue::Struct { name, fields }
+                        if fields.iter().any(|(_, op)| mentions(op, id))
+                            && !ctx.copy_structs.contains(name.as_str())
+                            && ctx.current_instructions[inst_mark..].iter().any(|i| {
+                                matches!(i, Instruction::Assign { value: RValue::Call { func: f2, args: a2 }, .. }
+                                    if f2 == STRUCT_SHARE_FN && a2.len() == 1 && mentions(&a2[0], id))
+                            }) =>
+                    {
+                        continue;
+                    }
                     RValue::Call { func, args } if args.iter().any(|a| mentions(a, id)) => {
                         if func == STRUCT_SHARE_FN
                             || (ctx.user_fn_names.contains(func) && !ctx.builtin_fn_names.contains(func))
@@ -6439,6 +6457,21 @@ fn strip_escaping_tuple_drops(
                 if shared_next {
                     shared_copy_at.insert((bi, ii));
                 }
+                // `d = u` where `u` is an UNNAMED temp read out of an aggregate whose own
+                // share came right after the read (`u = s.t; share(u)`), as the read off an
+                // if / match value makes before it releases the value: the copy takes over
+                // that reference.
+                let Instruction::Assign { value: RValue::Use(Operand::Local(src)), .. } = inst else { continue };
+                if locals.iter().any(|l| l.id == *src && l.name.is_none())
+                    && b.instructions[..ii].windows(2).any(|w| {
+                        matches!(&w[0], Instruction::Assign { dest: d0, value: RValue::Field { .. } } if d0 == src)
+                            && matches!(&w[1], Instruction::Assign { value: RValue::Call { func, args }, .. }
+                                if func == STRUCT_SHARE_FN && args.len() == 1
+                                    && matches!(&args[0], Operand::Local(l) if l == src))
+                    })
+                {
+                    shared_copy_at.insert((bi, ii));
+                }
             }
         }
     }
@@ -6618,6 +6651,37 @@ fn strip_escaping_tuple_drops(
                     if !shared_before {
                         unowned.insert(v.0);
                         unowned.insert(root(v.0));
+                    }
+                }
+                continue;
+            }
+            // A struct literal takes its own owner of a tuple field the block shared right
+            // before it (the same contract as an enum payload above); an unshared tuple is
+            // moved in (an escape).
+            if let Instruction::Assign { value: RValue::Struct { fields, .. }, .. } = inst {
+                for (_, f) in fields {
+                    let Operand::Local(v) = f else { continue };
+                    if !tuples.contains(&v.0) {
+                        continue;
+                    }
+                    let shared_before = b.instructions[..ii]
+                        .iter()
+                        .rev()
+                        .take_while(|j| !matches!(j, Instruction::Assign { dest: d2, value: v2 }
+                            if d2 == v && !matches!(v2, RValue::Call { func, .. } if func == STRUCT_SHARE_FN)))
+                        .any(|j| matches!(j, Instruction::Assign { value: RValue::Call { func, args }, .. }
+                            if func == STRUCT_SHARE_FN && args.len() == 1
+                                && matches!(&args[0], Operand::Local(l) if l == v)));
+                    if !shared_before {
+                        unowned.insert(v.0);
+                        unowned.insert(root(v.0));
+                    }
+                }
+                let (_, uses) = crate::liveness::inst_defs_uses(inst);
+                for u in uses {
+                    if tuples.contains(&u.0) && !fields.iter().any(|(_, e)| matches!(e, Operand::Local(l) if *l == u)) {
+                        unowned.insert(u.0);
+                        unowned.insert(root(u.0));
                     }
                 }
                 continue;
@@ -6874,6 +6938,8 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                     let wrapped = coerce_to_dyn_if_needed(ctx, operand, &mir_ty, expr);
                     if let Some(slot) = slot_to_drop {
                         ctx.emit(Instruction::Drop { local: slot });
+                        // Released here: the temp passes must not drop the operand copy again.
+                        ctx.slot_read_temps.remove(&slot.0);
                     }
                     RValue::Use(wrapped)
                 } else {
@@ -7128,7 +7194,7 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             && is_retained_container_get(&ctx.current_instructions, *src);
                         if dup_array_kind.is_some() {
                             // handled below (independent dup)
-                        } else if ctx.slot_read_temps.contains(&src.0) && is_owned_struct_ty(ctx, &src_ty) {
+                        } else if ctx.slot_read_temps.contains(&src.0) && is_owned_value_ty(ctx, &src_ty) {
                             // `let q = match k { .. }.q`: the read is already a deep copy
                             // the binding owns (the slot was released after it), so no
                             // element-read share on top.
@@ -7763,8 +7829,13 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                 // named place (`G = h.g`, `G = xs[i]`) -- takes its
                                 // own reference: its source keeps its owner (and its
                                 // drop), exactly as `let y = <same expr>` does.
-                                let owns_read =
-                                    owned_global && assign_rhs_owns_read(ctx, value, &global_ty);
+                                // (A read off an if / match value that took its own reference
+                                // is the slot's one reference already: not an alias.)
+                                let slot_read_owned = matches!(&rvalue, RValue::Use(Operand::Local(src))
+                                    if ctx.slot_read_temps.contains(&src.0));
+                                let owns_read = owned_global
+                                    && !slot_read_owned
+                                    && assign_rhs_owns_read(ctx, value, &global_ty);
                                 if owns_read {
                                     let added: Vec<u32> =
                                         ctx.partial_moved_locals.difference(&partial_before_rhs).copied().collect();
@@ -7797,7 +7868,11 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                         .map(|l| l.ty.clone())
                                         .unwrap_or(MirType::I64);
                                     if let Some(rf) = retain_for_ty(&src_ty) {
-                                        retain_src = Some(rf);
+                                        // A read off an if / match value that released its slot
+                                        // already holds the reference the global takes over.
+                                        if !ctx.slot_read_temps.contains(&src.0) {
+                                            retain_src = Some(rf);
+                                        }
                                     } else if !is_copy_type(ctx, &src_ty) && !share_global_new {
                                         ctx.dropped_locals.insert(src.0);
                                     }
@@ -9393,7 +9468,7 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
             // (see emit_tuple_clone).
             if let (Some(e), Some(Operand::Local(src))) = (value.as_ref(), operand.clone()) {
                 let src_ty = ctx.locals.iter().find(|l| l.id == src).map(|l| l.ty.clone());
-                if let Some(t) = src_ty.filter(|t| is_owned_tuple_ty(ctx, t)) {
+                if let Some(t) = src_ty.filter(|t| is_owned_tuple_ty(ctx, t) && !ctx.slot_read_temps.contains(&src.0)) {
                     if matches!(
                         e,
                         ast::Expr::Identifier { .. }
@@ -9492,7 +9567,9 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                     match infer_expr_type(ctx, e) {
                         // `return match k { .. }.q`: the read is already an owned deep
                         // copy (the slot was released after it); hand it back as is.
-                        MirType::Struct(_) if ctx.slot_read_temps.contains(&src.0) => {
+                        MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_)
+                            if ctx.slot_read_temps.contains(&src.0) =>
+                        {
                             ret_cloned = true;
                         }
                         MirType::Struct(ref sname) if ctx.struct_defs.contains_key(sname) => {
@@ -14630,6 +14707,9 @@ fn lower_field_chain_off_slot(ctx: &mut LoweringContext, expr: &ast::Expr) -> Op
             // below before the slot is released.
             read_is_independent(&tys[i + 1])
                 || matches!(tys[i + 1], MirType::Struct(_)) && is_owned_struct_ty(ctx, &tys[i + 1])
+                // An enum / tuple value is shared (below) before the slot is released.
+                || matches!(tys[i + 1], MirType::Enum(_)) && is_owned_enum_ty(ctx, &tys[i + 1])
+                || matches!(tys[i + 1], MirType::Tuple(_)) && is_owned_tuple_ty(ctx, &tys[i + 1])
         } else {
             matches!(tys[i + 1], MirType::Struct(_)) && is_owned_struct_ty(ctx, &tys[i + 1])
                 || matches!(tys[i + 1], MirType::Tuple(_))
@@ -14687,6 +14767,11 @@ fn lower_field_chain_off_slot(ctx: &mut LoweringContext, expr: &ast::Expr) -> Op
         return Some(RValue::Use(Operand::Local(copy)));
     }
     if release {
+        // An enum / tuple read is an unretained alias into the slot: take a reference of
+        // its own (the same share a `let` of the alias makes) before the slot goes.
+        if matches!(tys[n], MirType::Enum(_) | MirType::Tuple(_)) {
+            emit_value_share(ctx, cur);
+        }
         ctx.emit(Instruction::Drop { local: slot });
         // The read is retained (or a scalar): `cur` is the sole owner of what it holds.
         ctx.slot_read_temps.insert(cur.0);
@@ -16127,6 +16212,27 @@ fn lower_expr_to_operand_raw(ctx: &mut LoweringContext, expr: &ast::Expr) -> Ope
             // heap corruption -> bare exit 127 with correct stdout).
             if let RValue::Call { ref func, ref args } = rvalue {
                 consume_call_args(ctx, temp, func, args);
+            }
+            // An if / match VALUE whose branches all hand the hidden result slot a fresh
+            // owned struct: the operand copy is the slot's only owner, exactly like the
+            // result of a call (`_2 = call mk(i)`), and is released the same way once a
+            // borrowing consumer is done with it. Register the slot so the temp passes
+            // treat the copy as that owner (a moving consumer still disqualifies it).
+            if let (ast::Expr::IfExpr { .. } | ast::Expr::MatchExpr { .. }, RValue::Use(Operand::Local(slot))) =
+                (expr, &rvalue)
+            {
+                let slot = *slot;
+                let temp_ty = ctx.locals.iter().find(|l| l.id == temp).map(|l| l.ty.clone());
+                let slot_is_hidden = temp_ty
+                    .as_ref()
+                    .is_some_and(|t| ctx.locals.iter().any(|l| l.id == slot && l.name.is_none() && l.ty == *t));
+                if slot_is_hidden
+                    && temp_ty.as_ref().is_some_and(|t| is_owned_struct_ty(ctx, t))
+                    && struct_value_owned(ctx, expr)
+                {
+                    ctx.slot_read_temps.insert(slot.0);
+                    ctx.slot_read_seq += 1;
+                }
             }
             ctx.emit(Instruction::Assign {
                 dest: temp,
