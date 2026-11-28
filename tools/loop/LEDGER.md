@@ -12289,3 +12289,66 @@ NOT COVERED (measured, still leaks, not claimed)
 - `E.A((P { .. }, "s"))` (an enum whose payload is a tuple holding a struct) still leaks ~85B per value on Cranelift (+17MB at 200k, master +43MB);
   the drop helper now releases the field type-directed, the remainder is in the enum / tuple literal construction, not the drop.
 - LLVM-only: a tuple holding a closure captured by a closure (`tuple_fn`, +21MB, identical on master), `[E]` of enums with tuple payloads (`e_arr`).
+
+## copy_assign_leak: re-landed with the verifier's residuals fixed (2026-11-27, branch closeout/r2-mem, lane r2-mem)
+
+The two refuted commits (58aa4f2e base fix, dbc63587 BlockId-as-index fix) are re-applied with the same design, plus two more
+changes that close the residual shapes the verifier listed. Nothing else about the `@copy` model changed: a Drop is a real free
+only for a local `copy_own` proves is the sole owner of its value.
+
+ROOT CAUSE of the residuals (c1 tail if/else, c4 early `return`, c5/b2 tail else-if, b1/a4 tail match)
+- NOT the `terminator_uses -> bad.insert` path the verifier suspected (that path only fires for a branch / return that names the
+  local itself). Dumping the MIR (`kryos build --emit-mir`) of `fn f(i) { let q = Q{..}; if i > 5 { q.a } else { q.b } }` shows
+  `bb2: .. drop(_1) return`, `bb3: .. drop(_1) return`, and three blocks (bb5, bb6, bb4) NO PATH REACHES, one of them ending
+  `drop(_1) return _2`. `owned_copy_locals` treated every candidate event in an unreachable block as unprovable and marked the
+  local bad, so any function whose tail expression is an if/else, else-if chain or match (or has an early `return` in an if) lost
+  every @copy local it declared. The reads were fine; the dead join block disqualified them.
+- a5 (overwrite): `p = P { .. }` on a `let mut` @copy local emitted no drop of the replaced value, and the analysis rightly did
+  not invent one. The old box and its str fields leaked per overwrite.
+
+FIX
+- kryos-mir/src/copy_own.rs: compute reachability from the entry block; events in unreachable blocks are ignored (they never
+  execute) instead of disqualifying the local.
+- kryos-mir/src/copy_own.rs `drop_overwritten_copies` (called from kryos-driver pipeline.rs right after `own_shared_refs_module`):
+  for an owned local, a definition reached while the local is DEFINITELY defined and NOT possibly dropped, whose new value is not
+  built from the local itself, gets a `drop(local)` inserted in front of it. The backends re-run the analysis on the final MIR and
+  free only locals it accepts, so an inserted drop that stops qualifying is a no-op (leak, never a double free). wasm ignores Drop.
+- Backends (as in 58aa4f2e): Cranelift `emit_drop_for_value` + null the variable; LLVM spill + `emit_struct_drop`. The three
+  `FuncTranslator` initialisers that build closure droppers / thunks set `owned_copy_locals: HashSet::new()`.
+
+FILES
+compiler/crates/kryos-mir/src/{copy_own,lib}.rs, kryos-codegen-cranelift/src/codegen.rs, kryos-codegen-llvm/src/codegen.rs,
+kryos-driver/src/pipeline.rs, tests/mem/copy_assign_{leak,xblock_leak,tail_leak}.kry, tests/mem_copy_assign{,_xblock,_tail}_gate.sh,
+.github/workflows/ci.yml.
+
+EVIDENCE (both ways, executed)
+- finish run.sh --only '^(copy-assign-leak|...cp_copy_const|...cp_copy_ints|...cp_struct_nocopyvar)$': tree before: 0 PASS 4 FAIL
+  (jit +107.1 / +46.0 / +46.0 / +84.2 MB); after: 4 PASS 0 FAIL.
+- Verifier's residual probes, KRYOS_ALLOC_STATS=1, 1000 iters, JIT box live (with the base fix re-landed only -> with this change):
+  c1 1000 -> 0, c4 1000 -> 0, c5 1000 -> 0, b2 (P{str,n}) 1000 -> 0, b1 (match) 1000 -> 0, a5 (reassign in one arm) 994 -> 0.
+- Pin: tests/mem_copy_assign_tail_gate.sh (fixture tests/mem/copy_assign_tail_leak.kry, 10 shapes: tail if/else, early return,
+  tail else-if with i64 and str, tail match with i64 and str, early return after a copy, overwrite in a branch, overwrite in a loop,
+  overwrite by copy). master binary (kryos-co-nov): box leg FAIL (no alloc-stats), AOT 427MB, JIT 686MB (ceiling 40MB). This tree:
+  box allocs=16994 frees=16994 live=0, AOT 4MB, JIT 4MB, PASS. Output identical to master (`tot 2436702`).
+- Adversarial probe (alias copy then overwrite, overwrite in a loop with continue/break, passed to a call then overwritten,
+  returned through `id` then overwritten, captured by a closure then overwritten, overwrite in try with a throw, `q = q`,
+  `p = p` then pushed): identical output to master on JIT, Cranelift AOT and LLVM release; KRYOS_FREE_DIAG=1 reports no double free.
+- Regression scan, same binary: finish run.sh '^(leakmode|copy-assign-leak|A[0-9])' 52 PASS / 4 FAIL (A4, A5, A17, A20: identical
+  FAIL lines to oracle last_run.txt, none involves @copy); '^mem:closure' 146 / 1 (only v137_uaf, the known failing row);
+  '^mem:(attacks|legit)' 241 / 0; the remaining mem / M rows 13 / 2 (6 and M4: identical to last_run.txt). Gates: conformance
+  129/129, no_double_free, mem_balance_gate (16 rows), mem_shared_rule_gate (28 rows), mem_struct_arg, mem_struct_field_read,
+  mem_field_assign_temp, mem_leakmode_unwind, backend_divergence_pins, selfhost_wholeprogram, minilisp 22/22, stdlib_compile 66/66,
+  concurrency_smoke, self-host test_regressions, and the three mem_copy_assign gates.
+- Reported, not caused by this change: `compiler/self-host/test_bootstrap.sh` is 14/16 (elf.kry and coff.kry rc=139) on this tree.
+  With the whole copy_own analysis switched off (a temporary env check, since removed) it is the same 14/16, so it predates this
+  change on this branch. `tests/type_soundness.sh`: 4 to_array E0110 holes (unchanged, see the ledger above).
+
+NOT COVERED (leaks as before, safely; the analysis keeps rejecting them)
+- A nested @copy struct field (`struct W { q: Q, tag: str }`): the nested value is a shared box and every read of it is an unnamed
+  deep-copy temp with no drop; probes a1 / a3 still leak (live=2994 / 3000 per 1000). Separate cause (needs drops for the
+  field-read temps and a recursive free of the nested box); the verifier noted it as separate.
+- An @copy value passed to a call, returned, pushed, captured by a closure, stored in an aggregate or global, or a parameter
+  (`use_ret`, `use_arg` probes: live=1000 per 1000). Freeing those needs a callee-side borrow / return summary.
+- Struct fields that are arrays, maps, enums, tuples, closures or shared handles; a throw before the scope-exit drop; async and wasm.
+- Unrelated and untouched: `p.n + len(p.name)` (a str field read as a call argument inside a binary expression) leaks one str
+  reference per evaluation for any struct, @copy or not (same MIR on a plain struct); the new fixture avoids that shape.

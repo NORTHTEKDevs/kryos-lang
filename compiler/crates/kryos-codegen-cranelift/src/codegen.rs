@@ -2171,6 +2171,7 @@ pub fn compile_module_with_options(
                     copy_structs: &module.copy_structs,
                     user_func_names: &user_func_names,
                     closure_needs_lock: &closure_needs_lock_set,
+                    owned_copy_locals: HashSet::new(),
                 };
 
                 // Free each heap-typed capture at offset (i+1)*8.
@@ -2379,6 +2380,7 @@ pub fn compile_module_with_options(
                                     copy_structs: &module.copy_structs,
                                     user_func_names: &user_func_names,
                                     closure_needs_lock: &closure_needs_lock_set,
+                                    owned_copy_locals: HashSet::new(),
                                 };
                                 emit_drop_for_value(field_val, field_ty, &mut builder, &mut tr, &mut object_module)?;
                                 continue;
@@ -2542,6 +2544,7 @@ pub fn compile_module_with_options(
                                 copy_structs: &module.copy_structs,
                                 user_func_names: &user_func_names,
                                 closure_needs_lock: &closure_needs_lock_set,
+                                owned_copy_locals: HashSet::new(),
                             };
                             emit_drop_for_value(field_val, field_ty, &mut builder, &mut tr, &mut object_module)?;
                             continue;
@@ -3005,6 +3008,9 @@ struct FuncTranslator<'a> {
     /// alloc) below; the thunk-body loop that acquires/releases the lock
     /// lives in the module-level compile function, not here.
     closure_needs_lock: &'a HashSet<String>,
+    /// `@copy` struct locals that solely own their value (see
+    /// `kryos_mir::copy_own`): their scope-exit `Drop` really frees it.
+    owned_copy_locals: HashSet<u32>,
 }
 
 /// Deep-copy an `@copy` struct value `val` into a freshly calloc'd block,
@@ -3441,6 +3447,7 @@ pub fn translate_function<M: Module>(
         copy_structs,
         user_func_names,
         closure_needs_lock,
+        owned_copy_locals: kryos_mir::copy_own::owned_copy_locals(mir_func, copy_structs, struct_defs),
     };
 
     // Create Cranelift blocks for each MIR basic block.
@@ -3911,6 +3918,13 @@ fn translate_instruction<M: Module>(
                             // churn is absorbed by the type-stable pools.
                             if !translator.copy_structs.contains(sname) {
                                 emit_drop_for_value(val, ty, builder, translator, module)?;
+                            } else if translator.owned_copy_locals.contains(&local.0) {
+                                // The sole owner of its value (copy_own): a
+                                // copy is a deep copy, so nothing else points
+                                // at this box or its str fields.
+                                emit_drop_for_value(val, ty, builder, translator, module)?;
+                                let zero = builder.ins().iconst(types::I64, 0);
+                                builder.def_var(var, zero);
                             }
                         }
                         kryos_mir::ir::MirType::Enum(_) => {

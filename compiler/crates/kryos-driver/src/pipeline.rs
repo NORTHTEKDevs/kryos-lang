@@ -729,6 +729,10 @@ fn compile_module_impl(
     // references each slot owns.
     kryos_mir::shared_own::own_shared_refs_module(&mut mir);
 
+    // 9-pre-b. An `@copy` struct local that owns its value (copy_own) frees it
+    // at scope exit; free the value an overwrite (`p = P { .. }`) replaces too.
+    kryos_mir::copy_own::drop_overwritten_copies(&mut mir);
+
     // 9a. Populate source_file / source_line on each MIR function from AST spans.
     //     This is what drives accurate panic traces ("file.kry:42" instead of
     //     "<unknown>:0") at runtime.
