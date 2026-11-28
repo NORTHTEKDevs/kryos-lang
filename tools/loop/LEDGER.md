@@ -12396,3 +12396,14 @@ EVIDENCE (executed)
 STILL NOT COVERED (leaks safely, unchanged): see the NOT COVERED list of the previous copy_assign_leak entry (nested @copy fields,
 @copy values passed to calls / returned / pushed / captured, aggregate-typed fields, throw before the scope-exit drop, async, wasm).
 Not confirmed here: an LLVM-release box balance (the RSS leg of the new gate covers it; the box counter is JIT-only).
+
+## 2026-11-27 r2-mem: mem_closure v137_uaf (WALL: defective oracle expectation, no compiler change)
+
+Re-executed on this tree (HEAD 5385e8ba, rebuilt via kbuild.sh): `finish/run.sh -j 2 --only 'mem:closure/mem-shared-ownership-e7f16887/v137_uaf'`
+-> FAIL `jit iters=2200: stdout=tot 2463990 want tot 355349`. The row's recorded expectation (`tot 355349` @2200, `tot 5047669` @8800) is the
+output of a use-after-free, not the program's value. Independent python sum of `i + len("node-i-padpadpad") + 2` over i<2200 is 2463990 and
+over i<8800 is 38899290; this tree prints exactly those (master binary prints 359153 / 5243312 and varies run to run; earlier oracle runs
+recorded 348323, 349347). Memory is bounded on this tree: KRYOS_ALLOC_STATS arc allocs=frees=90200 live=0 and box allocs=frees=94600 live=0 at
+n=2200; arc 360800/360800 and box 378400/378400 live=0 at n=8800. The row cannot pass with a correct compiler; fixing it needs the expectation
+in kryos-oracle/finish/items.json changed to the true totals, which this lane may not edit. Rest of the family unchanged:
+`--only '^(mem:closure[-:/]|137-perf$)'` 147 PASS / 1 FAIL (this row), 137-perf PASS.
