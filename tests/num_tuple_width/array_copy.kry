@@ -1,0 +1,132 @@
+struct H { items: [(i64, i64)] }
+enum E { A([(i64, i64)]), B }
+fn g32() -> [(i32, i32)] {
+    let mut xs: [(i32, i32)] = []
+    let a: i32 = 7
+    let b: i32 = -8
+    push(xs, (a, b))
+    push(xs, (b, a))
+    return xs
+}
+fn gu8() -> [(u8, u8)] {
+    let mut xs: [(u8, u8)] = []
+    let a: u8 = 200
+    push(xs, (a, a))
+    return xs
+}
+fn tot(xs: [(i64, i64)]) -> i64 {
+    let mut s = 0
+    for x in xs { s = s + x.0 * 1000 + x.1 }
+    return s
+}
+fn r1() -> [(i64, i64)] { return g32() }
+fn r2() -> [(i64, i64)] { let q = g32()  return q }
+fn r3() -> [(i64, i64)] { let q = gu8()  let w = q  return w }
+fn r4(p: [(i32, i32)]) -> [(i64, i64)] { return p }
+fn m() -> [(i64, i64)] {
+    let r: [(i64, i64)] = [(1, 2)]
+    return r
+}
+fn main_shapes() {
+    println("{tot(r1())} {tot(r2())} {tot(r3())} {tot(r4(g32()))}")
+    let q = g32()
+    let h = H { items: q }
+    println("{tot(h.items)}")
+    let e = E::A(q)
+    match e {
+        E::A(v) => println("{tot(v)}"),
+        E::B => println("b"),
+    }
+    let mut h2 = H { items: m() }
+    h2.items = q
+    println("{tot(h2.items)}")
+    let mut y: [(i64, i64)] = m()
+    y = q
+    println("{tot(y)} {tot(q)}")
+    let f = |xs: [(i64, i64)]| -> i64 { return tot(xs) }
+    println("{f(q)} {f(gu8())}")
+    let u = gu8()
+    println("{tot(u)} {u[0].0}")
+    y = u
+    println("{tot(y)}")
+}
+
+fn mk8(n: i64) -> [(u8, u8)] {
+    let mut xs: [(u8, u8)] = []
+    let a: u8 = 200
+    let b: u8 = 255
+    let mut i = 0
+    while i < n { push(xs, (a, b))  i = i + 1 }
+    return xs
+}
+fn tot2(xs: [(i64, i64)]) -> i64 {
+    let mut s = 0
+    for x in xs { s = s + x.0 + x.1 }
+    return s
+}
+fn main_v6() {
+    println("{tot2(mk8(2))}")
+    let m = mk8(1)
+    let y: [(i64, i64)] = m
+    println("{tot2(y)}")
+}
+
+fn gen32() -> [(i32, i32)] {
+    let mut xs: [(i32, i32)] = []
+    push(xs, (1, 2))
+    push(xs, (3, 4))
+    return xs
+}
+fn s32x(xs: [(i32, i32)]) -> i32 {
+    let mut s: i32 = 0
+    for x in xs { s = s + x.0 + x.1 }
+    return s
+}
+fn main_v5() {
+    let q = gen32()
+    let r: [(i64, i64)] = q
+    println("{r[0].0} {r[0].1} {r[1].0} {r[1].1}")
+}
+
+fn mkm() -> [(u8, u32, str)] {
+    let mut xs: [(u8, u32, str)] = []
+    let a: u8 = 250
+    let b: u32 = 4000000000
+    push(xs, (a, b, "x"))
+    push(xs, (a, b, "yy"))
+    return xs
+}
+fn showm(xs: [(i64, i64, str)]) -> str {
+    let mut s = ""
+    for x in xs { s = s + "{x.0}/{x.1}/{x.2} " }
+    return s
+}
+fn nestm() -> [((i32, i32), i16)] {
+    let mut xs: [((i32, i32), i16)] = []
+    let a: i32 = -3
+    let c: i16 = -4
+    push(xs, ((a, a), c))
+    return xs
+}
+fn shownm(xs: [((i64, i64), i64)]) -> str {
+    let mut s = ""
+    for x in xs { s = s + "{x.0.0}/{x.0.1}/{x.1} " }
+    return s
+}
+fn main_mix() {
+    println(showm(mkm()))
+    let q = mkm()
+    let r: [(i64, i64, str)] = q
+    println(showm(r))
+    println(shownm(nestm()))
+    let m = nestm()
+    let n: [((i64, i64), i64)] = m
+    println(shownm(n))
+}
+
+fn main() {
+    main_shapes()
+    main_v6()
+    main_v5()
+    main_mix()
+}

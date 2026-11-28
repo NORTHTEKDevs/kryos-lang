@@ -2710,16 +2710,71 @@ fn array_elem_widths_differ(from: &MirType, to: &MirType) -> bool {
     }
 }
 
-/// `op` as a value of type `want`: itself, or a fresh Cast temp. An array
-/// local whose ONLY definition is an array literal (`return [(a, b)]` with
-/// `a, b: i32` into `-> [(i64, i64)]`) is retyped to the slot's element type
-/// instead: its elements are cast at the literal (`retypable`).
+/// The converting helpers a function set needs, by (source, destination)
+/// array type; built once and appended to the program.
+struct WidenCtx {
+    fns: Vec<MirFunction>,
+    names: HashMap<(MirType, MirType), String>,
+}
+
+impl WidenCtx {
+    fn helper(&mut self, src: &MirType, dst: &MirType) -> String {
+        let key = (src.clone(), dst.clone());
+        let next = self.names.len();
+        let name = self
+            .names
+            .entry(key)
+            .or_insert_with(|| format!("__kryos_widen_tuples_{next}"))
+            .clone();
+        if !self.fns.iter().any(|w| w.name == name) {
+            self.fns.push(build_widen_tuples_fn(name.clone(), src, dst));
+        }
+        name
+    }
+}
+
+/// What a site does with an array of tuples at other integer widths than the
+/// slot it flows into (a fresh converted copy is the only sound move: the two
+/// element layouts differ on the LLVM backend).
+#[derive(Clone, Copy, PartialEq)]
+enum ArrCopy {
+    /// Leave it (the site's ownership protocol is not modelled).
+    No,
+    /// The consumer retains what it is given (call argument, struct / enum
+    /// literal field): the caller drops the temp copy right after.
+    Drop,
+    /// The consumer takes the temp's own reference (a store, a return):
+    /// never dropped here.
+    Keep,
+}
+
 fn fit_int_tuple(
     locals: &mut Vec<MirLocal>,
     out: &mut Vec<Instruction>,
     op: Operand,
     want: &MirType,
     retypable: &HashSet<u32>,
+) -> Operand {
+    let mut ctx = WidenCtx { fns: Vec::new(), names: HashMap::new() };
+    let mut pending = Vec::new();
+    fit_slot(locals, out, op, want, retypable, &mut ctx, &mut pending, ArrCopy::No)
+}
+
+/// `op` as a value of type `want`: itself, or a fresh Cast temp. An array
+/// local whose ONLY definition is an array literal (`return [(a, b)]` with
+/// `a, b: i32` into `-> [(i64, i64)]`) is retyped to the slot's element type
+/// instead: its elements are cast at the literal (`retypable`). Any other
+/// array of tuples at other widths is copied through a converting helper when
+/// the site allows it (`mode`).
+fn fit_slot(
+    locals: &mut Vec<MirLocal>,
+    out: &mut Vec<Instruction>,
+    op: Operand,
+    want: &MirType,
+    retypable: &HashSet<u32>,
+    ctx: &mut WidenCtx,
+    pending: &mut Vec<LocalId>,
+    mode: ArrCopy,
 ) -> Operand {
     let Operand::Local(id) = &op else { return op };
     let Some(have) = local_ty_of(locals, *id) else { return op };
@@ -2732,8 +2787,19 @@ fn fit_int_tuple(
                     l.ty = MirType::Array(e.clone(), *n);
                 }
             }
+            return op;
         }
-        return op;
+        if mode == ArrCopy::No {
+            return op;
+        }
+        let helper = ctx.helper(&have, want);
+        let tmp = LocalId(locals.len() as u32);
+        locals.push(MirLocal { id: tmp, name: None, ty: want.clone(), mutable: false });
+        out.push(Instruction::Assign { dest: tmp, value: RValue::Call { func: helper, args: vec![op] } });
+        if mode == ArrCopy::Drop {
+            pending.push(tmp);
+        }
+        return Operand::Local(tmp);
     }
     if !tuple_widths_differ(&have, want) {
         return op;
@@ -2865,8 +2931,8 @@ fn coerce_int_tuple_widths(
         .iter()
         .map(|f| (f.name.clone(), (f.params.iter().map(|p| p.ty.clone()).collect(), f.ret_ty.clone())))
         .collect();
-    let mut widen_fns: Vec<MirFunction> = Vec::new();
-    let mut widen_names: HashMap<(MirType, MirType), String> = HashMap::new();
+    let mut ctx = WidenCtx { fns: Vec::new(), names: HashMap::new() };
+    let mut pending: Vec<LocalId> = Vec::new();
 
     for f in functions.iter_mut() {
         let ret_ty = f.ret_ty.clone();
@@ -2884,7 +2950,22 @@ fn coerce_int_tuple_widths(
         for bi in 0..f.blocks.len() {
             let old = std::mem::take(&mut f.blocks[bi].instructions);
             let mut out: Vec<Instruction> = Vec::with_capacity(old.len());
+            let mut skip_retain: Option<LocalId> = None;
             for mut inst in old {
+                for t in pending.drain(..) {
+                    out.push(Instruction::Drop { local: t });
+                }
+                if let Some(d) = skip_retain.take() {
+                    // `y = m` aliasing is followed by a retain of `y`; `y` is
+                    // now a fresh copy owning its single reference.
+                    if let Instruction::Assign { dest: rd, value: RValue::Call { func, args } } = &inst {
+                        if func == "kryos_array_retain_opt"
+                            && matches!(args.first(), Some(Operand::Local(x)) if *x == d)
+                        {
+                            inst = Instruction::Assign { dest: *rd, value: RValue::ConstInt(0) };
+                        }
+                    }
+                }
                 match &mut inst {
                     Instruction::Assign { dest, value } => {
                         let dest_ty = local_ty_of(&f.locals, *dest);
@@ -2893,7 +2974,7 @@ fn coerce_int_tuple_widths(
                             RValue::Call { func, args } => {
                                 if let Some((params, _)) = sigs.get(func.as_str()) {
                                     for (a, p) in args.iter_mut().zip(params) {
-                                        *a = fit_int_tuple(&mut f.locals, &mut out, a.clone(), p, &retypable);
+                                        *a = fit_slot(&mut f.locals, &mut out, a.clone(), p, &retypable, &mut ctx, &mut pending, ArrCopy::Drop);
                                     }
                                 } else {
                                     let at = match func.as_str() {
@@ -2924,7 +3005,7 @@ fn coerce_int_tuple_widths(
                                 if let Operand::Local(c) = callee {
                                     if let Some(MirType::Function { params, .. }) = local_ty_of(&f.locals, *c) {
                                         for (a, p) in args.iter_mut().zip(&params) {
-                                            *a = fit_int_tuple(&mut f.locals, &mut out, a.clone(), p, &retypable);
+                                            *a = fit_slot(&mut f.locals, &mut out, a.clone(), p, &retypable, &mut ctx, &mut pending, ArrCopy::Drop);
                                         }
                                     }
                                 }
@@ -2933,7 +3014,7 @@ fn coerce_int_tuple_widths(
                                 if let Some(defs) = struct_defs.get(name.as_str()) {
                                     for (fname, a) in fields.iter_mut() {
                                         if let Some((_, want)) = defs.iter().find(|(n, _)| n == fname) {
-                                            *a = fit_int_tuple(&mut f.locals, &mut out, a.clone(), want, &retypable);
+                                            *a = fit_slot(&mut f.locals, &mut out, a.clone(), want, &retypable, &mut ctx, &mut pending, ArrCopy::Drop);
                                         }
                                     }
                                 }
@@ -2944,7 +3025,7 @@ fn coerce_int_tuple_widths(
                                     .and_then(|vs| vs.get(*variant_idx as usize));
                                 if let Some(v) = variant {
                                     for (a, want) in fields.iter_mut().zip(&v.fields) {
-                                        *a = fit_int_tuple(&mut f.locals, &mut out, a.clone(), want, &retypable);
+                                        *a = fit_slot(&mut f.locals, &mut out, a.clone(), want, &retypable, &mut ctx, &mut pending, ArrCopy::Drop);
                                     }
                                 }
                             }
@@ -3011,20 +3092,25 @@ fn coerce_int_tuple_widths(
                                 fit_int_tuple(&mut f.locals, &mut out, Operand::Local(id), &dest_ty, &retypable);
                             }
                         }
+                        if let (RValue::Use(Operand::Local(id)), Some(src)) = (&*value, &src_ty) {
+                            if array_elem_widths_differ(src, &dest_ty) && !retypable.contains(&id.0) {
+                                // `let y: [(i64, i64)] = m` with `m: [(i32, i32)]`:
+                                // a converted copy (the aliasing retain that
+                                // follows is dropped, `y` owns its copy).
+                                let hname = ctx.helper(src, &dest_ty);
+                                let (id, d) = (*id, *dest);
+                                *value = RValue::Call { func: hname, args: vec![Operand::Local(id)] };
+                                skip_retain = Some(d);
+                                out.push(inst);
+                                continue;
+                            }
+                        }
                         if let (RValue::Call { func, .. }, Some(src)) = (&*value, &src_ty) {
                             if sigs.contains_key(func.as_str()) && array_elem_widths_differ(src, &dest_ty) {
                                 // A call returned `[(i32, i32)]` into a
                                 // `[(i64, i64)]` slot: copy it through a
                                 // converting helper and drop the returned temp.
-                                let key = (src.clone(), dest_ty.clone());
-                                let next = widen_names.len();
-                                let hname = widen_names
-                                    .entry(key.clone())
-                                    .or_insert_with(|| format!("__kryos_widen_tuples_{next}"))
-                                    .clone();
-                                if !widen_fns.iter().any(|w| w.name == hname) {
-                                    widen_fns.push(build_widen_tuples_fn(hname.clone(), &key.0, &key.1));
-                                }
+                                let hname = ctx.helper(src, &dest_ty);
                                 let tmp = LocalId(f.locals.len() as u32);
                                 f.locals.push(MirLocal { id: tmp, name: None, ty: src.clone(), mutable: false });
                                 let dest = *dest;
@@ -3067,7 +3153,16 @@ fn coerce_int_tuple_widths(
                                     .get(&n)
                                     .and_then(|d| d.iter().find(|(fnm, _)| fnm == field));
                                 if let Some((_, want)) = want {
-                                    *value = fit_int_tuple(&mut f.locals, &mut out, value.clone(), want, &retypable);
+                                    let orig = value.clone();
+                                    *value = fit_slot(&mut f.locals, &mut out, value.clone(), want, &retypable, &mut ctx, &mut pending, ArrCopy::Keep);
+                                    if let (Operand::Local(o), Operand::Local(n)) = (&orig, &*value) {
+                                        if o != n && matches!(local_ty_of(&f.locals, *o), Some(MirType::Array(..))) {
+                                            // The store takes the copy's own
+                                            // reference: the retain of the
+                                            // original that follows is dead.
+                                            skip_retain = Some(*o);
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -3076,9 +3171,21 @@ fn coerce_int_tuple_widths(
                     _ => out.push(inst),
                 }
             }
+            for t in pending.drain(..) {
+                out.push(Instruction::Drop { local: t });
+            }
             if let Terminator::Return(Some(op)) = &f.blocks[bi].terminator {
                 let op = op.clone();
-                let fitted = fit_int_tuple(&mut f.locals, &mut out, op, &ret_ty, &retypable);
+                let fitted = fit_slot(&mut f.locals, &mut out, op.clone(), &ret_ty, &retypable, &mut ctx, &mut pending, ArrCopy::Keep);
+                if !matches!((&fitted, &op), (Operand::Local(a), Operand::Local(b)) if a == b) {
+                    // The return handed over one reference of `op`; the
+                    // caller gets the converted copy instead.
+                    if let (Operand::Local(o), Operand::Local(_)) = (&op, &fitted) {
+                        if matches!(local_ty_of(&f.locals, *o), Some(MirType::Array(..))) {
+                            out.push(Instruction::Drop { local: *o });
+                        }
+                    }
+                }
                 f.blocks[bi].terminator = Terminator::Return(Some(fitted));
             }
             f.blocks[bi].instructions = out;
@@ -3107,7 +3214,7 @@ fn coerce_int_tuple_widths(
         }
         } // round
     }
-    functions.extend(widen_fns);
+    functions.extend(ctx.fns);
 }
 
 /// A closure passed to a user function is borrowed by it and dropped by the
