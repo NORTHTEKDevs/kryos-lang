@@ -12210,3 +12210,82 @@ Residual shapes:
 - mem_agg_ops_gate was not run to completion by the fixer (595s limit hit three times). Not re-run by the verifier.
 
 Item result: REFUTED. The A17 finish row passes, and the item is reopened.
+
+## leakmode: third attempt, exception unwinding and closure-env release (2026-11-27, lane r2-mem)
+
+Two earlier attempts (b19b40d8, bbb8bdeb) were reverted after the verifier refuted them as too narrow. This one fixes the cause
+they shared and runs every shape the verifier named, plus the neighbours found while measuring them. No ownership rule changed.
+
+ROOT CAUSES (all one class: the unwind exit of a frame did not release what the normal exit releases)
+1. A frame that leaves through an exception released nothing it owned unless the codegen safety net happened to run. Three exits:
+   a. a `throw` outside a try returned without any drop;
+   b. a `throw` inside a try jumped to the catch block, skipping the try body's scope-end drops;
+   c. a call that throws inside a try (callee-thrown, caught in the same function, the verifier's shape 1) is followed by the MIR
+      check, which jumped to the catch block the same way. The Cranelift post-call cleanup is skipped there on purpose
+      (`next_is_mir_exc_check`), so nothing released the try body's locals or `for` iterables.
+2. A freshly built thrown message (`throw "x{i}"`, `throw a + b`, `throw 42`) was retained at the throw site; the reference was
+   never released (the runtime copies the value outside a try, the catch binding drops one reference inside a try).
+3. The closure-env dropper and the struct / enum drop helpers released a tuple (and the tuples inside an array nest) one level
+   deep with fixed-width kind nibbles: a capture of `[[(str, i64)]]`, a tuple holding a struct, a closure, or a nested tuple, or
+   a struct field of those types, kept everything below the first level (verifier shape 2, and the 16-node / single-leaf limits
+   of the descriptor approach of bbb8bdeb).
+
+FIX
+- kryos-mir/src/lower.rs: `LoweringContext::unwind_drop_list(scope_start, iter_start, skip)` = the named, owned locals declared
+  from `scope_start` that no closed scope has released (`dropped_locals`, params, borrowed, partially moved, owned params excluded)
+  plus the for-loop iterables entered since `iter_start`. It is used on all three exits: `Stmt::Throw` outside a try (scope 0),
+  `Stmt::Throw` inside a try (from the try's scope start; `TryCatchTarget` now carries `scope_start` / `iter_start`), and the
+  handler edge of `emit_exception_check` for every unwind-source call inside a try (the call's own destination is excluded: it was
+  never assigned). The drops are path-local (not recorded in `dropped_locals`, like break / continue) and each released local is
+  cleared with `Assign local = 0` (`emit_unwind_release`), because the Cranelift unwind cleanup of a LATER throwing call drops every
+  non-null named heap local: without the clear, a local released on the catch path was released again (KRYOS_FREE_DIAG reports it;
+  `outer_throw` in the pin). Tuple locals are not cleared (the cleanup never touches them, and an assignment makes the tuple-drop
+  pass treat them as escaping, which leaked them).
+- Throw message: a fresh message (interpolation, binary op, user fn call, or a stringified non-str value) is not retained; in a
+  try the Err / catch binding owns it; outside a try the throw call now runs FIRST (the runtime copies the value), then the unwind
+  drops, then the temp is dropped.
+- kryos-codegen-cranelift/src/codegen.rs: the closure dropper releases a capture whose type holds a tuple at any depth
+  (`ty_holds_tuple`), and the struct / enum drop helpers release a field of such a type (`field_needs_typed_drop`), through
+  `emit_drop_for_value`, the same type-directed drop a local's scope end uses (a stand-in `FuncTranslator` over an empty
+  `MirFunction`). No descriptor, no depth limit, any leaf type.
+- A first try cleared every local after every Cranelift `Drop`. That broke 16 items (A2.ctl, A3.ctl, 14 shared-ownership
+  crashes, 0xC0000005): the match-bind lowering emits `retain; drop(x); use(x)`, so a Drop is not always the last use. Removed; the
+  clear is only at the unwind sites above.
+
+FILES
+compiler/crates/kryos-mir/src/lower.rs, compiler/crates/kryos-codegen-cranelift/src/codegen.rs, tests/mem/leakmode_unwind.kry,
+tests/mem_leakmode_unwind_gate.sh, .github/workflows/ci.yml.
+
+EVIDENCE (executed)
+- `finish/run.sh -j 2 --only '^(leakmode:throw_locals|leakmode:clo_nested_tuple_arr)$'`: FAIL both before (jit +133.6MB,
+  +355.4MB); after: PASS leakmode:throw_locals, PASS leakmode:clo_nested_tuple_arr.
+- Pin `tests/mem_leakmode_unwind_gate.sh` (17 modes x JIT and Cranelift AOT at 300k iters, ceiling 12MB, plus a KRYOS_FREE_DIAG leg):
+  master binary rc=1, 34 FAIL lines (every mode, both legs); this tree rc=0, every leg 4MB, 0 free-diag reports.
+- Shapes measured on Cranelift AOT, peak RSS growth 50k -> 200k iters, master -> here: callee-thrown caught in the same function
+  +63MB -> 0; throw in try +51 -> 0; struct / tuple / array / map locals in the try +86 -> 0; for-loop iterable in the try +63 -> 0;
+  nested try +61 -> 0; throw from a catch block +51 -> 0; dynamic message +14 -> 0; direct throw caught by the caller +38 -> 0;
+  `[[(str,i64)]]` capture +71 -> 0, depth 3 +99 -> 0, tuple holding a struct +17 -> 0, array of (struct, str) +73 -> 0, nested tuple
+  +78 -> 0, 4-deep array nest +67 -> 0, struct with a `[[tuple]]` field captured +52 -> 0, `[S]` reset of a struct with tuple / `[[tuple]]`
+  fields +158 -> 0. Output of every probe is identical to master; KRYOS_FREE_DIAG reports 0 on all of them.
+- Regression: `finish/run.sh -j 2 --only '^(mem|leakmode|copy-assign-leak|137|138|139|A[0-9]+|M[0-9]+|B[0-9]+)([:.\-/]|$)'` 460 PASS / 10 FAIL
+  of 470; no item that passes on master_run1.txt fails. The 10 (A17, A20, A4, A5, M4, copy-assign-leak x4, mem:closure v137_uaf)
+  also fail on master. Also 42 items of ASSAULT / NaN / RUN / CI / import / turbofish / misc / docs / libm / bare / buf_ / 2c / 122 / numbered /
+  escape_status (137-perf passes): 39 PASS, the 3 FAIL (6, ASSAULT-F6, CI-WIN-1) are other lanes' rows and fail on master.
+  tests/conformance/run_conformance.sh 129/129 PASS. no_double_free.sh clean. mem_*_gate.sh PASS (all 30 but mem_agg_ops_gate, which
+  exceeded the 595s limit with every leg printed so far in range, as on master). tests/security attack_uncaught_throw_* and
+  tests/mem/throw_unwind_leak.kry: same output as master, 0 free-diag reports.
+
+NOT COVERED (measured, still leaks, not claimed)
+- A frame with NO try that an exception passes THROUGH (callee throws, this frame only has locals). Cranelift: the post-call
+  cleanup (`emit_exception_cleanup_drops`) skips tuple locals and owned struct params (`mid_tuple` +52MB, `mid_ownedparam` +29MB at 200k,
+  unchanged from master). LLVM (`build --release`): the post-call check drops nothing at all, so every such frame leaks its locals
+  (`mid_str` +37MB master, +24MB here: the callee's own locals are now released, the passing frame's are not). The same class makes the
+  LLVM `outer_throw` / `f1` shapes (a try in a frame that a LATER call unwinds) leak the frame's non-try locals. Fixing it means a MIR-level
+  handler after every unwind-source call outside a try (the same `unwind_drop_list`); it was not attempted because it adds a block after
+  every call and would interact with the tail-call pass and the 137-perf budget.
+- A pre-existing double free: a local released at scope end (success path, or an if-block's local) and then released again by the
+  Cranelift unwind cleanup of a later throwing call (`succ` / `block` probes, KRYOS_FREE_DIAG 61 reports on master and here). The
+  match-bind `retain; drop; use` shape means a Drop cannot simply clear its local; not changed.
+- `E.A((P { .. }, "s"))` (an enum whose payload is a tuple holding a struct) still leaks ~85B per value on Cranelift (+17MB at 200k, master +43MB);
+  the drop helper now releases the field type-directed, the remainder is in the enum / tuple literal construction, not the drop.
+- LLVM-only: a tuple holding a closure captured by a closure (`tuple_fn`, +21MB, identical on master), `[E]` of enums with tuple payloads (`e_arr`).

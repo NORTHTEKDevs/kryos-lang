@@ -400,6 +400,10 @@ pub struct LoweringContext {
 struct TryCatchTarget {
     result_local: LocalId,
     check_block: BlockId,
+    /// `ctx.locals.len()` at try entry: locals from here on belong to the try body.
+    scope_start: usize,
+    /// `ctx.loop_iter_drops.len()` at try entry: loops from here on sit inside the try body.
+    iter_start: usize,
 }
 
 /// True when this instruction is a call that can carry a cross-function
@@ -768,9 +772,84 @@ impl LoweringContext {
         // temp drop does not follow (it bails): a fresh temp this call
         // BORROWS is released here instead, on both edges of the check.
         let drops = if target.is_some() { self.fresh_borrowed_arg_temps(&inst) } else { Vec::new() };
+        // The handler edge leaves the try body for the catch block without
+        // running the body's scope-end drops: release here what the body
+        // owns at this call (the call's own destination was never assigned).
+        let unwind = match target {
+            Some(t) => {
+                let skip = match &inst {
+                    Instruction::Assign { dest, .. } => Some(*dest),
+                    _ => None,
+                };
+                self.unwind_drop_list(t.scope_start, t.iter_start, skip)
+            }
+            None => Vec::new(),
+        };
         self.current_instructions.push(inst);
         if let Some(t) = target {
-            emit_exception_check(self, t.result_local, t.check_block, &drops);
+            emit_exception_check(self, t.result_local, t.check_block, &drops, &unwind);
+        }
+    }
+
+    /// The locals an exception leaving the current point toward a catch (or out
+    /// of the function, `scope_start == 0`) must release on THAT path: every
+    /// named, owned local declared from `scope_start` that no closed scope has
+    /// already released, and the iterables of the `for` loops (from
+    /// `iter_start`) the exception jumps out of. Innermost first. The set is
+    /// path-blind (`dropped_locals`), so these drops are never recorded in it:
+    /// the fall-through path still drops the locals itself.
+    fn unwind_drop_list(&self, scope_start: usize, iter_start: usize, skip: Option<LocalId>) -> Vec<LocalId> {
+        let mut out: Vec<LocalId> = Vec::new();
+        for i in (scope_start.min(self.locals.len())..self.locals.len()).rev() {
+            if self.locals[i].name.is_none() {
+                continue;
+            }
+            let local_id = self.locals[i].id;
+            if Some(local_id) == skip
+                || self.param_locals.contains(&local_id.0)
+                || self.borrowed_locals.contains(&local_id.0)
+                || self.dropped_locals.contains(&local_id.0)
+                || self.partial_moved_locals.contains(&local_id.0)
+                || self.owned_param_locals.contains(&local_id)
+            {
+                continue;
+            }
+            out.push(local_id);
+        }
+        for it in self.loop_iter_drops[iter_start.min(self.loop_iter_drops.len())..].iter().rev() {
+            out.push(*it);
+        }
+        out
+    }
+
+    /// Release a local on an unwind path and clear it. Clearing matters because
+    /// the Cranelift unwind cleanup of a LATER call that throws releases every
+    /// non-null named heap local of the frame: a local released here, whose
+    /// variable still held the stale handle, was released twice.
+    fn emit_unwind_release(&mut self, d: LocalId, tag: &str) {
+        drop_tag(self, tag);
+        self.emit(Instruction::Drop { local: d });
+        let Some(l) = self.locals.iter().find(|l| l.id == d) else { return };
+        if l.name.is_none() {
+            return;
+        }
+        let clear = match &l.ty {
+            MirType::Struct(n) => !self.copy_structs.contains(n.as_str()),
+            MirType::Str
+            | MirType::Array(_, _)
+            | MirType::Map { .. }
+            | MirType::Enum(_)
+            | MirType::Function { .. }
+            | MirType::Shared(_) => true,
+            // The unwind cleanup never touches a tuple, and an assignment to
+            // one makes the tuple-drop pass treat it as escaping.
+            _ => false,
+        };
+        if clear {
+            self.emit(Instruction::Assign {
+                dest: d,
+                value: RValue::Use(Operand::Constant(Constant::Int(0))),
+            });
         }
     }
 
@@ -9769,13 +9848,39 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                 });
                 Operand::Local(s)
             };
-            // The thrown string enters the exception slot / Err aggregate as
+            // A freshly built message (an interpolation / concat / user call
+            // result, or the stringified non-str value) is an unnamed temp this
+            // throw owns outright: nothing else will ever release it.
+            let fresh_owned = match &val {
+                Operand::Local(l) => {
+                    ctx.locals.iter().find(|x| x.id == *l).is_some_and(|x| x.name.is_none())
+                        && (throw_ty != MirType::Str
+                            || match expr {
+                                ast::Expr::InterpolatedString { .. } => true,
+                                ast::Expr::BinaryOp { .. } => true,
+                                ast::Expr::FnCall { callee, .. } => match callee.as_ref() {
+                                    ast::Expr::Identifier { name, .. } => {
+                                        ctx.user_fn_names.contains(name.as_str())
+                                            && !ctx.builtin_fn_names.contains(name.as_str())
+                                    }
+                                    _ => false,
+                                },
+                                _ => false,
+                            })
+                }
+                _ => false,
+            };
+            // The thrown string enters the Err aggregate (inside a try) as
             // a second reference: retain it, or the throwing scope's unwind
             // drop frees the buffer the catch binding still points at
             // (double-free of "thrown-msg" under KRYOS_FREE_DIAG). The
             // retain only executes when the throw executes, so the
-            // non-throwing path's refcounts are untouched.
-            if let Operand::Local(_) = &val {
+            // non-throwing path's refcounts are untouched. A fresh message
+            // hands its own reference to the catch binding instead, and a
+            // throw out of the function needs no retain at all: the runtime
+            // copies the value before the unwind drops below run.
+            if ctx.try_catch_target.is_some() && !fresh_owned {
+                if let Operand::Local(_) = &val {
                 let sink = ctx.alloc_temp(MirType::I64);
                 ctx.emit(Instruction::Assign {
                     dest: sink,
@@ -9784,12 +9889,18 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                         args: vec![val.clone()],
                     },
                 });
+                }
             }
             if let Some(ref target) = ctx.try_catch_target {
                 // Inside a try block: store Result::Err into the try/catch
                 // result local and jump to the tag-check block.
                 let result_local = target.result_local;
                 let check_block = target.check_block;
+                let (scope_start, iter_start) = (target.scope_start, target.iter_start);
+                // This throw leaves the try body for the catch block, a path
+                // the success-path scope drops never reach: the Err takes the
+                // thrown value (a local's own reference is separate from the
+                // one retained above), then what the try body owns is released.
                 ctx.emit(Instruction::Assign {
                     dest: result_local,
                     value: RValue::EnumVariant {
@@ -9798,6 +9909,9 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                         fields: vec![val],
                     },
                 });
+                for d in ctx.unwind_drop_list(scope_start, iter_start, None) {
+                    ctx.emit_unwind_release(d, "throw-in-try-unwind");
+                }
                 // Allocate a dead block to receive the remaining unreachable stmts.
                 let dead_bb = ctx.alloc_block();
                 ctx.finish_block(Terminator::Goto(check_block), dead_bb);
@@ -9805,6 +9919,25 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                 // Outside try: store the exception in the thread-local via
                 // kryos_exception_throw and return from this function so the
                 // caller can detect the pending exception and unwind.
+                // The runtime copies the thrown value into the exception slot,
+                // so the throw runs first and the drops below can then release
+                // anything the message was built from.
+                let throw_result = ctx.alloc_temp(MirType::I64);
+                ctx.emit(Instruction::Assign {
+                    dest: throw_result,
+                    value: RValue::Call {
+                        func: "kryos_exception_throw".into(),
+                        args: vec![val.clone()],
+                    },
+                });
+                // This `throw` leaves the function through the Return below, a
+                // path no codegen unwind check sees (that check only runs after
+                // a CALL that left an exception pending). So the throw releases,
+                // exactly as a `return` does, every named local live on this
+                // path and the iterables of the enclosing `for` loops.
+                for d in ctx.unwind_drop_list(0, 0, None) {
+                    ctx.emit_unwind_release(d, "throw-stmt-unwind");
+                }
                 // The unwind path releases the named locals but never a param:
                 // the struct / enum params this function owns go here, as a
                 // `return` would release them.
@@ -9817,14 +9950,12 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                         ctx.emit(Instruction::Drop { local: p });
                     }
                 }
-                let throw_result = ctx.alloc_temp(MirType::I64);
-                ctx.emit(Instruction::Assign {
-                    dest: throw_result,
-                    value: RValue::Call {
-                        func: "kryos_exception_throw".into(),
-                        args: vec![val],
-                    },
-                });
+                // A freshly built message was copied above and nothing else owns it.
+                if fresh_owned {
+                    if let Operand::Local(m) = &val {
+                        ctx.emit(Instruction::Drop { local: *m });
+                    }
+                }
                 // Return immediately to unwind toward the nearest try/catch.
                 // Use the right return form based on the function's return type.
                 let ret_operand = if ctx.current_ret_ty == MirType::Void {
@@ -11067,7 +11198,13 @@ fn lower_coop_spawn(ctx: &mut LoweringContext, arg: &ast::Expr) {
 ///   continue_bb:
 ///     ... (subsequent instructions) ...
 /// ```
-fn emit_exception_check(ctx: &mut LoweringContext, result_local: LocalId, check_bb: BlockId, drops: &[LocalId]) {
+fn emit_exception_check(
+    ctx: &mut LoweringContext,
+    result_local: LocalId,
+    check_bb: BlockId,
+    drops: &[LocalId],
+    unwind: &[LocalId],
+) {
     let exc_flag = ctx.alloc_temp(MirType::I64);
     ctx.emit(Instruction::Assign {
         dest: exc_flag,
@@ -11109,6 +11246,10 @@ fn emit_exception_check(ctx: &mut LoweringContext, result_local: LocalId, check_
     // The call threw: what it only borrowed is still the statement's.
     for d in drops {
         ctx.emit(Instruction::Drop { local: *d });
+    }
+    // ... and the try body's own locals are released before the catch runs.
+    for d in unwind {
+        ctx.emit_unwind_release(*d, "unwind-to-catch");
     }
     ctx.finish_block(Terminator::Goto(check_bb), continue_bb);
 
@@ -11163,6 +11304,8 @@ fn lower_try_catch(
     ctx.try_catch_target = Some(TryCatchTarget {
         result_local,
         check_block: check_bb,
+        scope_start: try_scope_start,
+        iter_start: ctx.loop_iter_drops.len(),
     });
 
     // Lower the try block body. The last expression is wrapped in Result::Ok.
@@ -11195,7 +11338,7 @@ fn lower_try_catch(
                 };
                 // Before wrapping in Ok, check if a cross-function throw
                 // set the thread-local exception during this expression.
-                emit_exception_check(ctx, result_local, check_bb, &[]);
+                emit_exception_check(ctx, result_local, check_bb, &[], &[]);
                 ctx.emit(Instruction::Assign {
                     dest: result_local,
                     value: RValue::EnumVariant {
@@ -11228,7 +11371,7 @@ fn lower_try_catch(
                     }
                     other => other,
                 };
-                emit_exception_check(ctx, result_local, check_bb, &[]);
+                emit_exception_check(ctx, result_local, check_bb, &[], &[]);
                 ctx.emit(Instruction::Assign {
                     dest: result_local,
                     value: RValue::EnumVariant {
@@ -11239,7 +11382,7 @@ fn lower_try_catch(
                 });
             } else {
                 lower_stmt(ctx, stmt);
-                emit_exception_check(ctx, result_local, check_bb, &[]);
+                emit_exception_check(ctx, result_local, check_bb, &[], &[]);
                 ctx.emit(Instruction::Assign {
                     dest: result_local,
                     value: RValue::EnumVariant {
@@ -11251,7 +11394,7 @@ fn lower_try_catch(
             }
         } else {
             lower_stmt(ctx, stmt);
-            emit_exception_check(ctx, result_local, check_bb, &[]);
+            emit_exception_check(ctx, result_local, check_bb, &[], &[]);
         }
     }
 

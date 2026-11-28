@@ -2141,9 +2141,48 @@ pub fn compile_module_with_options(
 
                 let env_ptr = builder.block_params(entry)[0];
 
+                // The same type-directed release a local's scope-end drop uses,
+                // for the captures whose type holds a tuple at any depth (the
+                // one-level helpers below stop at the first tuple).
+                let dropper_fn = MirFunction {
+                    name: format!("{func_name}_drop"),
+                    params: Vec::new(),
+                    ret_ty: MirType::Void,
+                    blocks: Vec::new(),
+                    locals: Vec::new(),
+                    attributes: Default::default(),
+                    source_file: None,
+                    source_line: 0,
+                };
+                let mut dropper_tr = FuncTranslator {
+                    mir_func: &dropper_fn,
+                    variables: HashMap::new(),
+                    blocks: HashMap::new(),
+                    func_refs: HashMap::new(),
+                    func_ids: &func_ids,
+                    string_counter: &mut global_str_counter,
+                    string_constants: &mut global_string_constants,
+                    struct_defs: &module.struct_defs,
+                    enum_defs: &module.enum_defs,
+                    borrow_slots: HashMap::new(),
+                    mir_module_trait_methods: &module.trait_vtables,
+                    next_is_mir_exc_check: false,
+                    checked_arithmetic: options.checked_arithmetic,
+                    copy_structs: &module.copy_structs,
+                    user_func_names: &user_func_names,
+                    closure_needs_lock: &closure_needs_lock_set,
+                };
+
                 // Free each heap-typed capture at offset (i+1)*8.
                 for (i, cap_ty) in cap_types.iter().enumerate() {
                     let offset = ((i + 1) * 8) as i32;
+                    if let Some(ct) = cap_ty {
+                        if ty_holds_tuple(ct) {
+                            let val = builder.ins().load(types::I64, MemFlags::new(), env_ptr, offset);
+                            emit_drop_for_value(val, ct, &mut builder, &mut dropper_tr, &mut object_module)?;
+                            continue;
+                        }
+                    }
                     // A tuple capture is the fresh copy MIR made for the env:
                     // release its str/array/map elements and the tuple.
                     if let Some(MirType::Tuple(tes)) = cap_ty {
@@ -2319,6 +2358,31 @@ pub fn compile_module_with_options(
                             .find(|(n, _, _)| n == field_name)
                             .map(|(_, off, _)| *off as i32);
                         if let Some(offset) = field_offset {
+                            if field_needs_typed_drop(field_ty) {
+                                let field_val =
+                                    builder.ins().load(types::I64, MemFlags::new(), ptr, offset);
+                                let helper_fn = dummy_helper_fn(type_name);
+                                let mut tr = FuncTranslator {
+                                    mir_func: &helper_fn,
+                                    variables: HashMap::new(),
+                                    blocks: HashMap::new(),
+                                    func_refs: HashMap::new(),
+                                    func_ids: &func_ids,
+                                    string_counter: &mut global_str_counter,
+                                    string_constants: &mut global_string_constants,
+                                    struct_defs: &module.struct_defs,
+                                    enum_defs: &module.enum_defs,
+                                    borrow_slots: HashMap::new(),
+                                    mir_module_trait_methods: &module.trait_vtables,
+                                    next_is_mir_exc_check: false,
+                                    checked_arithmetic: options.checked_arithmetic,
+                                    copy_structs: &module.copy_structs,
+                                    user_func_names: &user_func_names,
+                                    closure_needs_lock: &closure_needs_lock_set,
+                                };
+                                emit_drop_for_value(field_val, field_ty, &mut builder, &mut tr, &mut object_module)?;
+                                continue;
+                            }
                             if let MirType::Tuple(tes) = field_ty {
                                 let kinds = tes.iter().take(16).enumerate().fold(0i64, |acc, (i, t)| {
                                     let k = match t {
@@ -2457,6 +2521,29 @@ pub fn compile_module_with_options(
                             builder.ins().load(types::I64, MemFlags::new(), ptr, offset);
                         if defer_fi == Some(*field_idx) {
                             deferred = field_val;
+                            continue;
+                        }
+                        if field_needs_typed_drop(field_ty) {
+                            let helper_fn = dummy_helper_fn(type_name);
+                            let mut tr = FuncTranslator {
+                                mir_func: &helper_fn,
+                                variables: HashMap::new(),
+                                blocks: HashMap::new(),
+                                func_refs: HashMap::new(),
+                                func_ids: &func_ids,
+                                string_counter: &mut global_str_counter,
+                                string_constants: &mut global_string_constants,
+                                struct_defs: &module.struct_defs,
+                                enum_defs: &module.enum_defs,
+                                borrow_slots: HashMap::new(),
+                                mir_module_trait_methods: &module.trait_vtables,
+                                next_is_mir_exc_check: false,
+                                checked_arithmetic: options.checked_arithmetic,
+                                copy_structs: &module.copy_structs,
+                                user_func_names: &user_func_names,
+                                closure_needs_lock: &closure_needs_lock_set,
+                            };
+                            emit_drop_for_value(field_val, field_ty, &mut builder, &mut tr, &mut object_module)?;
                             continue;
                         }
                         if let MirType::Tuple(tes) = *field_ty {
@@ -9270,6 +9357,63 @@ fn emit_exception_cleanup_drops<M: Module>(
 /// Free a `[T]` field from inside a generated drop helper: the elements go
 /// through their own drop (`__kryos_drop_<T>` for a struct/enum, the runtime
 /// free for a str/array/map), released by the array's last reference.
+/// A struct / enum field the one-level drop-helper calls cannot release: a tuple
+/// holding anything but scalars / str / map, or an array nest that ends in a
+/// tuple the array-of-tuples release does not cover. Released by the same
+/// type-directed drop a local's scope end uses.
+fn field_needs_typed_drop(t: &MirType) -> bool {
+    match t {
+        MirType::Tuple(es) => es.iter().any(|e| {
+            !matches!(e, MirType::Str | MirType::Map { .. }) && mir_type_holds_heap(e)
+        }),
+        MirType::Array(e, _) => {
+            ty_holds_tuple(e) && !kryos_mir::ir::tuple_array_elem_releasable(e)
+                || matches!(e.as_ref(), MirType::Array(i, _) if ty_holds_tuple(i))
+        }
+        _ => false,
+    }
+}
+
+fn mir_type_holds_heap(t: &MirType) -> bool {
+    matches!(
+        t,
+        MirType::Str
+            | MirType::Array(_, _)
+            | MirType::Map { .. }
+            | MirType::Struct(_)
+            | MirType::Enum(_)
+            | MirType::Tuple(_)
+            | MirType::Function { .. }
+            | MirType::Shared(_)
+            | MirType::DynTrait(_)
+    )
+}
+
+/// An empty stand-in function for the translator a generated drop helper or
+/// closure dropper needs in order to call `emit_drop_for_value`.
+fn dummy_helper_fn(name: &str) -> MirFunction {
+    MirFunction {
+        name: format!("__drop_helper_{name}"),
+        params: Vec::new(),
+        ret_ty: MirType::Void,
+        blocks: Vec::new(),
+        locals: Vec::new(),
+        attributes: Default::default(),
+        source_file: None,
+        source_line: 0,
+    }
+}
+
+/// True when a captured value's type is a tuple, or an array nest ending in
+/// one: the shapes the one-level closure-dropper helpers cannot release.
+fn ty_holds_tuple(t: &MirType) -> bool {
+    match t {
+        MirType::Tuple(_) => true,
+        MirType::Array(e, _) => ty_holds_tuple(e),
+        _ => false,
+    }
+}
+
 /// `kryos_array_free_chain`'s packed element chain (4 bits a level) and leaf
 /// drop function for an array whose element is itself an array, or None when
 /// the element is not one or ends in something the chain cannot release (a

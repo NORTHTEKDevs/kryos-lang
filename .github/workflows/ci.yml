@@ -312,6 +312,13 @@ jobs:
         # array buffer, never the element boxes: peak RSS on both backends.
         run: bash tests/mem_struct_array_overwrite_gate.sh
 
+      - name: "Exception unwind and closure-env release gate (leakmode)"
+        # A throw (direct, in a try body, or from a callee caught in the same
+        # function) leaked the frame's locals; a closure env / struct field
+        # holding a tuple was released one level deep; a released local was
+        # released again by a later throwing call's unwind cleanup.
+        run: bash tests/mem_leakmode_unwind_gate.sh
+
       - name: Struct-argument memory gate (LEDGER item 3)
         # Passing a heap-bearing struct to a function, and chaining
         # struct-returning methods, must stay flat on BOTH backends. Pre-fix
