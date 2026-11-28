@@ -246,10 +246,37 @@ impl Parser {
                 | TokenKind::StarEq
                 | TokenKind::SlashEq
                 | TokenKind::PercentEq
-                | TokenKind::Pipe
-                | TokenKind::PipePipe
                 | TokenKind::Arrow
                 | TokenKind::FatArrow => return false,
+                // `|` / `||` are binary operators inside a key (`{a | b: 1}`,
+                // `{a < b || b > 1: 9}`) but open a closure when they are in
+                // prefix position (`{|x: T| ..}`, `{move |x: T| ..}`): the
+                // token before them decides, exactly as the expression parser
+                // does.
+                TokenKind::Pipe | TokenKind::PipePipe => {
+                    let after_operand = i > self.pos
+                        && matches!(
+                            self.tokens[i - 1].kind,
+                            TokenKind::Ident
+                                | TokenKind::TypeIdent
+                                | TokenKind::Integer
+                                | TokenKind::Float
+                                | TokenKind::String
+                                | TokenKind::StringPart
+                                | TokenKind::Char
+                                | TokenKind::True
+                                | TokenKind::False
+                                | TokenKind::None
+                                | TokenKind::RParen
+                                | TokenKind::RBracket
+                                | TokenKind::RBrace
+                                | TokenKind::InterpEnd
+                                | TokenKind::Question
+                        );
+                    if !after_operand {
+                        return false;
+                    }
+                }
                 _ if k.is_keyword()
                     && !matches!(
                         k,
@@ -263,6 +290,10 @@ impl Parser {
                             | TokenKind::True
                             | TokenKind::False
                             | TokenKind::None
+                            | TokenKind::Await
+                            | TokenKind::Move
+                            | TokenKind::Shared
+                            | TokenKind::Weak
                     ) =>
                 {
                     return false

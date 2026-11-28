@@ -140,5 +140,45 @@ ok blk_deref 'fn main() {
     let v: i64 = { *p }
     println("{v}")
 }' '4'
-[ "$bad" = 0 ] && echo "PASS map_negkey_pin (neg paren negval blk_neg blk_paren negid negexpr parenop parenop2 addkey callkey blk_stmt blk_lambda charkey floatkey interpkey interpkey2 interponly derefkey ifkey nlkey blk_if blk_deref)"
+ok bitorkey 'fn main() {
+    let a: i64 = 6
+    let b: i64 = 3
+    let m: map<i64,i64> = {a | b: 1}
+    println("{m[7]}")
+}' '1'
+ok boolorkey 'fn main() {
+    let a: i64 = 6
+    let b: i64 = 3
+    let m: map<bool,i64> = {a < b || b > 1: 9}
+    println("{m[true]}")
+}' '9'
+ok bitorchain 'fn main() {
+    let a: i64 = 6
+    let b: i64 = 3
+    let m: map<i64,i64> = {a | b | 8: 4, 1: 2}
+    println("{m[15]} {len(m)}")
+}' '4 2'
+ok pipecall 'fn f(x: i64) -> i64 { return x }
+fn main() {
+    let a: i64 = 6
+    let m: map<i64,i64> = {f(a) | (a * 2) | 1: 4}
+    println("{m[15]}")
+}' '4'
+ok awaitkey 'async fn f() -> i64 { return 5 }
+async fn g() -> i64 {
+    let m: map<i64,i64> = {await f(): 1}
+    return m[5]
+}
+fn main() {
+    let r = g()
+    println("{await r}")
+}' '1'
+ok blk_closure 'fn main() {
+    let a: i64 = 6
+    let c = { |x: i64| x + 1 }
+    let d = { || 5 }
+    let e = { move |x: i64| x + a }
+    println("ok")
+}' 'ok'
+[ "$bad" = 0 ] && echo "PASS map_negkey_pin (neg paren negval blk_neg blk_paren negid negexpr parenop parenop2 addkey callkey blk_stmt blk_lambda charkey floatkey interpkey interpkey2 interponly derefkey ifkey nlkey blk_if blk_deref bitorkey boolorkey bitorchain pipecall awaitkey blk_closure)"
 exit $bad
