@@ -1,0 +1,41 @@
+// ASSAULT-F6 attack: the receiver is a generic parameter bounded by Loader, which any implementor may
+// satisfy. A generic receiver is never resolved by type: the call is charged the union over every `run` and
+// rejected (E0507) in both modes.
+@capabilities(fs:read)
+fn load_secret() -> str {
+    return file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+trait Loader {
+    fn run(self: Self) -> str
+}
+
+struct SecretLoader {}
+impl Loader for SecretLoader {
+    @capabilities(fs:read)
+    fn run(self: SecretLoader) -> str {
+        return load_secret()
+    }
+}
+
+trait Formatter {
+    fn run(self: Self) -> str
+}
+
+struct PlainFormatter {}
+impl Formatter for PlainFormatter {
+    fn run(self: PlainFormatter) -> str {
+        return "formatted"
+    }
+}
+
+fn go<T: Loader>(x: T) -> str {
+    return x.run()
+}
+
+@capabilities(fs:read)
+fn main() {
+    deny!(fs:read) {
+        println("ASSAULT-F6-LEAK " + go(SecretLoader {}))
+    }
+}

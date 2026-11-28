@@ -1,0 +1,46 @@
+// ASSAULT-F6 attack: the same name holds a PlainFormatter in one branch and a SecretLoader in the other,
+// inside an unannotated helper. The bindings disagree, so the helper is charged the union and the call
+// inside deny!(fs:read) is rejected (E0507) in both modes.
+@capabilities(fs:read)
+fn load_secret() -> str {
+    return file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+trait Loader {
+    fn run(self: Self) -> str
+}
+
+struct SecretLoader {}
+impl Loader for SecretLoader {
+    @capabilities(fs:read)
+    fn run(self: SecretLoader) -> str {
+        return load_secret()
+    }
+}
+
+trait Formatter {
+    fn run(self: Self) -> str
+}
+
+struct PlainFormatter {}
+impl Formatter for PlainFormatter {
+    fn run(self: PlainFormatter) -> str {
+        return "formatted"
+    }
+}
+
+fn pick(b: bool) -> str {
+    if b {
+        let f = PlainFormatter {}
+        return f.run()
+    }
+    let f = SecretLoader {}
+    return f.run()
+}
+
+@capabilities(fs:read)
+fn main() {
+    deny!(fs:read) {
+        println("ASSAULT-F6-LEAK " + pick(false))
+    }
+}

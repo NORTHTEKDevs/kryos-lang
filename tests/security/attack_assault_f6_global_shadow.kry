@@ -1,0 +1,42 @@
+// ASSAULT-F6 attack: `g` is a top-level SecretLoader until the local `g` (a PlainFormatter) is bound, so the
+// first `g.run()` is on the global. A name that is also a top-level let is never resolved by type: the
+// first call is charged SecretLoader.run and the block is rejected (E0507) in both modes.
+@capabilities(fs:read)
+fn load_secret() -> str {
+    return file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+trait Loader {
+    fn run(self: Self) -> str
+}
+
+struct SecretLoader {}
+impl Loader for SecretLoader {
+    @capabilities(fs:read)
+    fn run(self: SecretLoader) -> str {
+        return load_secret()
+    }
+}
+
+trait Formatter {
+    fn run(self: Self) -> str
+}
+
+struct PlainFormatter {}
+impl Formatter for PlainFormatter {
+    fn run(self: PlainFormatter) -> str {
+        return "formatted"
+    }
+}
+
+let g = SecretLoader {}
+
+@capabilities(fs:read)
+fn main() {
+    deny!(fs:read) {
+        let a = g.run()
+        println("ASSAULT-F6-LEAK " + a)
+        let g = PlainFormatter {}
+        println(g.run())
+    }
+}

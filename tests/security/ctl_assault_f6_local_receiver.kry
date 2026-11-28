@@ -1,0 +1,39 @@
+// ASSAULT-F6 control: two UNRELATED traits each declare a method named `run`, and only SecretLoader.run
+// needs fs:read. Inside deny!(fs:read) the call `f.run()` is on a local that is a PlainFormatter, so it is
+// charged PlainFormatter.run (nothing), not the union over every method named `run`. Accepted in both
+// modes; `run` prints the marker. Master rejects it (E0507: `run` requires fs:read).
+@capabilities(fs:read)
+fn load_secret() -> str {
+    return file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+trait Loader {
+    fn run(self: Self) -> str
+}
+
+struct SecretLoader {}
+impl Loader for SecretLoader {
+    @capabilities(fs:read)
+    fn run(self: SecretLoader) -> str {
+        return load_secret()
+    }
+}
+
+trait Formatter {
+    fn run(self: Self) -> str
+}
+
+struct PlainFormatter {}
+impl Formatter for PlainFormatter {
+    fn run(self: PlainFormatter) -> str {
+        return "formatted"
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    deny!(fs:read) {
+        let f = PlainFormatter {}
+        println("ASSAULT-F6-LOCAL-OK " + f.run())
+    }
+}

@@ -1,0 +1,40 @@
+// ASSAULT-F6 attack: `f` is a PlainFormatter in the block and the parameter of a closure that is handed a
+// SecretLoader. A lambda parameter is a binding of the name, so neither `f.run()` is resolved by type and the
+// block is rejected (E0507) in both modes.
+@capabilities(fs:read)
+fn load_secret() -> str {
+    return file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+trait Loader {
+    fn run(self: Self) -> str
+}
+
+struct SecretLoader {}
+impl Loader for SecretLoader {
+    @capabilities(fs:read)
+    fn run(self: SecretLoader) -> str {
+        return load_secret()
+    }
+}
+
+trait Formatter {
+    fn run(self: Self) -> str
+}
+
+struct PlainFormatter {}
+impl Formatter for PlainFormatter {
+    fn run(self: PlainFormatter) -> str {
+        return "formatted"
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    deny!(fs:read) {
+        let f = PlainFormatter {}
+        println(f.run())
+        let g = |f: SecretLoader| f.run()
+        println("ASSAULT-F6-LEAK " + g(SecretLoader {}))
+    }
+}

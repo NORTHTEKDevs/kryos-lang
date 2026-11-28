@@ -1,0 +1,41 @@
+// ASSAULT-F6 attack: the receiver is a SecretLoader parameter of an unannotated helper. The helper is
+// charged SecretLoader.run, so the call inside deny!(fs:read) is rejected (E0507) in both modes.
+@capabilities(fs:read)
+fn load_secret() -> str {
+    return file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+trait Loader {
+    fn run(self: Self) -> str
+}
+
+struct SecretLoader {}
+impl Loader for SecretLoader {
+    @capabilities(fs:read)
+    fn run(self: SecretLoader) -> str {
+        return load_secret()
+    }
+}
+
+trait Formatter {
+    fn run(self: Self) -> str
+}
+
+struct PlainFormatter {}
+impl Formatter for PlainFormatter {
+    fn run(self: PlainFormatter) -> str {
+        return "formatted"
+    }
+}
+
+fn via_param(x: SecretLoader) -> str {
+    return x.run()
+}
+
+@capabilities(fs:read)
+fn main() {
+    deny!(fs:read) {
+        let f = SecretLoader {}
+        println("ASSAULT-F6-LEAK " + via_param(f))
+    }
+}

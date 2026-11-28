@@ -1,0 +1,54 @@
+// ASSAULT-F6 attack: A implements Runner without overriding `go`, so `a.go()` runs the trait default body,
+// which reads the file. The default body feeds the entry of every implementor, so the call on the A value is
+// charged it and rejected (E0507) in both modes.
+@capabilities(fs:read)
+fn load_secret() -> str {
+    return file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+trait Loader {
+    fn run(self: Self) -> str
+}
+
+struct SecretLoader {}
+impl Loader for SecretLoader {
+    @capabilities(fs:read)
+    fn run(self: SecretLoader) -> str {
+        return load_secret()
+    }
+}
+
+trait Formatter {
+    fn run(self: Self) -> str
+}
+
+struct PlainFormatter {}
+impl Formatter for PlainFormatter {
+    fn run(self: PlainFormatter) -> str {
+        return "formatted"
+    }
+}
+
+trait Runner {
+    fn go(self: Self) -> str {
+        return load_secret()
+    }
+}
+
+struct A {}
+impl Runner for A {}
+
+struct B {}
+impl Runner for B {
+    fn go(self: B) -> str {
+        return "b"
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    deny!(fs:read) {
+        let a = A {}
+        println("ASSAULT-F6-LEAK " + a.go())
+    }
+}

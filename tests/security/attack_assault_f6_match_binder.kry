@@ -1,0 +1,45 @@
+// ASSAULT-F6 attack: `f` is a PlainFormatter parameter and also the SecretLoader bound by the `Some(f)` arm.
+// A match binder is a binding of the name, so neither `f.run()` is resolved by type: the helper is charged the
+// union over every `run` and the call inside deny!(fs:read) is rejected (E0507) in both modes.
+use std::option::{Option, Some, None}
+@capabilities(fs:read)
+fn load_secret() -> str {
+    return file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+trait Loader {
+    fn run(self: Self) -> str
+}
+
+struct SecretLoader {}
+impl Loader for SecretLoader {
+    @capabilities(fs:read)
+    fn run(self: SecretLoader) -> str {
+        return load_secret()
+    }
+}
+
+trait Formatter {
+    fn run(self: Self) -> str
+}
+
+struct PlainFormatter {}
+impl Formatter for PlainFormatter {
+    fn run(self: PlainFormatter) -> str {
+        return "formatted"
+    }
+}
+
+fn run_opt(o: Option<SecretLoader>, f: PlainFormatter) -> str {
+    match o {
+        Some(f) => return f.run(),
+        None() => return f.run(),
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    deny!(fs:read) {
+        println("ASSAULT-F6-LEAK " + run_opt(Some(SecretLoader {}), PlainFormatter {}))
+    }
+}
