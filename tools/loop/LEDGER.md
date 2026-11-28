@@ -12191,101 +12191,22 @@ RESIDUAL (executed, NOT closed, NOT claimed)
 - `pick(GS, mkb(i).g, c)` (a field read of a temporary as a call argument) leaks on both backends (155MB / 308MB at 1M); not global-specific, not touched. The gate uses a named local there.
 - `GB.g = if c { h.g } else { .. }` and the local `bx.g = ..` analog (the admitted field-assign family), `@copy` globals, unshareable types and threads are unchanged from round 3.
 
-## a17 round 3 -- a field read off an if / match temporary is released by the sub-expression that consumed it (2026-11-27, branch closeout/r2-mem)
+## a17: REOPENED (round 2) -- fix refuted by verifier (2026-11-27, branch closeout/r2-mem)
 
-Reopened twice (80f7b597 and 1baff207 both reverted: PASS A17 but the same defect leaked behind `&&` / `||`, in `while` / `elif` conditions, a `return` of a
-boolean expression, an if-expression condition, a match subject, two reads in one statement, and a struct-valued field). Refuted approaches NOT repeated:
-a per-position `drop_tail_block_temps` call (if / elif / while / return) -- each position the verifier did not name stayed open.
+Reverted fix commits d35bc38f and dc0296e7 (newest first, no conflicts). Verifier findings:
 
-ROOT CAUSE (the one the verifier described, confirmed on `kryos build --emit-mir`): the field read is retained (`_7 = _5.name`, slot dropped, `_8 = _7`)
-and its temp is defined in the LAST block of the if / match sub-expression and consumed there (`_9 = call len(_8)`). Every statement-level cleanup pass looks
-only at the statement's last block, but `&&` / `||` / a later operand / a condition's branch put more blocks after it, so the temp's block is never the
-statement's tail and nothing ever dropped it (64 B per iteration; 65-69MB per 1M). The leak is therefore a property of WHERE the cleanup runs, not of any
-consumer.
+- Step 1 (run.sh --only '^(A17)$' -j 2): PASS A17; '# summary: 1 PASS, 0 FAIL of 1 ... RESULT: ALL PASS'. kbuild was a no-op (kryos 1.3.0).
+- Step 4: tests/mem_field_of_temp_gate.sh on the tree printed 'mem-field-of-temp: PASS' (every mode 4MB, ceiling 24MB). With KRYOS_BIN set to the master binary it printed 80 FAIL lines and no PASS. The pin is real and its answers match.
+- Step 2 (diff): the commit touched only lower.rs, the pin .kry, the gate script (modes and want_for answers added, nothing weakened), and LEDGER.md. It did not touch kryos-oracle, and no test-name special-casing was found. The fix is consumer-by-consumer: separate patches for the global store, return/tail, let, struct-literal tuple field, the dyn let, and the field-chain read. Only the operand-copy registration is a general rule. A consumer that was not patched still leaks.
+- Step 3 (verifier variants, AOT, 300k iterations, answers identical to master). Clean at 1MB on AOT: if inside match, enum with struct payload, early return, tail expression, method with args, method returning enum, assigning the whole if/match struct to a global, push of a tuple read, nested .q.name, for loop, two whole-struct args, let of the whole struct, a struct literal with enum and tuple fields, and `h.s = match..{}.name`.
+- STILL LEAKS (field assignment): `let mut h = H{..}; h.k = match i%2 { 0 => mke(i), _ => mke(i+1) }.k` leaks on AOT. `h.t = ...{}.t` does the same with a tuple. Peaks: fa_k 33MB at 300k iterations, 16MB at 150k, 67MB at 600k. fa_t 21MB, 11MB and 41MB. The leak scales linearly with iterations.
+- The control for that leak, `let e = mke(i); h.k = e.k`, is 1MB at every size. Master leaks 140MB at 300k for these shapes. So the tree was better than master, but the defect class was not closed. The pin had no field-assign mode and the fixer's residual list did not mention one. `h.s = ...name` (a str read) is clean, so the leak is specific to the enum/tuple field-assign consumer.
+- On JIT the verifier's H-struct programs sit at about 110MB even for the named-local control. That is a baseline difference that could not be separated, so the AOT numbers were relied on.
 
-FIX (compiler/crates/kryos-mir/src/lower.rs): one rule instead of positions.
-- `lower_field_chain_off_slot` (kept from round 2: a chain of struct / tuple field reads off an if / match value whose branches all own a fresh struct reads
-  the field, releases the slot right after, and the temp is the sole owner) now registers its result in `ctx.slot_read_temps`.
-- `lower_expr_to_operand` is a wrapper: any operand whose lowering created blocks and registered a slot read ends by running the existing temp pass
-  (`drop_unescaped_str_temps`, same escape / borrow analysis, same `dropped_locals` guard) over the block it ended in, restricted to the registered temps
-  (`ctx.temp_pass_only`), with the operand's own result excluded. The operand copy `_8 = _7` is registered as the owner and the pass accepts a `Use` of a
-  registered read. The per-position calls from round 2 are removed (dead `drop_tail_block_temps` deleted).
-- A STRUCT-valued last field (`let q = match ..{}.q`, `return match ..{}.q`, `.q` passed to a user fn) is deep-copied (`__kryos_struct_index_clone`)
-  before the slot is released; the copy is registered, the `let` takes it over (no element-read share on top) and `return` hands it back without a
-  second clone.
-- Round 2's `block_moves_own_let`, `is_read_then_slot_drop` alias-chain walk and `struct_value_owned` block arm are kept.
+Residual shapes:
+- Enum field read off an if/match struct assigned to a field of a local struct: `h.k = match c {..}.k` leaks about 110 bytes per iteration on AOT (33MB at 300k, 67MB at 600k). A named-local source stays flat.
+- Tuple field read off an if/match struct assigned to a field of a local struct: `h.t = if c {..} else {..}.t` leaks about 70 bytes per iteration on AOT (21MB at 300k, 41MB at 600k).
+- Residuals the fixer already listed: an operand temp defined before an if/match operand's blocks, an if/match operand inside an arm of another if/match, an array literal of enum reads, and a read off an if/match whose branches do not all own a fresh struct.
+- mem_agg_ops_gate was not run to completion by the fixer (595s limit hit three times). Not re-run by the verifier.
 
-EVIDENCE (executed)
-- run.sh --only '^(A17|A17\.ctl)$': PASS A17, PASS A17.ctl (master: FAIL A17 jit +72.5MB).
-- tests/mem_field_of_temp_gate.sh extended to 30 modes (round 3: and_if or_if and_while and_elif ret_and ret_or let_if_cond match_subj two_one_stmt let_q
-  ret_q). This tree: "mem-field-of-temp: PASS", every mode 4-5MB at 1M iters on JIT and AOT. KRYOS_BIN=master: 56 FAIL lines (e.g. and_if AOT 219MB, JIT 280MB;
-  two_one_stmt AOT 433MB; let_q AOT 342MB, JIT 516MB), no wrong answer in either (answers identical to master).
-- The verifier's residual list, each measured at 1M iters (tree JIT 34MB / AOT 1MB = baseline; master 225-286MB): `if i >= 0 && len(match ..{}.name) > 1`, the `||`
-  form, `while k < 1 && ..`, `elif i >= 0 && ..`, `return i >= 0 && ..`, `return i < 0 || ..`, `let v = if len(match ..) > 1 {3} else {4}`,
-  `match len(if ..{}.name) {..}`, two reads in one statement, `let q = match ..{}.q` (master 357 / 541MB).
-- Extra shapes, same answers as master on JIT and AOT, no free-diagnostic output (KRYOS_FREE_DIAG): call arg to a user fn, string interpolation, concat,
-  assignment to a global, closure capture, map store, comparison, short-circuit that skips the read, nested if / match reads, struct `.q` through a user fn,
-  `let mut q` then mutate (copy independent of the source), array of two reads, named-local arm.
-- Regression: run.sh `^mem:` 387 PASS / 1 FAIL (v137_uaf, the frozen defective fixture, as before). Feature scan
-  `^(A[0-9]+|A[0-9]+\.ctl|leakmode.*|copy-assign-leak.*|13[5-9].*|137.*|M[0-9]|B[0-9]|41|6|122-typecheck|libm-constfold)$`: 76 PASS / 11 FAIL; the 11 are
-  6, A4, A5, A20, M4, leakmode:throw_locals, leakmode:clo_nested_tuple_arr and the four copy-assign-leak rows, the same ids and reasons as before this change
-  (A17 moved from FAIL to PASS). Gates PASS: all 26 tests/mem_*_gate.sh except mem_agg_ops (not finished inside 580s, same as the earlier entry; not
-  re-run to completion) and mem_global_aggregate (not run), jit_symbols, builtin_borrow_mir, backend_divergence_pins, no_double_free, match_exhaustiveness,
-  minilisp, stdlib_compile, selfhost_wholeprogram, run_examples, concurrency_smoke, ecosystem_check (259/259).
-
-RESIDUAL (executed, NOT covered; every one leaks LESS than master and prints the same answer)
-- Two reads in one statement whose FIRST read is used after the second's blocks (`cat(match..{}.name, if..{}.name)`, `a + "-" + if..{}.name`): the first str is
-  consumed across blocks, so the same-block rule cannot prove it unused later; 20-24MB per 1M AOT (master 135-158MB).
-- A struct-valued read stored into a struct FIELD (`keep.q = match ..{}.q`): the field-store path shares the copy and nothing drops the copy, 64 B per
-  iteration (master 357MB). A tuple-valued read (`.t` as a whole) and an enum / closure field are unchanged (alias; slot not released).
-- An array literal of two struct reads (`[M.q, M.q]`): 41-59MB per 300k.
-- A read off an if / match whose branches do not all own a fresh struct (struct_value_owned false): unchanged.
-
-## a17 round 4 -- the verifier's residual shapes: enum / tuple field, global store, method receiver, if / match struct passed whole (2026-11-27, branch closeout/r2-mem)
-
-Round 3 (d35bc38f) was refuted a third time: PASS A17, but a field read off an if / match value still leaked when the field was an enum or a tuple, when the read was
-assigned to a mutable global, when the if / match struct was a method receiver, and when the if / match struct was passed whole to a user fn (163MB per 300k on master
-AND on that tree; no wrong answer). The residual list was measured first (res4.kry, 300k iters AOT, baseline 1MB): enumf 60MB, tuplef 60MB, gen 41MB, gtup 60MB,
-meth / meth2 60MB, whole / wholeif 60MB, gstr 21MB.
-
-ROOT CAUSE (the same one, two halves): the hidden result slot of an if / match whose branches all own a fresh struct is the only owner of that struct, and
-(1) the OPERAND copy of the whole slot (`_5 = _3`, a method receiver or a user-fn argument) was never registered as that owner, so the temp passes treated it as
-an alias and nothing released it; a plain call result (`_2 = call mk(i)`) is released by the same passes. (2) A field read of an enum / tuple type off the slot was
-an unretained alias into it, so the slot could not be released at all (round 3 only released it for scalar / str / array / map / struct reads). Plus three
-consumer rules that assumed the read was an alias of a named place: the global store retained it again (`kryos_string_retain_opt` after `kryos_global_set`; for an
-owned global `assign_rhs_owns_read` shared it again), `return` / tail cloned a returned tuple, and a struct literal's field share was treated as an escape.
-
-FIX (compiler/crates/kryos-mir/src/lower.rs), no new per-consumer hook:
-- lower_expr_to_operand_raw: an if / match operand whose slot is hidden, owned-struct typed and struct_value_owned registers the slot in slot_read_temps (the
-  operand copy is registered by the existing wrapper), so the existing statement-end / sub-expression temp pass drops the copy once a borrowing consumer (method
-  receiver, user-fn argument, field read) is done, exactly as for a call result. A moving consumer (push, struct literal field, `let`) still disqualifies it. The
-  dyn-coercion `let` that already drops the slot itself un-registers it (first version double-freed in no_double_free:dyn_ownership AOT).
-- lower_field_chain_off_slot: an enum / tuple last field is now accepted: it is SHARED (emit_value_share, the share a `let` of the alias makes), then the slot is
-  dropped, and the temp is registered as the sole owner. The `let` (is_owned_value_ty, was struct only), `return` (struct / enum / tuple) and the tail-expression tuple
-  clone skip their own extra share / clone for a registered read.
-- Global store: a registered read is not retained again (str / array / map) nor shared again (owned global: global_use_is_fresh, assign_rhs_owns_read).
-- strip_escaping_tuple_drops: a `d = u` copy of an unnamed temp read out of an aggregate right before its share (`u = s.t; share(u)`) takes over that reference
-  (shared_copy_at), and a struct literal that shared a tuple field right before it took its own owner (like the enum-variant arm) instead of marking the tuple unowned;
-  drop_unescaped_str_temps' tuple walk accepts a struct literal that shared the tuple.
-
-EVIDENCE (executed)
-- run.sh --only '^(A17|A17\.ctl)$': PASS A17, PASS A17.ctl (2 PASS, 0 FAIL).
-- tests/mem_field_of_temp_gate.sh extended to 43 modes (round 4: enum_f tuple_f ret_enum ret_tuple arg_tuple glob_str glob_enum glob_tuple meth meth_int
-  whole_match whole_if): this tree "mem-field-of-temp: PASS", all 4MB at 1M iters JIT and AOT. KRYOS_BIN=master: 80 FAIL lines total, the new modes 187-372MB
-  (enum_f AOT 189MB / JIT 372MB, tuple_f 187 / 372, glob_tuple 219 / 372), answers identical on both binaries.
-- Scratch programs (res4.kry / res5.kry, 100k-300k iters, JIT and AOT, 33 modes: enum / tuple / struct fields, globals, return, user-fn args, struct literal,
-  push, array literal, `let mut` then mutate, builder methods, nested if / match, `&&` + call): output identical to the master binary in every mode, no free
-  diagnostics (KRYOS_FREE_DIAG) on the JIT.
-- Regression on this tree: run.sh `^mem:` 387 PASS / 1 FAIL (v137_uaf, the frozen defective fixture). Feature scan
-  `^(A[0-9]+|A[0-9]+\.ctl|leakmode.*|copy-assign-leak.*|13[5-9].*|137.*|M[0-9]|B[0-9]|41|6|122-typecheck|libm-constfold)$`: 76 PASS / 11 FAIL, the same 11 as before
-  (6, A4, A5, A20, M4, leakmode:throw_locals, leakmode:clo_nested_tuple_arr, four copy-assign-leak; 6 and A20 print the same wrong output on master).
-  Gates PASS: 28 tests/mem_*_gate.sh, backend_divergence_pins, builtin_borrow_mir, concurrency_smoke, jit_symbols, match_exhaustiveness, minilisp, no_double_free,
-  stdlib_compile, selfhost_wholeprogram, run_examples_gate, ecosystem_check (259/259). mem_agg_ops_gate did not finish inside 595s (3 runs): 113 + 95 mode lines
-  up to bb_pbkdf2 incl. every dyn_ / match_ / glob_ / push_branch mode, 0 FAIL; the last bb_regex / bb_json / bb_ws builtin modes and the slow modes were not run.
-
-RESIDUAL (executed, NOT covered; each leaks LESS than master, same answers)
-- An operand temp defined BEFORE an if / match operand's blocks and consumed after them (`Wp { p: mkp(i), t: match ..{}.t }`, `two(mkp(i), match ..)`): the temp pass
-  looks at the statement's last block only. Master leaks it too (wp: 46MB vs 99MB per 200k).
-- An if / match operand inside an arm of another if / match (`lp(match .. { _ => idp(match ..) })`): 23MB vs 46MB.
-- An array literal holding an enum field read (`[mk(i).k, K.B(5)]`): 14MB here, and the PLAIN call object `mke(i).k` leaks the same on master (54MB), a separate defect.
-- A read off an if / match whose branches do not all own a fresh struct (struct_value_owned false): unchanged.
+Item result: REFUTED. The A17 finish row passes, and the item is reopened.
